@@ -46,9 +46,7 @@
 		"notification",
 		"smart home"
 	],
-	"author": {
-		"name": "Eistee82"
-	},
+	"author": "Eistee (t.me/AMEistee)",
 	"license": "MIT",
 	"engines": {
 		"node": ">=22"
