@@ -101,6 +101,7 @@ The device form contains:
 | Abort detection | See [Abort detection](#abort-detection) |
 | Auto-off | Switches the plug off the given number of minutes after the end |
 | Recipients | Recipients that receive the messages of this device |
+| Rooms / Functions | Assigns the device object to ioBroker categories (rooms and functions). Needed, for example, for the Devices tab. Deleting the device removes it from the categories again |
 | Reminder | See [Reminders and acknowledgement](#6-reminders-and-acknowledgement) |
 | Actions | See [Actions](#7-actions) |
 
@@ -309,7 +310,7 @@ Device states are relative to the device object `<deviceId>`. Info states are on
 ## 14. FAQ
 
 **Why is the device not listed under "Native devices" in the Devices tab?**
-The devices adapter only lists objects that are assigned to a room or a function. Assign the device object (for example `device-reminder.0.waschmaschine`) to a room or function in **Categories** (or in the object browser); it is then shown as a power meter with a "running" indicator.
+The devices adapter only lists objects that are assigned to a room or a function. Choose a room or function in the device form (or assign the device object, for example `device-reminder.0.waschmaschine`, in **Categories**); it is then shown as a power meter with a "running" indicator.
 
 **My plug only reports when the value changes. The device is never detected.**
 Use the detection mode **Time** (or **Combined**) for the device type. Count mode needs regular values.

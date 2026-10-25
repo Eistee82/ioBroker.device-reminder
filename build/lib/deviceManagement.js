@@ -2,6 +2,7 @@ import { ACTIONS, DeviceManagement } from "@iobroker/dm-utils";
 import { DEFAULT_REMINDER, findType, normalizeDeviceConfig } from "./config.js";
 import { buildDeviceSchema, buildSourceSchema, deviceConfigToForm, formToDeviceConfig } from "./deviceForm.js";
 import { ensureDeviceObjects } from "./deviceObjects.js";
+import { enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
 import { plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import { detectFromHost } from "./typeDetection.js";
@@ -28,6 +29,9 @@ function nameOf(name, fallback) {
         return typeof value === "string" ? value : fallback;
     }
     return fallback;
+}
+function idList(val) {
+    return Array.isArray(val) ? val.filter((v) => typeof v === "string") : [];
 }
 function toFormData(data) {
     const reminder = { ...DEFAULT_REMINDER };
@@ -358,13 +362,48 @@ export class ReminderDeviceManagement extends DeviceManagement {
             { id: "test", icon: "send", description: TEXT.test, handler: (_id, ctx) => this.sendTest(id, ctx) },
         ];
     }
+    async loadEnums() {
+        const members = {};
+        const options = { rooms: [], functions: [] };
+        const lang = this.adapter.language ?? "en";
+        for (const kind of ["rooms", "functions"]) {
+            const objs = (await this.adapter.getForeignObjectsAsync(`enum.${kind}.*`, "enum")) ?? {};
+            for (const [id, obj] of Object.entries(objs)) {
+                members[id] = Array.isArray(obj.common?.members) ? [...obj.common.members] : [];
+                options[kind].push({ value: id, label: enumLabel(id, obj.common?.name, lang) });
+            }
+            options[kind].sort((a, b) => a.label.localeCompare(b.label));
+        }
+        return { members, options };
+    }
+    async assignEnums(id, members, rooms, functions) {
+        const full = `${this.adapter.namespace}.${id}`;
+        for (const [kind, selected] of [
+            ["rooms", rooms],
+            ["functions", functions],
+        ]) {
+            const { add, remove } = planEnumUpdate(members, kind, full, selected);
+            for (const enumId of [...add, ...remove]) {
+                const list = members[enumId].filter(m => m !== full);
+                if (add.includes(enumId)) {
+                    list.push(full);
+                }
+                try {
+                    await this.adapter.extendForeignObjectAsync(enumId, { common: { members: list } });
+                }
+                catch (err) {
+                    this.log.warn(`Cannot update ${enumId}: ${errorMessage(err)}`);
+                }
+            }
+        }
+    }
     async updateOf(id) {
         return { update: await this.buildDeviceInfo(id) };
     }
-    async askDevice(ctx, title, data, detection) {
+    async askDevice(ctx, title, data, enums, detection) {
         let current = { ...data };
         for (;;) {
-            const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection), {
+            const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection, enums), {
                 data: current,
                 title,
             });
@@ -373,7 +412,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             }
             const { config, errors } = formToDeviceConfig(toFormData(result));
             if (config) {
-                return config;
+                return { config, rooms: idList(result.rooms), functions: idList(result.functions) };
             }
             await ctx.showMessage(errors.join("\n"));
             current = result;
@@ -405,6 +444,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             const source = await this.adapter.getForeignObjectAsync(sourceId);
             name = nameOf(source?.common?.name, sourceId.split(".").pop() ?? "");
         }
+        const enums = await this.loadEnums();
         const prefill = {
             enabled: true,
             name,
@@ -421,14 +461,18 @@ export class ReminderDeviceManagement extends DeviceManagement {
             recipients: [],
             reminder: { ...DEFAULT_REMINDER },
             actions: [],
+            rooms: [],
+            functions: [],
         };
-        const config = await this.askDevice(ctx, TEXT.addTitle, prefill, detection);
-        if (!config) {
+        const answer = await this.askDevice(ctx, TEXT.addTitle, prefill, enums.options, detection);
+        if (!answer) {
             return { refresh: false };
         }
+        const { config } = answer;
         const taken = new Set([...RESERVED_IDS, ...(await this.deviceObjects()).keys()]);
         const id = allocateDeviceId(config.name, taken);
         await ensureDeviceObjects(this.objectWriter(), id, config, inst);
+        await this.assignEnums(id, enums.members, answer.rooms, answer.functions);
         this.log.info(`Device ${config.name} added as ${id}`);
         return { refresh: true };
     }
@@ -439,9 +483,17 @@ export class ReminderDeviceManagement extends DeviceManagement {
             await ctx.showMessage(TEXT.notFound);
             return { delete: id };
         }
-        const edited = await this.askDevice(ctx, TEXT.editTitle, deviceConfigToForm(cfg));
+        const enums = await this.loadEnums();
+        const full = `${this.adapter.namespace}.${id}`;
+        const form = {
+            ...deviceConfigToForm(cfg),
+            rooms: membershipOf(enums.members, "rooms", full),
+            functions: membershipOf(enums.members, "functions", full),
+        };
+        const edited = await this.askDevice(ctx, TEXT.editTitle, form, enums.options);
         if (edited) {
-            await this.writeDevice(id, edited);
+            await this.writeDevice(id, edited.config);
+            await this.assignEnums(id, enums.members, edited.rooms, edited.functions);
         }
         return this.updateOf(id);
     }
@@ -450,6 +502,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             return { refresh: "none" };
         }
         this.adapter.registry.remove(id);
+        await this.assignEnums(id, (await this.loadEnums()).members, [], []);
         await this.adapter.delObjectAsync(id, { recursive: true });
         this.log.info(`Device ${id} deleted`);
         return { delete: id };

@@ -38,7 +38,7 @@ export function buildSourceSchema() {
         },
     };
 }
-export function buildDeviceSchema(cfg, detection) {
+export function buildDeviceSchema(cfg, detection, enums) {
     const items = {};
     if (detection?.hint) {
         items.hint = {
@@ -62,7 +62,6 @@ export function buildDeviceSchema(cfg, detection) {
     items.typeId = {
         type: "select",
         label: "dev_typeId",
-        noTranslation: true,
         options: cfg.types.map(t => ({ label: t.name, value: t.id })),
         xs: 12,
         sm: 6,
@@ -109,11 +108,30 @@ export function buildDeviceSchema(cfg, detection) {
         label: "dev_recipients",
         help: "dev_recipientsHelp",
         multiple: true,
-        noTranslation: true,
         options: cfg.recipients.map(r => ({ label: r.name, value: r.id })),
         newLine: true,
         xs: 12,
     };
+    if (enums) {
+        items.rooms = {
+            type: "select",
+            label: "dev_rooms",
+            help: "dev_enumsHelp",
+            multiple: true,
+            options: enums.rooms,
+            newLine: true,
+            xs: 12,
+            sm: 6,
+        };
+        items.functions = {
+            type: "select",
+            label: "dev_functions",
+            multiple: true,
+            options: enums.functions,
+            xs: 12,
+            sm: 6,
+        };
+    }
     items.reminderSection = {
         type: "panel",
         label: "dev_reminderSection",

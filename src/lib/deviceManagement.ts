@@ -19,6 +19,7 @@ import type { DeviceFormData } from "./deviceForm.js";
 import { buildDeviceSchema, buildSourceSchema, deviceConfigToForm, formToDeviceConfig } from "./deviceForm.js";
 import type { ObjectWriter } from "./deviceObjects.js";
 import { ensureDeviceObjects } from "./deviceObjects.js";
+import { type EnumMembers, type EnumOption, enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
 import type { DeviceRegistry } from "./deviceRegistry.js";
 import { plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
@@ -72,6 +73,15 @@ function nameOf(name: ioBroker.StringOrTranslated | undefined, fallback: string)
 		return typeof value === "string" ? value : fallback;
 	}
 	return fallback;
+}
+
+/**
+ * String entries of a multi select value.
+ *
+ * @param val - Value of the select
+ */
+function idList(val: unknown): string[] {
+	return Array.isArray(val) ? val.filter((v): v is string => typeof v === "string") : [];
 }
 
 /**
@@ -453,6 +463,54 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		];
 	}
 
+	/** Rooms and functions of the installation with their members. */
+	private async loadEnums(): Promise<{
+		members: EnumMembers;
+		options: { rooms: EnumOption[]; functions: EnumOption[] };
+	}> {
+		const members: EnumMembers = {};
+		const options: { rooms: EnumOption[]; functions: EnumOption[] } = { rooms: [], functions: [] };
+		const lang = this.adapter.language ?? "en";
+		for (const kind of ["rooms", "functions"] as const) {
+			const objs = (await this.adapter.getForeignObjectsAsync(`enum.${kind}.*`, "enum")) ?? {};
+			for (const [id, obj] of Object.entries(objs)) {
+				members[id] = Array.isArray(obj.common?.members) ? [...obj.common.members] : [];
+				options[kind].push({ value: id, label: enumLabel(id, obj.common?.name, lang) });
+			}
+			options[kind].sort((a, b) => a.label.localeCompare(b.label));
+		}
+		return { members, options };
+	}
+
+	/**
+	 * Make the device object a member of exactly the chosen rooms and functions.
+	 *
+	 * @param id - Device id (relative)
+	 * @param members - Current members per enum
+	 * @param rooms - Chosen rooms
+	 * @param functions - Chosen functions
+	 */
+	private async assignEnums(id: Id, members: EnumMembers, rooms: string[], functions: string[]): Promise<void> {
+		const full = `${this.adapter.namespace}.${id}`;
+		for (const [kind, selected] of [
+			["rooms", rooms],
+			["functions", functions],
+		] as const) {
+			const { add, remove } = planEnumUpdate(members, kind, full, selected);
+			for (const enumId of [...add, ...remove]) {
+				const list = members[enumId].filter(m => m !== full);
+				if (add.includes(enumId)) {
+					list.push(full);
+				}
+				try {
+					await this.adapter.extendForeignObjectAsync(enumId, { common: { members: list } });
+				} catch (err) {
+					this.log.warn(`Cannot update ${enumId}: ${errorMessage(err)}`);
+				}
+			}
+		}
+	}
+
 	private async updateOf(id: Id): Promise<DeviceRefresh> {
 		return { update: await this.buildDeviceInfo(id) };
 	}
@@ -463,17 +521,21 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	 * @param ctx - Action context
 	 * @param title - Dialog title
 	 * @param data - Initial form data
+	 * @param enums - Rooms and functions offered in the form
+	 * @param enums.rooms - Room options
+	 * @param enums.functions - Function options
 	 * @param detection - Result of the type detection (for the hint)
 	 */
 	private async askDevice(
 		ctx: ActionContext,
 		title: ioBroker.StringOrTranslated,
 		data: DeviceFormData,
+		enums: { rooms: EnumOption[]; functions: EnumOption[] },
 		detection?: DetectionResult,
-	): Promise<DeviceConfig | null> {
+	): Promise<{ config: DeviceConfig; rooms: string[]; functions: string[] } | null> {
 		let current: JsonFormData = { ...data };
 		for (;;) {
-			const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection), {
+			const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection, enums), {
 				data: current,
 				title,
 			});
@@ -482,7 +544,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			}
 			const { config, errors } = formToDeviceConfig(toFormData(result));
 			if (config) {
-				return config;
+				return { config, rooms: idList(result.rooms), functions: idList(result.functions) };
 			}
 			await ctx.showMessage(errors.join("\n"));
 			current = result;
@@ -516,6 +578,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			const source = await this.adapter.getForeignObjectAsync(sourceId);
 			name = nameOf(source?.common?.name, sourceId.split(".").pop() ?? "");
 		}
+		const enums = await this.loadEnums();
 		const prefill: DeviceFormData = {
 			enabled: true,
 			name,
@@ -532,15 +595,19 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			recipients: [],
 			reminder: { ...DEFAULT_REMINDER },
 			actions: [],
+			rooms: [],
+			functions: [],
 		};
-		const config = await this.askDevice(ctx, TEXT.addTitle, prefill, detection);
-		if (!config) {
+		const answer = await this.askDevice(ctx, TEXT.addTitle, prefill, enums.options, detection);
+		if (!answer) {
 			return { refresh: false };
 		}
+		const { config } = answer;
 
 		const taken = new Set<string>([...RESERVED_IDS, ...(await this.deviceObjects()).keys()]);
 		const id = allocateDeviceId(config.name, taken);
 		await ensureDeviceObjects(this.objectWriter(), id, config, inst);
+		await this.assignEnums(id, enums.members, answer.rooms, answer.functions);
 		this.log.info(`Device ${config.name} added as ${id}`);
 		return { refresh: true };
 	}
@@ -552,9 +619,17 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			await ctx.showMessage(TEXT.notFound);
 			return { delete: id };
 		}
-		const edited = await this.askDevice(ctx, TEXT.editTitle, deviceConfigToForm(cfg));
+		const enums = await this.loadEnums();
+		const full = `${this.adapter.namespace}.${id}`;
+		const form: DeviceFormData = {
+			...deviceConfigToForm(cfg),
+			rooms: membershipOf(enums.members, "rooms", full),
+			functions: membershipOf(enums.members, "functions", full),
+		};
+		const edited = await this.askDevice(ctx, TEXT.editTitle, form, enums.options);
 		if (edited) {
-			await this.writeDevice(id, edited);
+			await this.writeDevice(id, edited.config);
+			await this.assignEnums(id, enums.members, edited.rooms, edited.functions);
 		}
 		return this.updateOf(id);
 	}
@@ -564,6 +639,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			return { refresh: "none" };
 		}
 		this.adapter.registry.remove(id);
+		await this.assignEnums(id, (await this.loadEnums()).members, [], []);
 		await this.adapter.delObjectAsync(id, { recursive: true });
 		this.log.info(`Device ${id} deleted`);
 		return { delete: id };

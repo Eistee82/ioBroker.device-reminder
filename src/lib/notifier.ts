@@ -139,7 +139,10 @@ export class Notifier {
 	public async sendTest(recipient: string | RecipientConfig): Promise<{ ok: boolean; error?: string }> {
 		const r = typeof recipient === "string" ? this.getRecipients().find(x => x.id === recipient) : recipient;
 		if (!r) {
-			return { ok: false, error: `Recipient ${String(recipient)} not found` };
+			return {
+				ok: false,
+				error: `Recipient ${typeof recipient === "string" ? recipient : recipient.id} not found`,
+			};
 		}
 		if (r.enabled === false) {
 			return { ok: false, error: `Recipient ${r.name} is disabled` };

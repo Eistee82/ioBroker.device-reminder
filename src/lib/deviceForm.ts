@@ -7,6 +7,7 @@ import {
 	type InstanceConfig,
 	type ReminderConfig,
 } from "./config.js";
+import type { EnumOption } from "./enums.js";
 import type { DetectionResult } from "./typeDetection.js";
 import { parseNumber } from "./utils.js";
 
@@ -42,6 +43,10 @@ export interface DeviceFormData {
 	reminder: ReminderConfig;
 	/** Actions on events. */
 	actions: DeviceAction[];
+	/** Rooms (enum ids) the device object belongs to; not part of the device configuration. */
+	rooms?: string[];
+	/** Functions (enum ids) the device object belongs to; not part of the device configuration. */
+	functions?: string[];
 }
 
 const ACTION_EVENT_KEYS: Record<ActionEvent, string> = {
@@ -93,8 +98,15 @@ export function buildSourceSchema(): JsonFormSchema {
  *
  * @param cfg - Instance configuration (provides device types and recipients)
  * @param detection - Result of the power/switch detection to explain an incomplete result
+ * @param enums - Rooms and functions the device can be assigned to
+ * @param enums.rooms - Room options
+ * @param enums.functions - Function options
  */
-export function buildDeviceSchema(cfg: InstanceConfig, detection?: DetectionResult): JsonFormSchema {
+export function buildDeviceSchema(
+	cfg: InstanceConfig,
+	detection?: DetectionResult,
+	enums?: { rooms: EnumOption[]; functions: EnumOption[] },
+): JsonFormSchema {
 	const items: Extract<JsonFormSchema, { type: "panel" }>["items"] = {};
 
 	if (detection?.hint) {
@@ -120,7 +132,6 @@ export function buildDeviceSchema(cfg: InstanceConfig, detection?: DetectionResu
 	items.typeId = {
 		type: "select",
 		label: "dev_typeId",
-		noTranslation: true,
 		options: cfg.types.map(t => ({ label: t.name, value: t.id })),
 		xs: 12,
 		sm: 6,
@@ -167,11 +178,30 @@ export function buildDeviceSchema(cfg: InstanceConfig, detection?: DetectionResu
 		label: "dev_recipients",
 		help: "dev_recipientsHelp",
 		multiple: true,
-		noTranslation: true,
 		options: cfg.recipients.map(r => ({ label: r.name, value: r.id })),
 		newLine: true,
 		xs: 12,
 	};
+	if (enums) {
+		items.rooms = {
+			type: "select",
+			label: "dev_rooms",
+			help: "dev_enumsHelp",
+			multiple: true,
+			options: enums.rooms,
+			newLine: true,
+			xs: 12,
+			sm: 6,
+		};
+		items.functions = {
+			type: "select",
+			label: "dev_functions",
+			multiple: true,
+			options: enums.functions,
+			xs: 12,
+			sm: 6,
+		};
+	}
 
 	items.reminderSection = {
 		type: "panel",

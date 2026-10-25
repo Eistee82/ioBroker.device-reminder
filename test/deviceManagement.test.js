@@ -421,6 +421,78 @@ describe("deviceManagement", () => {
 		});
 	});
 
+	describe("rooms and functions", () => {
+		/**
+		 * Setup with two rooms and one function; the dryer is already in the laundry room.
+		 */
+		function withEnums() {
+			const ctx = setup();
+			ctx.adapter.foreign.set("enum.rooms.laundry", {
+				type: "enum",
+				common: { name: { en: "Laundry", de: "Waschküche" }, members: [`${NS}.trockner`] },
+				native: {},
+			});
+			ctx.adapter.foreign.set("enum.rooms.kitchen", {
+				type: "enum",
+				common: { name: "Kitchen", members: ["hue.0.lamp"] },
+				native: {},
+			});
+			ctx.adapter.foreign.set("enum.functions.energy", {
+				type: "enum",
+				common: { name: "Energy", members: [] },
+				native: {},
+			});
+			return ctx;
+		}
+		const members = ctx => Object.fromEntries(ctx.adapter.extendedForeign.map(e => [e.id, e.obj.common.members]));
+
+		it("offers the rooms and functions in the form and assigns a new device", async () => {
+			const ctx = withEnums();
+			const action = fakeAction({
+				forms: [
+					{ manual: true },
+					formOf({
+						name: "Waschmaschine",
+						rooms: ["enum.rooms.kitchen"],
+						functions: ["enum.functions.energy"],
+					}),
+				],
+			});
+			await ctx.dm.getInstanceInfo().actions[0].handler(action);
+			const items = action.forms[1].schema.items;
+			assert.deepStrictEqual(
+				items.rooms.options.map(o => o.label),
+				["Kitchen", "Laundry"],
+			);
+			assert.deepStrictEqual(items.functions.options, [{ value: "enum.functions.energy", label: "Energy" }]);
+			assert.deepStrictEqual(members(ctx), {
+				"enum.rooms.kitchen": ["hue.0.lamp", `${NS}.waschmaschine`],
+				"enum.functions.energy": [`${NS}.waschmaschine`],
+			});
+		});
+
+		it("preselects the current rooms when editing and moves the device", async () => {
+			const ctx = withEnums();
+			await addDevice(ctx, "trockner");
+			const [info] = await load(ctx);
+			const action = fakeAction({ forms: [formOf({ rooms: ["enum.rooms.kitchen"], functions: [] })] });
+			await actionOf(info, "edit").handler("trockner", action);
+			assert.deepStrictEqual(action.forms[0].options.data.rooms, ["enum.rooms.laundry"]);
+			assert.deepStrictEqual(members(ctx), {
+				"enum.rooms.kitchen": ["hue.0.lamp", `${NS}.trockner`],
+				"enum.rooms.laundry": [],
+			});
+		});
+
+		it("removes a deleted device from its rooms", async () => {
+			const ctx = withEnums();
+			await addDevice(ctx, "trockner");
+			const [info] = await load(ctx);
+			await actionOf(info, "delete").handler("trockner", fakeAction());
+			assert.deepStrictEqual(members(ctx), { "enum.rooms.laundry": [] });
+		});
+	});
+
 	describe("operation", () => {
 		it("switches do-not-disturb and acknowledges", async () => {
 			const ctx = setup();

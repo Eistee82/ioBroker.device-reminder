@@ -101,6 +101,7 @@ Das Gerätformular enthält:
 | Abbrucherkennung | Siehe [Abbrucherkennung](#abbrucherkennung) |
 | Auto-Aus | Schaltet die Steckdose die angegebene Zahl Minuten nach dem Ende aus |
 | Empfänger | Empfänger, die die Nachrichten dieses Geräts erhalten |
+| Räume / Funktionen | Ordnet das Geräte-Objekt ioBroker-Kategorien zu (Räume und Funktionen). Nötig zum Beispiel für den Reiter „Geräte“. Beim Löschen des Geräts wird die Zuordnung wieder entfernt |
 | Erinnerung | Siehe [Erinnerungen und Quittierung](#6-erinnerungen-und-quittierung) |
 | Aktionen | Siehe [Aktionen](#7-aktionen) |
 
@@ -309,7 +310,7 @@ Gerätezustände sind relativ zum Geräteobjekt `<deviceId>` angegeben. Info-Zus
 ## 14. FAQ
 
 **Warum erscheint das Gerät im Reiter „Geräte“ nicht unter „Native Geräte“?**
-Der Geräte-Adapter listet nur Objekte, die einem Raum oder einer Funktion zugeordnet sind. Ordne das Geräte-Objekt (zum Beispiel `device-reminder.0.waschmaschine`) unter **Kategorien** (oder im Objekt-Browser) einem Raum oder einer Funktion zu; es erscheint dann als Leistungsmesser mit „läuft“-Anzeige.
+Der Geräte-Adapter listet nur Objekte, die einem Raum oder einer Funktion zugeordnet sind. Wähle im Geräte-Formular einen Raum oder eine Funktion (oder ordne das Geräte-Objekt, zum Beispiel `device-reminder.0.waschmaschine`, unter **Kategorien** zu); es erscheint dann als Leistungsmesser mit „läuft“-Anzeige.
 
 **Meine Steckdose sendet nur bei Änderung. Das Gerät wird nie erkannt.**
 Nutze für den Gerätetyp den Erkennungsmodus **Zeit** (oder **Kombiniert**). Der Modus Anzahl braucht regelmäßige Werte.

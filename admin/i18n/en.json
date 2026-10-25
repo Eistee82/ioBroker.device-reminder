@@ -136,5 +136,8 @@
 	"rcp_messengerHelp": "All installed instances of the supported messenger adapters.",
 	"rcp_echo": "Echo device",
 	"rcp_echoHelp": "Echo devices and groups of the chosen alexa2 instance.",
-	"rcp_testHelp": "Sends a test message with the settings shown here (also before saving)."
+	"rcp_testHelp": "Sends a test message with the settings shown here (also before saving).",
+	"dev_rooms": "Rooms",
+	"dev_functions": "Functions",
+	"dev_enumsHelp": "Assigns the device to rooms and functions (categories). Needed, for example, to show it in the Devices tab."
 }
