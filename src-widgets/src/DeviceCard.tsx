@@ -3,6 +3,8 @@ import { Box, Button, Card, CardContent, Chip, Collapse, IconButton, LinearProgr
 import { ExpandMore, DoNotDisturbOn } from "@mui/icons-material";
 import type { RxRenderWidgetProps, RxWidgetInfo, VisRxWidgetProps, VisRxWidgetState } from "@iobroker/types-vis-2";
 import Generic from "./Generic";
+import { PREVIEW_SVG } from "./previewIcon";
+
 import { estimateProgress } from "./progress";
 import { type OperationEntry, type SocketLike, formatDuration, parseOperations, watchDevice } from "./deviceData";
 
@@ -48,6 +50,7 @@ export default class DeviceCard extends Generic<DeviceCardRxData, DeviceCardStat
 					],
 				},
 			],
+			visPrev: PREVIEW_SVG,
 			visDefaultStyle: { width: 300, height: 200 },
 		};
 	}
@@ -173,7 +176,8 @@ export default class DeviceCard extends Generic<DeviceCardRxData, DeviceCardStat
 								value={progress.percent}
 							/>
 							<Typography variant="caption">
-								{progress.percent}% | {Generic.t("remaining")} {formatDuration(progress.remainingMs ?? 0)}
+								{progress.percent}% | {Generic.t("remaining")}{" "}
+								{formatDuration(progress.remainingMs ?? 0)}
 							</Typography>
 						</Box>
 					)}

@@ -2,6 +2,8 @@ import React from "react";
 import { Box, Card, CardContent, Chip, List, ListItemButton, ListItemText, Typography } from "@mui/material";
 import type { RxRenderWidgetProps, RxWidgetInfo, VisRxWidgetProps, VisRxWidgetState } from "@iobroker/types-vis-2";
 import Generic from "./Generic";
+import { PREVIEW_SVG } from "./previewIcon";
+
 import { type SocketLike, watchDevice } from "./deviceData";
 
 type DeviceOverviewRxData = {
@@ -54,6 +56,7 @@ export default class DeviceOverview extends Generic<DeviceOverviewRxData, Device
 					],
 				},
 			],
+			visPrev: PREVIEW_SVG,
 			visDefaultStyle: { width: 320, height: 300 },
 		};
 	}
