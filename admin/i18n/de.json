@@ -1,7 +1,7 @@
 {
 	"dev_abort": "Abgebrochene Läufe erkennen",
 	"dev_abortFixed": "Korrigierte Abbrucherkennung",
-	"dev_abortFixedHelp": "Korrigiert die Abbrucherkennung von Version 3.1.2. Aus lassen, um das alte Verhalten zu behalten.",
+	"dev_abortFixedHelp": "Korrigiert die Abbrucherkennung von Version 3.1.2. Ein Abbruch wird nur gemeldet, wenn der Schalter des Geräts aus ist; dafür muss ein Schalter konfiguriert sein. Aus lassen, um das alte Verhalten zu behalten.",
 	"dev_abortHelp": "Meldet, wenn das Gerät vor dem Ende des Laufs ausgeschaltet wird.",
 	"dev_actionEvent": "Ereignis",
 	"dev_actionState": "State",

@@ -75,7 +75,7 @@ The README changelog stays short; the details and issue numbers of 4.0.0 are lis
 - Admin UI: tabs for device types (thresholds, detection mode), recipients (12 messenger kinds, time window, test button) and general settings (status texts, polling interval) (#386, #113)
 - New time-based detection mode per device type: start/end after a minimum duration above/below the thresholds; works with plugs that only report on change (#435)
 - New combined detection mode: count-based detection (3.1.2) plus minimum durations above the start and below the end threshold
-- Optional corrected abort detection (default off): the abort detection of 3.1.2 could never fire for most device types
+- Optional corrected abort detection (default off): the abort detection of 3.1.2 could never fire for most device types. It only fires while the switch of the device is off (a normal end below the standby value is always a finished run).
 - Devices run independently of each other; an error in one device no longer stops the others, and editing a running device keeps the current run as long as device type and power state stay the same (otherwise the device is reset and an info message is logged)
 - Device runtime: start/end messages, run time, last operations (max. 14, optional HTML table), run-time alert, acknowledge and auto-off per device
 - Non-numeric power values are ignored instead of breaking the average; a missing power state produces a single warning per device

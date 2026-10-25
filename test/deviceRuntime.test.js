@@ -165,6 +165,39 @@ describe("DeviceRuntime", () => {
 		ctx.rt.dispose();
 	});
 
+	it("abort + abortFixed: a normal end below standby is finished (switch stays on)", async () => {
+		const ctx = setup({
+			cfg: { abort: true, abortFixed: true, switchId: SWITCH },
+			hostOpts: { values: { [SWITCH]: true } },
+		});
+		await ctx.rt.init();
+		await play(ctx, washingMachine);
+		assert.deepStrictEqual(ctx.events, [`${ID}:start`, `${ID}:end`]);
+		assert.deepStrictEqual(
+			ctx.messages.map(m => m.text),
+			["Started", "Finished"],
+		);
+		assert.strictEqual(ctx.host.own(`${ID}.finished`), true);
+		ctx.rt.dispose();
+	});
+
+	it("abort + abortFixed: switching the plug off during the run is an abort", async () => {
+		const ctx = setup({
+			cfg: { abort: true, abortFixed: true, switchId: SWITCH },
+			hostOpts: { values: { [SWITCH]: true } },
+		});
+		await ctx.rt.init();
+		await play(ctx, [...Array(5).fill(500)]);
+		ctx.rt.onSwitch(false);
+		await play(ctx, Array(60).fill(0));
+		assert.deepStrictEqual(ctx.events, [`${ID}:start`, `${ID}:abort`]);
+		assert.deepStrictEqual(
+			ctx.messages.map(m => m.text),
+			["Started"],
+		);
+		ctx.rt.dispose();
+	});
+
 	it("switches the plug off after autoOffMinutes if it is on", async () => {
 		const ctx = setup({
 			cfg: { autoOff: true, autoOffMinutes: 2, switchId: SWITCH },

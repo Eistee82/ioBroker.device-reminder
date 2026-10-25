@@ -111,6 +111,19 @@
 		uk: "Надсилає тестове повідомлення налаштованому одержувачу (ID одержувача)",
 		"zh-cn": "向已配置的收件人发送测试消息（收件人 ID）",
 	};
+	Blockly.Words["device_reminder_device_id"] = {
+		en: "device ID",
+		de: "Geräte-ID",
+		ru: "ID устройства",
+		pt: "ID do dispositivo",
+		nl: "apparaat-ID",
+		fr: "ID de l'appareil",
+		it: "ID dispositivo",
+		es: "ID del dispositivo",
+		pl: "ID urządzenia",
+		uk: "ID пристрою",
+		"zh-cn": "设备 ID",
+	};
 	Blockly.Words["device_reminder_recipient_id"] = {
 		en: "recipient ID",
 		de: "Empfänger-ID",
@@ -147,22 +160,33 @@
 		return options.length ? options : [[ADAPTER + ".0", "0"]];
 	}
 
-	function deviceOptions(block) {
+	/**
+	 * Recipients of the selected instance as [name, id] pairs, read from the instance object
+	 * (the block editor only provides instance objects in `main.objects`).
+	 */
+	function recipientOptions(block) {
 		var options = [];
 		var objects = typeof main !== "undefined" && main && main.objects ? main.objects : {};
-		var inst = block && block.getFieldValue ? block.getFieldValue("INSTANCE") : null;
-		var re = new RegExp("^" + ADAPTER + "\\.(\\d+)\\.([^.]+)$");
-		for (var id in objects) {
-			var m = re.exec(id);
-			if (m && objects[id] && objects[id].type === "device" && (!inst || inst === m[1])) {
-				var name = objects[id].common && objects[id].common.name;
-				if (name && typeof name === "object") {
-					name = name[typeof systemLang !== "undefined" ? systemLang : "en"] || name.en;
-				}
-				options.push([name ? name + " (" + m[2] + ")" : m[2], m[2]]);
+		var inst = block && block.getFieldValue ? block.getFieldValue("INSTANCE") : "0";
+		var obj = objects["system.adapter." + ADAPTER + "." + inst];
+		var list = obj && obj.native && Array.isArray(obj.native.recipients) ? obj.native.recipients : [];
+		for (var i = 0; i < list.length; i++) {
+			var rcp = list[i];
+			if (rcp && rcp.id) {
+				options.push([rcp.name ? rcp.name + " (" + rcp.id + ")" : String(rcp.id), String(rcp.id)]);
 			}
 		}
 		return options.length ? options : [["-", ""]];
+	}
+
+	/**
+	 * Device ID from the value of the device field. The field takes either the plain device ID or any
+	 * object ID picked with the ID dialog (`device-reminder.<n>.<deviceId>[.state]`).
+	 */
+	function deviceIdOf(block) {
+		var value = String(block.getFieldValue("DEVICE") || "").trim();
+		value = value.replace(new RegExp("^" + ADAPTER + "\\.\\d+\\."), "");
+		return value.split(".")[0];
 	}
 
 	function appendHead(block, labelKey) {
@@ -173,12 +197,11 @@
 
 	function appendDevice(block, labelKey) {
 		var input = appendHead(block, labelKey);
-		input.appendField(
-			new Blockly.FieldDropdown(function () {
-				return deviceOptions(block);
-			}),
-			"DEVICE",
-		);
+		input.appendField(tr("device_reminder_device_id"));
+		// The ID dialog of the editor lets the user pick a state of the device; fall back to plain text.
+		var field =
+			typeof Blockly.FieldOID === "function" ? new Blockly.FieldOID("", "all") : new Blockly.FieldTextInput("");
+		input.appendField(field, "DEVICE");
 	}
 
 	function getGenerator() {
@@ -224,7 +247,7 @@
 	};
 	register("device_reminder_status", function (block, generator) {
 		var gen = generator || getGenerator();
-		var id = target(block) + "." + block.getFieldValue("DEVICE") + ".status";
+		var id = target(block) + "." + deviceIdOf(block) + ".status";
 		var order = gen && gen.ORDER_MEMBER !== undefined ? gen.ORDER_MEMBER : 0;
 		return ["getState(" + JSON.stringify(id) + ").val", order];
 	});
@@ -239,7 +262,7 @@
 		},
 	};
 	register("device_reminder_acknowledge", function (block) {
-		return sendToCode(block, "acknowledge", '{"deviceId": ' + jsonString(block.getFieldValue("DEVICE")) + "}");
+		return sendToCode(block, "acknowledge", '{"deviceId": ' + jsonString(deviceIdOf(block)) + "}");
 	});
 
 	Blockly.Blocks["device_reminder_dnd"] = {
@@ -259,15 +282,21 @@
 		return sendToCode(
 			block,
 			"setDnd",
-			'{"deviceId": ' + jsonString(block.getFieldValue("DEVICE")) + ', "value": ' + value + "}",
+			'{"deviceId": ' + jsonString(deviceIdOf(block)) + ', "value": ' + value + "}",
 		);
 	});
 
 	Blockly.Blocks["device_reminder_test"] = {
 		init: function () {
+			var block = this;
 			var input = appendHead(this, "device_reminder_test");
 			input.appendField(tr("device_reminder_recipient_id"));
-			input.appendField(new Blockly.FieldTextInput(""), "RECIPIENT");
+			input.appendField(
+				new Blockly.FieldDropdown(function () {
+					return recipientOptions(block);
+				}),
+				"RECIPIENT",
+			);
 			this.setPreviousStatement(true, null);
 			this.setNextStatement(true, null);
 			this.setColour(HUE);

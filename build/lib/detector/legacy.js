@@ -14,6 +14,7 @@ export class LegacyDetector {
     standbyCount;
     valCancel;
     abort;
+    abortNeedsSwitch;
     minStartMs;
     minEndMs;
     isStarted = false;
@@ -34,6 +35,7 @@ export class LegacyDetector {
                 : 10;
         this.valCancel = thresholds.endCount / 2;
         this.abort = options.abort;
+        this.abortNeedsSwitch = options.abortFixed === true;
         this.minStartMs = options.minStartMs ?? 0;
         this.minEndMs = options.minEndMs ?? 0;
     }
@@ -54,11 +56,11 @@ export class LegacyDetector {
         this.aboveStartSince = null;
         this.belowEndSince = null;
     }
-    tick(power, now) {
+    tick(power, now, hints) {
         const out = { events: [], status: null, average: null };
         this.trackDurations(power, now);
         this.fillBuffers(power, out);
-        this.evaluate(out, now);
+        this.evaluate(out, now, hints?.switchOff === true);
         return { events: out.events, status: out.status, average: out.average, started: this.isStarted };
     }
     trackDurations(power, now) {
@@ -115,10 +117,11 @@ export class LegacyDetector {
             this.buffers.standby = [];
         }
     }
-    evaluate(out, now) {
+    evaluate(out, now, switchOff) {
         const avg = this.averages;
         if (this.abort &&
             this.isStarted &&
+            (!this.abortNeedsSwitch || switchOff) &&
             avg.standby < this.standbyValue &&
             this.buffers.standby.length >= this.valCancel) {
             out.events.push("aborted");

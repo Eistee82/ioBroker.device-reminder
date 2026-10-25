@@ -47,8 +47,6 @@ Allgemeine Einstellungen:
 | Abfrageintervall | 10 s | Wie oft die Erkennung den letzten Leistungswert auswertet |
 | Historie als HTML | aus | Schreibt zusätzlich `lastOperationsHtml` (HTML-Tabelle der letzten Läufe) |
 
-![Instanz-Einstellungen](img/settings.png)
-
 ## 3. Gerätetypen und Erkennung
 
 Jedes Gerät nutzt einen Gerätetyp. Ein Typ enthält die Schwellwerte und den Erkennungsmodus. Mitgeliefert sind **Waschmaschine**, **Trockner** und **Geschirrspüler** sowie zehn bearbeitbare eigene Typen. Einen eigenen Typ füllst du von Hand oder durch [Anlernen](#8-anlernen).
@@ -61,8 +59,6 @@ Jedes Gerät nutzt einen Gerätetyp. Ein Typ enthält die Schwellwerte und den E
 | Start-/Endanzahl | Anzahl aufeinanderfolgender Abfragen (Modus Anzahl) |
 | Start-/Enddauer (s) | Mindestdauer über dem Start- bzw. unter dem Endwert (Modus Zeit und Kombiniert) |
 
-![Gerätetypen](img/types.png)
-
 ### Erkennungsmodi
 
 - **Anzahl** (Standard, identisch zu 3.1.2): Der Start wird erkannt, wenn der Mittelwert über die eingestellte Anzahl von Abfragen über dem Startwert liegt, das Ende nach der eingestellten Anzahl von Abfragen unter dem Endwert. Dieser Modus braucht eine Steckdose, die regelmäßig sendet.
@@ -74,7 +70,7 @@ Jedes Gerät nutzt einen Gerätetyp. Ein Typ enthält die Schwellwerte und den E
 Ein Abbruch ist ein Gerät, das während des Laufs von Hand ausgeschaltet wird. Die Option **Abbrucherkennung** gilt je Gerät und ist standardmäßig aus. Löst sie aus, wechselt der Status auf „switched off“, und es wird keine Fertig-Nachricht gesendet.
 
 - In 3.1.2 konnte die Abbrucherkennung bei den meisten Gerätetypen nie auslösen, weil ihr Standby-Puffer die nötige Länge nie erreichte. Dieses Verhalten bleibt erhalten, wenn nur **Abbrucherkennung** aktiv ist, die Geräte verhalten sich also genau wie in 3.1.2. Das gilt auch für die mitgelieferten Standardtypen.
-- Die Option **Korrigierte Abbrucherkennung** (`abortFixed`, Standard aus) korrigiert die Pufferlänge (`max(ceil(Endanzahl / 2), 2)`), sodass der Abbruch wirklich auslösen kann. Nutze sie zusammen mit **Abbrucherkennung**.
+- Die Option **Korrigierte Abbrucherkennung** (`abortFixed`, Standard aus) korrigiert die Pufferlänge (`max(ceil(Endanzahl / 2), 2)`), sodass der Abbruch wirklich auslösen kann. Nutze sie zusammen mit **Abbrucherkennung**. Allein anhand der Leistung lässt sich ein Ausschalten von Hand nicht von einem normalen Ende unter dem Standby-Wert unterscheiden (z. B. eine Waschmaschine, die auf 0,5 W fällt). Deshalb löst der korrigierte Abbruch nur aus, wenn der **Schalter** des Geräts aus ist. Ohne konfigurierten Schalter löst er nie aus, und ein normales Ende wird immer als fertig gemeldet.
 - Im Modus Zeit löst der Abbruch aus, wenn die Leistung die halbe Enddauer lang unter dem Standby-Wert bleibt.
 
 ### Weiteres Verhalten
@@ -110,9 +106,6 @@ Das Gerätformular enthält:
 
 Pflichtfelder werden vor dem Speichern geprüft.
 
-![Device Manager](img/device-manager.png)
-![Gerätformular](img/device-form.png)
-
 Jede Gerätekarte zeigt Status, Leistung, Laufzeit, Anzeigen für „läuft“ und „fertig“ und eine Warnung bei fehlendem Leistungs-State. Auf der Karte kannst du das Gerät bearbeiten, löschen, aktivieren oder deaktivieren, Nicht stören schalten, quittieren, eine Testnachricht senden und das Anlernen starten. Die Details zeigen die letzten Läufe, die Schwellwerte des Typs und den Erinnerungsstatus.
 
 ### Ablauf
@@ -124,7 +117,7 @@ Jede Gerätekarte zeigt Status, Leistung, Laufzeit, Anzeigen für „läuft“ u
 
 ## 5. Empfänger
 
-Ein Empfänger ist ein Ziel für Nachrichten. Lege Empfänger im Reiter **Empfänger** an und wähle sie je Gerät aus. Jeder Empfänger kann aktiviert oder deaktiviert werden, hat ein optionales **Zeitfenster** und eine **Test**-Schaltfläche.
+Ein Empfänger ist ein Ziel für Nachrichten. Lege Empfänger im Reiter **Empfänger** an und wähle sie je Gerät aus. Jeder Empfänger kann aktiviert oder deaktiviert werden, hat ein optionales **Zeitfenster** und eine **Test**-Schaltfläche. Das schreibgeschützte Feld **ID** eines Empfängers zeigt die Empfänger-ID, die der sendTo-Befehl `testRecipient` und der Blockly-Block erwarten.
 
 ### Zeitfenster
 
@@ -154,8 +147,6 @@ Das Formular zeigt nur die Felder der gewählten Art. Leere optionale Felder (zu
 ### Sprachausgabe
 
 Bei Alexa und SayIt wird die Lautstärke vor dem Sprechen gesetzt und danach zurückgestellt. Der Lautstärke-State wird aus dem Sprach-State abgeleitet; fehlt er, wird der Text trotzdem gesprochen. Bei Alexa-Gruppen oder Sonderfällen trägst du den **Lautstärke-State** manuell ein (siehe [FAQ](#14-faq)). Ausstehende Lautstärke-Rücksetzungen werden beim Beenden des Adapters verworfen.
-
-![Empfänger](img/recipients.png)
 
 ## 6. Erinnerungen und Quittierung
 
@@ -247,9 +238,9 @@ Der Adapter bringt Blockly-Blöcke mit (11 Sprachen):
 - **Status von Gerät**: liefert den Statustext des Geräts.
 - **Gerät quittieren**: quittiert die Fertig-Meldung.
 - **Nicht stören für Gerät**: schaltet Nicht stören ein oder aus.
-- **Testnachricht senden**: sendet eine Testnachricht an einen Empfänger (per Empfänger-ID).
+- **Testnachricht senden**: sendet eine Testnachricht an einen Empfänger. Der Block bietet die Empfänger der Instanz als Liste an (Name und Empfänger-ID).
 
-![Blockly-Blöcke](img/blockly.png)
+Die Geräte-Blöcke nutzen den ID-Dialog: Wähle einen beliebigen State des Geräts (z. B. `status`); die Geräte-ID wird aus der Objekt-ID übernommen. Du kannst auch direkt die Geräte-ID eintragen.
 
 Skript-Beispiel: reagieren, wenn ein Gerät fertig ist (JavaScript-Adapter):
 
@@ -282,9 +273,6 @@ Der Adapter bringt zwei Widgets für vis-2 mit (Widget-Set `deviceReminder`):
 
 - **Gerätekarte**: Status, aktuelle Leistung, Laufzeit, geschätzter Fortschritt und Restzeit (aus früheren Läufen), Schaltflächen für Quittieren und Nicht stören und eine einklappbare Laufhistorie. Das Geräteobjekt wählst du über `oid`; optional kompakte Darstellung und Farben für läuft, fertig und Alarm.
 - **Geräteübersicht**: kompakte Liste aller Geräte einer Instanz mit Status, Leistung, Laufzeit und Fertig-Anzeige. Ein Klick quittiert das Gerät.
-
-![Widget Gerätekarte](img/widget-card.png)
-![Widget Geräteübersicht](img/widget-overview.png)
 
 ## 13. State-Referenz
 

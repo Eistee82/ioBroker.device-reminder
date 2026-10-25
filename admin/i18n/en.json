@@ -96,7 +96,7 @@
 	"dev_eventAcknowledged": "Acknowledged",
 	"dev_advancedSection": "Advanced",
 	"dev_abortFixed": "Fixed abort detection",
-	"dev_abortFixedHelp": "Corrects the abort detection of version 3.1.2. Leave off to keep the old behavior.",
+	"dev_abortFixedHelp": "Corrects the abort detection of version 3.1.2. An abort is only reported when the switch of the device is off, so a switch must be configured. Leave off to keep the old behavior.",
 	"devicesHelp": "Add, edit and operate your devices here. The same list is available in the Config Manager tab of the instance.",
 	"dm_detailsOperations": "Last operations",
 	"dm_detailsStart": "Start",

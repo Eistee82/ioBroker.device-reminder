@@ -1,4 +1,4 @@
-import type { Detector, DetectorEvent, DeviceStatus, TickResult, TypeThresholds } from "./types.js";
+import type { Detector, DetectorEvent, DeviceStatus, TickHints, TickResult, TypeThresholds } from "./types.js";
 
 export type { DetectorEvent, DeviceStatus, TickResult, TypeThresholds } from "./types.js";
 
@@ -8,7 +8,9 @@ export interface LegacyOptions {
 	abort: boolean;
 	/**
 	 * Corrected abort detection: standbyCount = max(ceil(endCount / 2), 2), so that the standby buffer
-	 * can reach valCancel (in 3.1.2 it mostly cannot).
+	 * can reach valCancel (in 3.1.2 it mostly cannot). By power alone a switch-off by hand cannot be told
+	 * apart from a normal end below standby, so the abort additionally needs the switch to be off
+	 * (`TickHints.switchOff`); without a configured switch it never fires.
 	 */
 	abortFixed?: boolean;
 	/** Combined mode: "started" additionally needs power >= startVal for at least this many ms (0 = off). */
@@ -64,6 +66,7 @@ export class LegacyDetector implements Detector {
 	public readonly valCancel: number;
 
 	private readonly abort: boolean;
+	private readonly abortNeedsSwitch: boolean;
 	private readonly minStartMs: number;
 	private readonly minEndMs: number;
 	private isStarted = false;
@@ -91,6 +94,7 @@ export class LegacyDetector implements Detector {
 				: 10;
 		this.valCancel = thresholds.endCount / 2;
 		this.abort = options.abort;
+		this.abortNeedsSwitch = options.abortFixed === true;
 		this.minStartMs = options.minStartMs ?? 0;
 		this.minEndMs = options.minEndMs ?? 0;
 	}
@@ -123,12 +127,13 @@ export class LegacyDetector implements Detector {
 	 *
 	 * @param power - Last known power in W
 	 * @param now - Timestamp in ms (used by the minimum durations of the combined mode)
+	 * @param hints - Additional evidence (switch state for the corrected abort detection)
 	 */
-	public tick(power: number, now: number): TickResult {
+	public tick(power: number, now: number, hints?: TickHints): TickResult {
 		const out: TickOutput = { events: [], status: null, average: null };
 		this.trackDurations(power, now);
 		this.fillBuffers(power, out);
-		this.evaluate(out, now);
+		this.evaluate(out, now, hints?.switchOff === true);
 		return { events: out.events, status: out.status, average: out.average, started: this.isStarted };
 	}
 
@@ -222,14 +227,16 @@ export class LegacyDetector implements Detector {
 	 *
 	 * @param out - Outputs of the current tick
 	 * @param now - Timestamp in ms
+	 * @param switchOff - Whether the switch is known to be off
 	 */
-	private evaluate(out: TickOutput, now: number): void {
+	private evaluate(out: TickOutput, now: number, switchOff: boolean): void {
 		const avg = this.averages;
 
 		// abort detection
 		if (
 			this.abort &&
 			this.isStarted &&
+			(!this.abortNeedsSwitch || switchOff) &&
 			avg.standby < this.standbyValue &&
 			this.buffers.standby.length >= this.valCancel
 		) {

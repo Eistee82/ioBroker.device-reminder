@@ -40,11 +40,12 @@ function runBoth(thresholds, options, curve) {
  * @param {object} thresholds type thresholds
  * @param {{abort: boolean}} options detector options
  * @param {number[]} curve power values
+ * @param {boolean} [switchOff] whether the switch is reported off
  * @returns {string[]} all events in order
  */
-function eventsOf(thresholds, options, curve) {
+function eventsOf(thresholds, options, curve, switchOff = false) {
 	const detector = new LegacyDetector(thresholds, options);
-	return withTimes(curve).flatMap(({ power, now }) => detector.tick(power, now).events);
+	return withTimes(curve).flatMap(({ power, now }) => detector.tick(power, now, { switchOff }).events);
 }
 
 describe("LegacyDetector", () => {
@@ -229,13 +230,31 @@ describe("LegacyDetector", () => {
 			assert.strictEqual(new LegacyDetector({ ...TYPES.custom, endCount: 1 }, opts).standbyCount, 2);
 		});
 
-		it("washing machine + abortFixed + abortedRun: aborted, no finished", () => {
-			const events = eventsOf(TYPES["washing-machine"], { abort: true, abortFixed: true }, abortedRun);
+		it("washing machine + abortFixed + abortedRun + switch off: aborted, no finished", () => {
+			const events = eventsOf(TYPES["washing-machine"], { abort: true, abortFixed: true }, abortedRun, true);
 			assert.deepStrictEqual(
 				events.filter(e => e !== "running"),
 				["started", "aborted"],
 			);
 		});
+
+		it("abortFixed without switch evidence never aborts", () => {
+			const events = eventsOf(TYPES["washing-machine"], { abort: true, abortFixed: true }, abortedRun);
+			assert.ok(!events.includes("aborted"));
+		});
+
+		for (const [name, curve, thresholds] of [
+			["washing machine (idle 0.5 W < standby 1 W)", washingMachine, TYPES["washing-machine"]],
+			// the default dishwasher endVal (0.25 W) lies below the curve idle power, so use 0.4 W to reach a normal end
+			["dishwasher (idle 0.3 W < standby 0.5 W)", dishwasher, { ...TYPES.dishwasher, endVal: 0.4 }],
+		]) {
+			it(`${name}: a normal end with abort + abortFixed is finished, not aborted`, () => {
+				const events = eventsOf(thresholds, { abort: true, abortFixed: true }, curve);
+				assert.ok(events.includes("started"));
+				assert.ok(events.includes("finished"));
+				assert.ok(!events.includes("aborted"));
+			});
+		}
 
 		it("abortFixed without abort changes nothing at the events", () => {
 			for (const curve of Object.values(curves)) {

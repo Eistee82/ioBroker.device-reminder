@@ -1,7 +1,7 @@
 {
 	"dev_abort": "Detectar ejecuciones abortadas",
 	"dev_abortFixed": "Detección de aborto fija",
-	"dev_abortFixedHelp": "Corrige la detección de abortos de la versión 3.1.2. Déjelo para mantener el comportamiento anterior.",
+	"dev_abortFixedHelp": "Corrige la detección de abortos de la versión 3.1.2. Un aborto solo se notifica cuando el interruptor del dispositivo está apagado, por lo que debe haber un interruptor configurado. Déjelo desactivado para mantener el comportamiento anterior.",
 	"dev_abortHelp": "Informar cuando el dispositivo se apaga antes de que finalice la ejecución.",
 	"dev_actionEvent": "Evento",
 	"dev_actionState": "Estado",

@@ -1,7 +1,7 @@
 {
 	"dev_abort": "Rileva corse interrotte",
 	"dev_abortFixed": "Risolto il problema con il rilevamento dell'interruzione",
-	"dev_abortFixedHelp": "Corregge il rilevamento dell'interruzione della versione 3.1.2. Lasciare perdere per mantenere il vecchio comportamento.",
+	"dev_abortFixedHelp": "Corregge il rilevamento dell'interruzione della versione 3.1.2. Un'interruzione viene segnalata solo quando l'interruttore del dispositivo è spento, quindi deve essere configurato un interruttore. Lasciare disattivato per mantenere il vecchio comportamento.",
 	"dev_abortHelp": "Segnala quando il dispositivo viene spento prima del termine della corsa.",
 	"dev_actionEvent": "Evento",
 	"dev_actionState": "Stato",

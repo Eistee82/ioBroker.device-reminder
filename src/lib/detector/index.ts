@@ -8,6 +8,7 @@ export type {
 	Detector,
 	DetectorEvent,
 	DeviceStatus,
+	TickHints,
 	TickResult,
 	TypeThresholds,
 } from "./types.js";

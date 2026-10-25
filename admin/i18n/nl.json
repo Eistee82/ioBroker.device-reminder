@@ -1,7 +1,7 @@
 {
 	"dev_abort": "Detecteer afgebroken runs",
 	"dev_abortFixed": "Vaste detectie van afbreken",
-	"dev_abortFixedHelp": "Corrigeert de afbreekdetectie van versie 3.1.2. Laat het los om het oude gedrag te behouden.",
+	"dev_abortFixedHelp": "Corrigeert de afbreekdetectie van versie 3.1.2. Een afbreking wordt alleen gemeld als de schakelaar van het apparaat uit is, dus er moet een schakelaar zijn geconfigureerd. Laat uit om het oude gedrag te behouden.",
 	"dev_abortHelp": "Rapporteer wanneer het apparaat wordt uitgeschakeld voordat de run is voltooid.",
 	"dev_actionEvent": "Evenement",
 	"dev_actionState": "Staat",

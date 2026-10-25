@@ -1,7 +1,7 @@
 {
 	"dev_abort": "检测中止的运行",
 	"dev_abortFixed": "修复了中止检测",
-	"dev_abortFixedHelp": "更正了版本 3.1.2 的中止检测。离开以保持旧的行为。",
+	"dev_abortFixedHelp": "更正了版本 3.1.2 的中止检测。只有在设备开关关闭时才会报告中止，因此必须配置开关。保持关闭可沿用旧行为。",
 	"dev_abortHelp": "在运行完成之前报告设备何时关闭。",
 	"dev_actionEvent": "事件",
 	"dev_actionState": "状态",

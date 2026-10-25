@@ -47,8 +47,6 @@ General settings:
 | Polling interval | 10 s | How often the detection evaluates the last power value |
 | History as HTML | off | Additionally writes `lastOperationsHtml` (HTML table of the last operations) |
 
-![Instance settings](img/settings.png)
-
 ## 3. Device types and detection
 
 Every device uses a device type. A type holds the thresholds and the detection mode. The adapter ships the types **Washing machine**, **Dryer** and **Dishwasher** plus ten editable custom types. You can fill a custom type by hand or by [learning](#8-learning-mode).
@@ -61,8 +59,6 @@ Every device uses a device type. A type holds the thresholds and the detection m
 | Start count / End count | Number of consecutive polls (count mode) |
 | Start duration / End duration (s) | Minimum time above the start or below the end value (time and combined mode) |
 
-![Device types](img/types.png)
-
 ### Detection modes
 
 - **Count** (default, identical to 3.1.2): the start is detected after the configured number of polls with an average above the start value, the end after the configured number of polls below the end value. This mode needs a plug that reports regularly.
@@ -74,7 +70,7 @@ Every device uses a device type. A type holds the thresholds and the detection m
 An abort is a device that is switched off by hand while running. The option **Abort detection** is set per device and is off by default. If it fires, the status changes to "switched off" and no finished message is sent.
 
 - In 3.1.2 the abort detection could not fire for most device types, because its standby buffer never reached the required length. This behaviour is kept when only **Abort detection** is on, so devices behave exactly like in 3.1.2. This is a peculiarity of the default types as well.
-- The option **Corrected abort detection** (`abortFixed`, default off) fixes the buffer length (`max(ceil(end count / 2), 2)`) so that the abort can actually fire. Use it together with **Abort detection**.
+- The option **Corrected abort detection** (`abortFixed`, default off) fixes the buffer length (`max(ceil(end count / 2), 2)`) so that the abort can actually fire. Use it together with **Abort detection**. By power alone a switch-off by hand cannot be told apart from a normal end below the standby value (for example a washing machine that falls to 0.5 W), so the corrected abort fires only when the **switch** of the device is off. Without a configured switch it never fires, and a normal end is always reported as finished.
 - In time mode the abort fires when the power stays below the standby value for half of the end duration.
 
 ### Other behaviour
@@ -110,9 +106,6 @@ The device form contains:
 
 Required fields are checked before saving.
 
-![Device manager](img/device-manager.png)
-![Device form](img/device-form.png)
-
 Each device card shows status, power, runtime, a running and a finished indicator and a warning if the power state is missing. On the card you can edit, delete, enable or disable the device, switch do-not-disturb, acknowledge, send a test message and start learning. The details list the last runs, the thresholds of the type and the reminder status.
 
 ### Run behaviour
@@ -124,7 +117,7 @@ Each device card shows status, power, runtime, a running and a finished indicato
 
 ## 5. Recipients
 
-A recipient is a target for messages. Create recipients on the **Recipients** tab and select them per device. Every recipient can be enabled or disabled, has an optional **time window** and a **Test** button.
+A recipient is a target for messages. Create recipients on the **Recipients** tab and select them per device. Every recipient can be enabled or disabled, has an optional **time window** and a **Test** button. The read-only field **ID** of a recipient shows the recipient ID that the sendTo command `testRecipient` and the Blockly block expect.
 
 ### Time window
 
@@ -154,8 +147,6 @@ The form only shows the fields that belong to the selected kind. Empty optional 
 ### Voice output
 
 For Alexa and SayIt the volume is set before speaking and restored afterwards. The volume state is derived from the speech state; if it does not exist, the text is still spoken. For Alexa groups or special setups enter the **volume state** manually (see [FAQ](#14-faq)). Pending volume resets are cancelled when the adapter stops.
-
-![Recipients](img/recipients.png)
 
 ## 6. Reminders and acknowledgement
 
@@ -247,9 +238,9 @@ The adapter adds Blockly blocks (11 languages):
 - **Status of device**: returns the status text of the device.
 - **Acknowledge device**: acknowledges the finished message.
 - **Do not disturb for device**: switches do-not-disturb on or off.
-- **Send test message**: sends a test message to a recipient (by recipient ID).
+- **Send test message**: sends a test message to a recipient. The block offers the recipients of the instance as a list (name and recipient ID).
 
-![Blockly blocks](img/blockly.png)
+The device blocks use the ID picker: select any state of the device (for example its `status`); the device ID is taken from the object ID. You can also type the plain device ID.
 
 Script example: react when a device has finished (JavaScript adapter):
 
@@ -282,9 +273,6 @@ The adapter ships two widgets for vis-2 (widget set `deviceReminder`):
 
 - **Device card**: status, live power, runtime, estimated progress and remaining time (based on previous runs), acknowledge and do-not-disturb buttons and a collapsible run history. Select the device object with `oid`; optional compact mode and colours for running, finished and alert.
 - **Device overview**: compact list of all devices of an instance with status, power, runtime and a finished indicator. A click acknowledges the device.
-
-![Device card widget](img/widget-card.png)
-![Device overview widget](img/widget-overview.png)
 
 ## 13. States reference
 

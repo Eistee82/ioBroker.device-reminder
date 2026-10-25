@@ -191,7 +191,7 @@ export class DeviceRuntime {
 			if (power === null) {
 				return;
 			}
-			await this.apply(this.detector.tick(power, this.host.now()), power);
+			await this.apply(this.detector.tick(power, this.host.now(), { switchOff: this.switchOn === false }), power);
 		});
 	}
 

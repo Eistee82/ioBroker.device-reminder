@@ -1,7 +1,7 @@
 {
 	"dev_abort": "Detectar execuções abortadas",
 	"dev_abortFixed": "Detecção de aborto corrigida",
-	"dev_abortFixedHelp": "Corrige a detecção de aborto da versão 3.1.2. Deixe de lado para manter o antigo comportamento.",
+	"dev_abortFixedHelp": "Corrige a deteção de interrupção da versão 3.1.2. Uma interrupção só é comunicada quando o interruptor do aparelho está desligado, por isso é necessário configurar um interruptor. Deixe desligado para manter o comportamento antigo.",
 	"dev_abortHelp": "Informar quando o dispositivo é desligado antes do término da execução.",
 	"dev_actionEvent": "Evento",
 	"dev_actionState": "Estado",

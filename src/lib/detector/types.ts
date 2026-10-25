@@ -43,10 +43,16 @@ export interface DetectionSettings extends TypeThresholds {
 	endDurationSec: number;
 }
 
+/** Additional evidence for one poll step. */
+export interface TickHints {
+	/** Whether the configured switch is known to be off (false/unknown without a switch). */
+	switchOff?: boolean;
+}
+
 /** A start/end detector fed with power values. */
 export interface Detector {
 	/** Evaluate one poll step. */
-	tick(power: number, now: number): TickResult;
+	tick(power: number, now: number, hints?: TickHints): TickResult;
 	/** Evaluate a newly arrived power value (time-based modes). */
 	feed?(power: number, now: number): TickResult;
 	/** Whether a run is in progress. */

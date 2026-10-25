@@ -309,8 +309,7 @@
 							"md": 3,
 							"lg": 3,
 							"xl": 3,
-							"readOnly": true,
-							"hidden": "true"
+							"readOnly": true
 						},
 						{
 							"type": "instance",

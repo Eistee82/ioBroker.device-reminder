@@ -1,7 +1,7 @@
 {
 	"dev_abort": "Wykryj przerwane przebiegi",
 	"dev_abortFixed": "Naprawiono wykrywanie przerwania",
-	"dev_abortFixedHelp": "Poprawia wykrywanie przerwania w wersji 3.1.2. Zakończ, aby zachować stare zachowanie.",
+	"dev_abortFixedHelp": "Poprawia wykrywanie przerwania w wersji 3.1.2. Przerwanie jest zgłaszane tylko wtedy, gdy przełącznik urządzenia jest wyłączony, dlatego musi być skonfigurowany przełącznik. Pozostaw wyłączone, aby zachować stare zachowanie.",
 	"dev_abortHelp": "Raportuj, kiedy urządzenie zostanie wyłączone przed zakończeniem cyklu.",
 	"dev_actionEvent": "Wydarzenie",
 	"dev_actionState": "Państwo",

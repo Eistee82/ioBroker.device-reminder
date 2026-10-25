@@ -1,7 +1,7 @@
 {
 	"dev_abort": "Détecter les exécutions interrompues",
 	"dev_abortFixed": "Correction de la détection d'abandon",
-	"dev_abortFixedHelp": "Corrige la détection d'abandon de la version 3.1.2. Arrêtez-vous pour conserver l’ancien comportement.",
+	"dev_abortFixedHelp": "Corrige la détection d'abandon de la version 3.1.2. Un abandon n'est signalé que lorsque l'interrupteur de l'appareil est éteint ; un interrupteur doit donc être configuré. Laissez désactivé pour conserver l'ancien comportement.",
 	"dev_abortHelp": "Signaler lorsque l'appareil est éteint avant la fin de l'analyse.",
 	"dev_actionEvent": "Événement",
 	"dev_actionState": "État",
