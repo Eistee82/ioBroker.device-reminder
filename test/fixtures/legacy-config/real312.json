@@ -1,0 +1,309 @@
+{
+	"_comment": "Real native of a 3.1.2 installation (exported from system.adapter.device-reminder.0), anonymised: zigbee addresses, recipient names and Discord user names replaced. Note: linkedDevice.ids rows carry no recipient arrays except discord; finalIds is complete; all numbers are strings.",
+	"linkedDevice": {
+		"ids": [
+			{
+				"enabled": true,
+				"name": "Waschmaschine",
+				"discord": [],
+				"autoOff": false,
+				"timer": "0",
+				"abort": true,
+				"id": "1"
+			},
+			{
+				"enabled": true,
+				"name": "Trockner",
+				"discord": [],
+				"autoOff": false,
+				"timer": "0",
+				"abort": true,
+				"id": "2"
+			}
+		],
+		"finalIds": {
+			"1": {
+				"type": "washing-machine",
+				"pathConsumption": "zigbee2mqtt.0.0x0000000000000001.load_power",
+				"pathSwitch": "zigbee2mqtt.0.0x0000000000000001.state",
+				"startText": "device started",
+				"endText": "device finished",
+				"enabled": true,
+				"name": "Waschmaschine",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "0",
+				"autoOff": false,
+				"abort": true,
+				"id": "1"
+			},
+			"2": {
+				"type": "dryer",
+				"pathConsumption": "zigbee2mqtt.0.0x0000000000000002.load_power",
+				"pathSwitch": "zigbee2mqtt.0.0x0000000000000002.state",
+				"startText": "device started",
+				"endText": "device finished",
+				"enabled": true,
+				"name": "Trockner",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "0",
+				"autoOff": false,
+				"abort": true,
+				"id": "2"
+			}
+		}
+	},
+	"devices": {
+		"ids": [
+			{
+				"name": "Waschmaschine",
+				"type": "washing-machine",
+				"consumption": "zigbee2mqtt.0.0x0000000000000001.load_power",
+				"switch": "zigbee2mqtt.0.0x0000000000000001.state",
+				"startText": "device started",
+				"endText": "device finished",
+				"id": "1"
+			},
+			{
+				"name": "Trockner",
+				"type": "dryer",
+				"consumption": "zigbee2mqtt.0.0x0000000000000002.load_power",
+				"switch": "zigbee2mqtt.0.0x0000000000000002.state",
+				"startText": "device started",
+				"endText": "device finished",
+				"id": "2"
+			}
+		]
+	},
+	"alexa": {
+		"ids": []
+	},
+	"sayit": {
+		"ids": []
+	},
+	"telegram": {
+		"ids": []
+	},
+	"whatsapp": {
+		"ids": []
+	},
+	"pushover": {
+		"ids": []
+	},
+	"email": {
+		"ids": []
+	},
+	"signal": {
+		"ids": []
+	},
+	"matrix": {
+		"ids": []
+	},
+	"default": {
+		"ids": [
+			{
+				"comment": "",
+				"name": "washing-machine",
+				"startVal": "30",
+				"endVal": "15",
+				"standby": "1",
+				"startCount": "2",
+				"endCount": "50",
+				"id": "0"
+			},
+			{
+				"comment": "",
+				"name": "dryer",
+				"startVal": "120",
+				"endVal": "15",
+				"standby": "1",
+				"startCount": "2",
+				"endCount": "50",
+				"id": "1"
+			},
+			{
+				"comment": "",
+				"name": "dishwasher",
+				"startVal": "15",
+				"endVal": "10",
+				"standby": "1",
+				"startCount": "2",
+				"endCount": "50",
+				"id": "2"
+			}
+		]
+	},
+	"custom": {
+		"ids": [
+			{
+				"comment": "",
+				"name": "custom1",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "0"
+			},
+			{
+				"comment": "",
+				"name": "custom2",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "1"
+			},
+			{
+				"comment": "",
+				"name": "custom3",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "2"
+			},
+			{
+				"comment": "",
+				"name": "custom4",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "3"
+			},
+			{
+				"comment": "",
+				"name": "custom5",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "4"
+			},
+			{
+				"comment": "",
+				"name": "custom6",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "5"
+			},
+			{
+				"comment": "",
+				"name": "custom7",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "6"
+			},
+			{
+				"comment": "",
+				"name": "custom8",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "7"
+			},
+			{
+				"comment": "",
+				"name": "custom9",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "8"
+			},
+			{
+				"comment": "",
+				"name": "custom10",
+				"startVal": "30",
+				"endVal": "5",
+				"standby": "1",
+				"startCount": "1",
+				"endCount": "20",
+				"id": "9"
+			}
+		]
+	},
+	"status": {
+		"ids": [
+			{
+				"stateAction": "in action",
+				"stateStandby": "standby",
+				"stateOff": "switched off",
+				"id": "1"
+			}
+		]
+	},
+	"discord": {
+		"ids": [
+			{
+				"name": "Person A",
+				"inst": ".0",
+				"userId": "",
+				"userTag": "",
+				"userName": "user_a",
+				"serverId": "",
+				"channelId": "",
+				"id": "1"
+			},
+			{
+				"name": "Person B",
+				"inst": ".0",
+				"userId": "",
+				"userTag": "",
+				"userName": "user_b",
+				"serverId": "",
+				"channelId": "",
+				"id": "2"
+			}
+		],
+		"finalIds": {
+			"1": {
+				"name": "Person A",
+				"inst": ".0",
+				"userId": null,
+				"userTag": null,
+				"userName": "user_a",
+				"serverId": null,
+				"channelId": null
+			},
+			"2": {
+				"name": "Person B",
+				"inst": ".0",
+				"userId": null,
+				"userTag": null,
+				"userName": "user_b",
+				"serverId": null,
+				"channelId": null
+			}
+		}
+	}
+}

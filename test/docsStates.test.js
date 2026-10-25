@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { DEVICE_STATES } from "../build/lib/stateDefinitions.js";
 
 /** Instance-level states that are documented next to the device states. */
-const INFO_STATES = ["info.connection", "info.legacyConfig"];
+const INFO_STATES = ["info.connection"];
 const BEGIN = "<!-- BEGIN STATES -->";
 const END = "<!-- END STATES -->";
 

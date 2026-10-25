@@ -468,6 +468,59 @@ describe("migration", () => {
 		});
 	});
 
+	describe("migrateLegacyConfig: real 3.1.2 export", () => {
+		const native = fixture("real312");
+		const result = migrateLegacyConfig(native);
+
+		it("is detected and migrated without warnings", () => {
+			assert.strictEqual(isLegacyConfig(native), true);
+			assert.deepStrictEqual(result.warnings, []);
+		});
+
+		it("takes over both devices from finalIds", () => {
+			assert.deepStrictEqual(
+				result.devices.map(d => [d.id, d.oldName]),
+				[
+					["waschmaschine", "Waschmaschine"],
+					["trockner", "Trockner"],
+				],
+			);
+			const w = device(result, "waschmaschine").config;
+			assert.strictEqual(w.typeId, "washing-machine");
+			assert.strictEqual(w.powerId, "zigbee2mqtt.0.0x0000000000000001.load_power");
+			assert.strictEqual(w.switchId, "zigbee2mqtt.0.0x0000000000000001.state");
+			assert.strictEqual(w.startText, "device started");
+			assert.strictEqual(w.endText, "device finished");
+			assert.strictEqual(w.abort, true);
+			assert.strictEqual(w.autoOff, false);
+			assert.strictEqual(w.autoOffMinutes, 0);
+			assert.deepStrictEqual(w.recipients, []);
+			assert.strictEqual(device(result, "trockner").config.typeId, "dryer");
+		});
+
+		it("takes over the discord recipients and the stored type values (strings to numbers)", () => {
+			assert.deepStrictEqual(
+				result.instance.recipients.map(r => [r.id, r.kind, r.instance, r.userName]),
+				[
+					["discord-1", "discord", "discord.0", "user_a"],
+					["discord-2", "discord", "discord.0", "user_b"],
+				],
+			);
+			const dryer = findType(result.instance, "dryer");
+			assert.deepStrictEqual(
+				[dryer.startVal, dryer.endVal, dryer.standby, dryer.startCount, dryer.endCount],
+				[120, 15, 1, 2, 50],
+			);
+			const dish = findType(result.instance, "dishwasher");
+			assert.deepStrictEqual([dish.startVal, dish.endVal], [15, 10]);
+			assert.deepStrictEqual(result.instance.statusTexts, {
+				running: "in action",
+				standby: "standby",
+				off: "switched off",
+			});
+		});
+	});
+
 	describe("LEGACY constants", () => {
 		it("map the documented states", () => {
 			assert.deepStrictEqual(LEGACY_STATE_MAP, {

@@ -197,7 +197,7 @@ If fewer than 20 samples were recorded or no run is recognised, `learning.result
 
 ## 9. Migration from 3.1.2
 
-The first start of version 4 converts a 3.1.2 configuration automatically. The old configuration is kept as a backup in the state `info.legacyConfig`. All new options stay off, so every migrated device behaves like in 3.1.2.
+The first start of version 4 converts a 3.1.2 configuration automatically. All new options stay off, so every migrated device behaves like in 3.1.2.
 
 What is taken over:
 
@@ -302,7 +302,6 @@ Device states are relative to the device object `<deviceId>`. Info states are on
 | `learning.result` | string | json | r | - | Learning result | JSON: thresholds, startDurationSec, endDurationSec, durationSec, samples, or an error (tooFewSamples, noRun) |
 | `lastOperationsHtml` | string | html | r | - | Last operations (HTML) | HTML table of the last runs (only if enabled in the general settings) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter connected | True when the adapter is running |
-| `info.legacyConfig` | string | json | r | - | Backup of the 3.1.2 configuration (written before migration) | JSON backup of the 3.1.2 configuration, written once before the migration |
 <!-- END STATES -->
 
 ## 14. FAQ
@@ -323,4 +322,4 @@ Check the time window of the recipient. Reminders outside the window are postpon
 The power state of the device does not exist (for example a deleted plug). Edit the device and select an existing state.
 
 **Where is my old 3.1.2 configuration?**
-In the state `info.legacyConfig` as a JSON backup.
+It is converted on the first start and not kept, because every migrated device behaves exactly like in 3.1.2. Create a backup (for example with BackItUp) before the update if you want to be able to go back to 3.1.2.

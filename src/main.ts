@@ -87,8 +87,8 @@ class DeviceReminder extends utils.Adapter {
 	}
 
 	/**
-	 * Migrate a 3.1.2 configuration (Task 14): save the old native to `info.legacyConfig`, convert it,
-	 * move the old states to the new device objects and replace the instance native (the adapter restarts).
+	 * Migrate a 3.1.2 configuration (Task 14): convert it, move the old states to the new device objects
+	 * and replace the instance native (the adapter restarts). The old configuration is not kept.
 	 * On errors the native stays unchanged and the adapter keeps running.
 	 */
 	private async initMigration(): Promise<void> {
@@ -104,12 +104,15 @@ class DeviceReminder extends utils.Adapter {
 			"historyHtml",
 		]);
 		const legacy = Object.fromEntries(Object.entries(native).filter(([key]) => !v4Keys.has(key)));
+		// earlier test builds kept a backup of the 3.1.2 configuration here; it is not needed
+		if (await this.getObjectAsync("info.legacyConfig")) {
+			await this.delObjectAsync("info.legacyConfig");
+		}
 		if (!isLegacyConfig(legacy)) {
 			return;
 		}
 		try {
 			this.log.info("3.1.2 configuration found, starting migration");
-			await this.setState("info.legacyConfig", JSON.stringify(native), true);
 			const result = migrateLegacyConfig(legacy);
 			const prefix = `${this.namespace}.`;
 			const io: LegacyStateIo = {

@@ -475,19 +475,6 @@
         "def": false
       },
       "native": {}
-    },
-    {
-      "_id": "info.legacyConfig",
-      "type": "state",
-      "common": {
-        "name": "Legacy configuration (3.1.2)",
-        "type": "string",
-        "role": "json",
-        "read": true,
-        "write": false,
-        "def": ""
-      },
-      "native": {}
     }
   ]
 }

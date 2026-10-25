@@ -197,7 +197,7 @@ Wurden weniger als 20 Messwerte aufgenommen oder wird kein Lauf erkannt, enthäl
 
 ## 9. Migration von 3.1.2
 
-Beim ersten Start von Version 4 wird eine 3.1.2-Konfiguration automatisch umgewandelt. Die alte Konfiguration bleibt als Sicherung im State `info.legacyConfig`. Alle neuen Optionen bleiben aus, jedes migrierte Gerät verhält sich also wie in 3.1.2.
+Beim ersten Start von Version 4 wird eine 3.1.2-Konfiguration automatisch umgewandelt. Alle neuen Optionen bleiben aus, jedes migrierte Gerät verhält sich also wie in 3.1.2.
 
 Übernommen werden:
 
@@ -302,7 +302,6 @@ Gerätezustände sind relativ zum Geräteobjekt `<deviceId>` angegeben. Info-Zus
 | `learning.result` | string | json | r | - | Anlern-Ergebnis | JSON: Schwellwerte, startDurationSec, endDurationSec, durationSec, samples oder ein Fehler (tooFewSamples, noRun) |
 | `lastOperationsHtml` | string | html | r | - | Letzte Vorgänge (HTML) | HTML-Tabelle der letzten Läufe (nur wenn in den allgemeinen Einstellungen aktiviert) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter verbunden | True, wenn der Adapter läuft |
-| `info.legacyConfig` | string | json | r | - | Sicherung der 3.1.2-Konfiguration (vor der Migration geschrieben) | JSON-Sicherung der 3.1.2-Konfiguration, einmalig vor der Migration geschrieben |
 <!-- END STATES -->
 
 ## 14. FAQ
@@ -323,4 +322,4 @@ Prüfe das Zeitfenster des Empfängers. Erinnerungen außerhalb des Fensters wer
 Der Leistungs-State des Geräts existiert nicht (zum Beispiel eine gelöschte Steckdose). Bearbeite das Gerät und wähle einen vorhandenen State.
 
 **Wo ist meine alte 3.1.2-Konfiguration?**
-Im State `info.legacyConfig` als JSON-Sicherung.
+Sie wird beim ersten Start umgewandelt und nicht aufbewahrt, weil sich jedes migrierte Gerät genau wie in 3.1.2 verhält. Wer zu 3.1.2 zurück möchte, legt vor dem Update ein Backup an (zum Beispiel mit BackItUp).

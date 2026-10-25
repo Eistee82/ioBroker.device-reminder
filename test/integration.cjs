@@ -168,9 +168,11 @@ tests.integration(path.join(__dirname, ".."), {
 				assert.strictEqual(await getObj(harness, `${NS}.Waschmaschine.last operations`), null);
 				assert.strictEqual(await getObj(harness, `${NS}.Waschmaschine.Status`), null);
 
-				const saved = await stateVal(harness, `${NS}.info.legacyConfig`);
-				assert.ok(typeof saved === "string" && saved !== "", "info.legacyConfig should be filled");
-				assert.deepStrictEqual(JSON.parse(saved).linkedDevice, legacy.linkedDevice);
+				assert.strictEqual(
+					await getObj(harness, `${NS}.info.legacyConfig`),
+					null,
+					"no backup of the old configuration",
+				);
 			});
 		});
 	},

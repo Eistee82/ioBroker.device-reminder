@@ -153,7 +153,7 @@ Alle Labels/Hilfetexte in `admin/i18n/<lang>.json` (11 Sprachen), Hilfetexte kla
 ## 8. Migration 3.1.2 → V4
 
 1. In `onReady`: native ohne `configVersion` aber mit `linkedDevice`/`status`/`default` → Migration.
-2. Komplette alte native als JSON in State `info.legacyConfig` sichern (vor jeder Änderung).
+2. Keine Sicherung der alten Konfiguration (vom User entschieden: V4 verhält sich 1:1 wie 3.1.2, die alte Konfiguration wird nach der Migration nicht mehr benötigt). Ein evtl. vorhandenes `info.legacyConfig` aus Testständen wird gelöscht.
 3. Umwandeln: `linkedDevice.finalIds` → Geräte-Objekte mit Config in deren `native` (inkl. `enabled`, `type`, `pathConsumption`, `pathSwitch`, `startText`, `endText`, `abort`, `autoOff`, `timer`, Empfänger-Referenzen pro Messenger), Messenger-Tabellen → Empfängerliste (IDs erhalten), `default.ids`/`custom.ids` → Typen, `status.ids[0]` → Status-Texte. Alle neuen Optionen aus.
 4. Neue native per `extendForeignObject` schreiben (Adapter startet neu).
 5. Nach dem Neustart: Werte aus alten States übernehmen (`last operations`, `lastRuntime`, `config.do not disturb`, `config.runtime max`, `Status`), dann alte Objekte löschen.
@@ -201,7 +201,7 @@ IDs ohne Leerzeichen, korrekte Rollen, `def`, Einheiten, Namen in 11 Sprachen. P
 | `acknowledge` | boolean | button | w | neu (additiv), quittiert `finished` und Erinnerungen |
 | `learning.start/stop/result` | – | button/json | – | neu, nur wenn Anlernen genutzt |
 
-Plus `info.connection` (Repochecker) und `info.legacyConfig`. `stateDefinitions.ts` ist die einzige Quelle; die docs-Tabellen müssen damit übereinstimmen. Die Umbenennung ist der eine bewusste Breaking Change und wird in Changelog, Doku und einer Upgrade-Message (nur über Release-Prozess) kommuniziert.
+Plus `info.connection` (Repochecker). `stateDefinitions.ts` ist die einzige Quelle; die docs-Tabellen müssen damit übereinstimmen. Die Umbenennung ist der eine bewusste Breaking Change und wird in Changelog, Doku und einer Upgrade-Message (nur über Release-Prozess) kommuniziert.
 
 ## 11. Qualitätssicherung
 
@@ -243,7 +243,7 @@ README kurz nach Checklisten-Struktur (Badges, Changelog unter `### **WORK IN PR
 - Erkennungsmodus (Anzahl / zeitbasiert) wird **pro Typ** gewählt; ein Gerät erbt ihn über seinen Typ. „Kombiniert“ heißt: Anzahl- UND Dauer-Bedingung müssen beide erfüllt sein.
 - Erinnerungen: ein Zyklus und ein Zähler **pro Gerät**; jeder Versand prüft das Zeitfenster jedes Empfängers einzeln; liegt kein Empfänger im Fenster, pausiert der Zyklus bis zum nächsten Fensterbeginn eines Empfängers.
 - Zeitfenster über Mitternacht (z. B. 22:00–06:00) werden in V4 unterstützt, ändert keine bestehende Config.
-- Migration akzeptiert alle 3.x-Configs; fehlende Messenger-Arrays werden als leer behandelt. Configs aus den unveröffentlichten GitHub-Branches werden nicht gesondert unterstützt (Warnung + Backup in `info.legacyConfig`).
+- Migration akzeptiert alle 3.x-Configs; fehlende Messenger-Arrays werden als leer behandelt. Configs aus den unveröffentlichten GitHub-Branches werden nicht gesondert unterstützt (Warnung, Eintrag wird übersprungen).
 
 ## 15. Dem Builder überlassen
 

@@ -78,12 +78,14 @@ class DeviceReminder extends utils.Adapter {
             "historyHtml",
         ]);
         const legacy = Object.fromEntries(Object.entries(native).filter(([key]) => !v4Keys.has(key)));
+        if (await this.getObjectAsync("info.legacyConfig")) {
+            await this.delObjectAsync("info.legacyConfig");
+        }
         if (!isLegacyConfig(legacy)) {
             return;
         }
         try {
             this.log.info("3.1.2 configuration found, starting migration");
-            await this.setState("info.legacyConfig", JSON.stringify(native), true);
             const result = migrateLegacyConfig(legacy);
             const prefix = `${this.namespace}.`;
             const io = {

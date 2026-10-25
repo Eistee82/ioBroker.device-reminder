@@ -17,17 +17,6 @@ const INFO_STATES = [
 		unit: "",
 		name: { en: "Adapter connected", de: "Adapter verbunden" },
 	},
-	{
-		id: "info.legacyConfig",
-		type: "string",
-		role: "json",
-		rw: "r",
-		unit: "",
-		name: {
-			en: "Backup of the 3.1.2 configuration (written before migration)",
-			de: "Sicherung der 3.1.2-Konfiguration (vor der Migration geschrieben)",
-		},
-	},
 ];
 
 const INTRO = {
