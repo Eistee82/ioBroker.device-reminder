@@ -22,7 +22,7 @@ describe(adapterName, () => {
 
 		await helper.createProject(page);
 
-		await helper.palette.openWidgetSet(page, adapterName);
+		await helper.palette.openWidgetSet(page, adapterName, 60_000); // the custom widget set loads after the palette
 		await helper.screenshot(page, "02_widgets_opened");
 	});
 
