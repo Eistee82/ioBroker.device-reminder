@@ -95,14 +95,24 @@ describe("handleCommand", () => {
 		});
 	});
 
-	it("getMessengerKinds lists the installed messengers and keeps the current kind", async () => {
+	it("select commands answer with the choices of the installation", async () => {
 		const { reg, notifier } = await setup();
-		const env = { installedAdapters: async () => new Set(["telegram", "discord"]) };
-		assert.deepStrictEqual(await handleCommand(reg, notifier, "getMessengerKinds", { current: "alexa" }, env), [
-			{ label: "Alexa (not installed)", value: "alexa" },
-			{ label: "Telegram", value: "telegram" },
-			{ label: "Discord", value: "discord" },
+		const env = {
+			instances: async () => ["telegram.0", "admin.0"],
+			stateIds: async () => ["alexa2.0.Echo-Devices.G1.Commands.speak"],
+			objectName: async () => "Küche",
+			stateValue: async () => JSON.stringify({ 1: { firstName: "Anna" } }),
+		};
+		assert.deepStrictEqual(await handleCommand(reg, notifier, "getMessengerInstances", {}, env), [
+			{ label: "Telegram (telegram.0)", value: "telegram.0" },
 		]);
+		assert.deepStrictEqual(await handleCommand(reg, notifier, "getAlexaDevices", { instance: "alexa2.0" }, env), [
+			{ label: "Küche (G1)", value: "alexa2.0.Echo-Devices.G1.Commands.speak" },
+		]);
+		assert.deepStrictEqual(
+			await handleCommand(reg, notifier, "getTelegramTargets", { instance: "telegram.0", target: "user" }, env),
+			[{ label: "Anna", value: "Anna" }],
+		);
 	});
 
 	it("unknown command returns an error", async () => {

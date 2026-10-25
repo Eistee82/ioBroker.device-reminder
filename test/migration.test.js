@@ -202,6 +202,7 @@ describe("migration", () => {
 				name: "Echo Küche",
 				enabled: true,
 				kind: "alexa",
+				instance: "alexa2.0",
 				stateId: "alexa2.0.Echo-Devices.G0911A0B12345678.Commands.speak",
 				volume: 40,
 				activeFrom: "08:00",
@@ -215,6 +216,7 @@ describe("migration", () => {
 				name: "WhatsApp Max",
 				enabled: true,
 				kind: "whatsapp",
+				instance: "whatsapp-cmb.0",
 				stateId: "whatsapp-cmb.0.sendMessage",
 			});
 		});
@@ -273,6 +275,7 @@ describe("migration", () => {
 				name: "Mail Max",
 				enabled: true,
 				kind: "email",
+				instance: "email.0",
 				emailFrom: "iobroker@example.com",
 				emailTo: "max@example.com",
 			});

@@ -1,4 +1,5 @@
 import { allocateDeviceId } from "./ids.js";
+import { defaultInstance, fixedTextState, kindFromInstance } from "./messenger/adapters.js";
 import { parseNumber } from "./utils.js";
 const MESSENGER_KINDS = [
     "alexa",
@@ -171,6 +172,25 @@ function normalizeRecipient(raw, index, id, warnings) {
     }
     return rec;
 }
+export function completeRecipientRow(raw) {
+    const rawInstance = str(raw.instance).trim();
+    const kind = kindFromInstance(rawInstance) ?? MESSENGER_KINDS.find(k => k === raw.kind);
+    if (!kind) {
+        return raw;
+    }
+    let instance = rawInstance;
+    if (!instance) {
+        const fromState = str(raw.stateId).split(".").slice(0, 2).join(".");
+        instance = kindFromInstance(fromState) === kind ? fromState : defaultInstance(kind);
+    }
+    const next = { ...raw, kind, instance };
+    const fixed = fixedTextState(kind, instance);
+    if (fixed) {
+        next.stateId = fixed;
+    }
+    const changed = ["kind", "instance", "stateId"].some(k => next[k] !== raw[k]);
+    return changed ? next : raw;
+}
 function generateRecipientId(raw, index, taken) {
     const kind = MESSENGER_KINDS.find(k => k === raw.kind) ?? "recipient";
     const stamp = Date.now().toString(36);
@@ -227,7 +247,12 @@ export function normalizeInstanceConfig(native) {
         const seen = new Set();
         const taken = new Set(src.recipients.map(raw => (isRecord(raw) ? str(raw.id).trim() : "")).filter(id => id !== ""));
         const rawRows = [...src.recipients];
-        src.recipients.forEach((raw, i) => {
+        src.recipients.forEach((original, i) => {
+            const raw = isRecord(original) ? completeRecipientRow(original) : original;
+            if (raw !== original) {
+                rawRows[i] = raw;
+                idPatch.recipients = rawRows;
+            }
             let id = isRecord(raw) ? str(raw.id).trim() : "";
             if (isRecord(raw) && (id === "" || seen.has(id))) {
                 id = generateRecipientId(raw, i, taken);

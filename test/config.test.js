@@ -112,7 +112,7 @@ describe("configuration model", () => {
 		it("does not generate ids when all rows have one", () => {
 			const res = normalizeInstanceConfig({
 				types: [{ id: "x", name: "X" }],
-				recipients: [{ id: "a", kind: "email" }],
+				recipients: [{ id: "a", kind: "email", instance: "email.0" }],
 			});
 			assert.strictEqual(res.generatedIds, false);
 			assert.deepStrictEqual(res.idPatch, {});

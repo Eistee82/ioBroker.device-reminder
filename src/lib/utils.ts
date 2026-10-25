@@ -87,6 +87,10 @@ export function parseHhmm(s: string | undefined): number | null {
 export function isInWindow(now: Date, from?: string, until?: string): boolean {
 	const start = parseHhmm(from) ?? 0;
 	const end = parseHhmm(until) ?? MINUTES_PER_DAY - 1;
+	if (start === end) {
+		// "00:00 - 00:00" (the default of the time pickers) or any equal pair means: no restriction
+		return true;
+	}
 	const current = now.getHours() * 60 + now.getMinutes();
 	if (start <= end) {
 		return start <= current && current <= end;

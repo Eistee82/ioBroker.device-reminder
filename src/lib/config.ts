@@ -1,5 +1,6 @@
 import type { DetectionMode, TypeThresholds } from "./detector/types.js";
 import { allocateDeviceId } from "./ids.js";
+import { defaultInstance, fixedTextState, kindFromInstance } from "./messenger/adapters.js";
 import { parseNumber } from "./utils.js";
 
 /** Messenger kind. */
@@ -369,6 +370,33 @@ function normalizeRecipient(raw: unknown, index: number, id: string, warnings: s
 	return rec;
 }
 
+/**
+ * Fill in what the admin UI derives from the chosen instance: the messenger kind follows the instance,
+ * the instance is taken from the speech state (or the default instance) for old rows, and SayIt/WhatsApp
+ * get their fixed text state. Returns the same object if nothing changed.
+ *
+ * @param raw - Raw recipient row of the native
+ */
+export function completeRecipientRow(raw: Record<string, unknown>): Record<string, unknown> {
+	const rawInstance = str(raw.instance).trim();
+	const kind = kindFromInstance(rawInstance) ?? MESSENGER_KINDS.find(k => k === raw.kind);
+	if (!kind) {
+		return raw;
+	}
+	let instance = rawInstance;
+	if (!instance) {
+		const fromState = str(raw.stateId).split(".").slice(0, 2).join(".");
+		instance = kindFromInstance(fromState) === kind ? fromState : defaultInstance(kind);
+	}
+	const next: Record<string, unknown> = { ...raw, kind, instance };
+	const fixed = fixedTextState(kind, instance);
+	if (fixed) {
+		next.stateId = fixed;
+	}
+	const changed = (["kind", "instance", "stateId"] as const).some(k => next[k] !== raw[k]);
+	return changed ? next : raw;
+}
+
 /** Raw rows of the native with generated ids filled in. */
 export interface IdPatch {
 	/** Recipients. */
@@ -450,7 +478,12 @@ export function normalizeInstanceConfig(native: Record<string, unknown>): {
 			src.recipients.map(raw => (isRecord(raw) ? str(raw.id).trim() : "")).filter(id => id !== ""),
 		);
 		const rawRows: unknown[] = [...src.recipients];
-		src.recipients.forEach((raw, i) => {
+		src.recipients.forEach((original, i) => {
+			const raw = isRecord(original) ? completeRecipientRow(original) : original;
+			if (raw !== original) {
+				rawRows[i] = raw;
+				idPatch.recipients = rawRows;
+			}
 			let id = isRecord(raw) ? str(raw.id).trim() : "";
 			if (isRecord(raw) && (id === "" || seen.has(id))) {
 				// New (or cloned) recipient: generate a unique id that does not depend on the position

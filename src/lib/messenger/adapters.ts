@@ -27,20 +27,27 @@ export function defaultInstance(kind: string): string {
 }
 
 /**
- * Options for the messenger select of the admin UI: only messengers whose adapter is installed.
- * The kind of the edited recipient is always kept, so an existing entry stays readable.
+ * Messenger kind of an instance id such as `alexa2.0`.
  *
- * @param installed - Names of the installed adapters (`system.adapter.<name>`)
- * @param current - Kind of the recipient being edited
+ * @param instance - Adapter instance id
  */
-export function messengerKindOptions(
-	installed: ReadonlySet<string>,
-	current?: string,
-): { label: string; value: string }[] {
-	return (Object.entries(MESSENGER_ADAPTERS) as [MessengerKind, { adapter: string; label: string }][])
-		.filter(([kind, m]) => installed.has(m.adapter) || kind === current)
-		.map(([kind, m]) => ({
-			label: installed.has(m.adapter) ? m.label : `${m.label} (not installed)`,
-			value: kind,
-		}));
+export function kindFromInstance(instance: string | undefined): MessengerKind | undefined {
+	const adapter = (instance ?? "").split(".")[0];
+	return (Object.keys(MESSENGER_ADAPTERS) as MessengerKind[]).find(k => MESSENGER_ADAPTERS[k].adapter === adapter);
+}
+
+/**
+ * State a messenger without own target selection writes the text to (SayIt, WhatsApp).
+ *
+ * @param kind - Messenger kind
+ * @param instance - Adapter instance id
+ */
+export function fixedTextState(kind: MessengerKind, instance: string): string | undefined {
+	if (kind === "sayit") {
+		return `${instance}.tts.text`;
+	}
+	if (kind === "whatsapp") {
+		return `${instance}.sendMessage`;
+	}
+	return undefined;
 }

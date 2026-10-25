@@ -117,36 +117,38 @@ Each device card shows status, power, runtime, a running and a finished indicato
 
 ## 5. Recipients
 
-A recipient is a target for messages. Create recipients on the **Recipients** tab and select them per device. Every recipient can be enabled or disabled, has an optional **time window** and a **Test** button. The read-only field **ID** of a recipient shows the recipient ID that the sendTo command `testRecipient` and the Blockly block expect.
+A recipient is a target for messages. Create recipients on the **Recipients** tab and select them per device. Every recipient can be enabled or disabled, has an optional **time window** and a **Test** button (save the settings first).
+
+First choose the **Messenger**: the list shows all installed instances of the supported messenger adapters (for example "Alexa (alexa2.0)" or "Telegram (telegram.0)"). Only the fields of this messenger are shown afterwards, and everything that can be chosen is a select or an object browser - nothing has to be typed as an ID. The recipient ID is managed internally; the Blockly test block lists the recipients by name.
 
 ### Time window
 
-With **active from** and **active until** (`HH:MM`) a recipient only receives messages inside the window. A window may cross midnight (for example 22:00 to 06:00). Without a bound the window starts at 00:00 or ends at 23:59. Time windows apply to every recipient kind. Reminders that fall outside the window are postponed to the next window start.
+With **active from** and **active until** (`HH:MM`) a recipient only receives messages inside the window. A window may cross midnight (for example 22:00 to 06:00). Equal times (like the default 00:00 - 00:00) mean no restriction. Time windows apply to every messenger. Reminders that fall outside the window are postponed to the next window start.
 
 **Do not disturb** (state `config.doNotDisturb` per device) only suppresses voice outputs (Alexa, SayIt). Test messages ignore time windows and do-not-disturb.
 
-### Messenger kinds
+### Messengers
 
-| Kind | Settings |
+| Messenger | Settings |
 | --- | --- |
-| Alexa | alexa2 speech state, volume, optional volume state |
-| SayIt | sayit speech state, volume, optional volume state |
-| WhatsApp | adapter instance and the state the text is written to |
-| Telegram | adapter instance, target type (user, chat ID or none) and target. Group chats have negative chat IDs |
-| Pushover | adapter instance, title, device, priority, sound, TTL |
-| Signal | adapter instance |
-| Email | adapter instance, from, to (the subject is derived from the text) |
-| Matrix | adapter instance |
-| Discord | adapter instance, user ID, user tag, user name, server ID, channel ID |
-| ntfy | adapter instance, topic (required), title, priority |
-| Pushsafer | adapter instance, title, device, sound, priority |
-| Gotify | adapter instance, title, priority |
+| Alexa | Echo device or group (select from the alexa2 instance), volume, optional volume state |
+| SayIt | volume, optional volume state (the text is written to `tts.text` of the instance) |
+| WhatsApp | nothing else (the text is written to `sendMessage` of the whatsapp-cmb instance) |
+| Telegram | target type (all users, user name or chat ID) and target, selectable from the users known to the telegram instance. Group chats have negative chat IDs |
+| Pushover | title, device, priority, sound, TTL |
+| Signal | nothing else (signal-cmb) |
+| Email | from, to (the subject is derived from the text) |
+| Matrix | nothing else (matrix-org) |
+| Discord | user ID, user tag, user name, server ID, channel ID |
+| ntfy | topic (required), title, priority |
+| Pushsafer | title, device, sound, priority |
+| Gotify | title, priority |
 
-The form only shows the fields that belong to the selected kind. Empty optional fields (for example TTL or Discord IDs) are omitted from the message. Telegram sends `user` or `chatId`; Pushover sends priority, retry, expire and device correctly. A recipient without a usable target is skipped with a warning instead of broadcasting.
+Empty optional fields (for example TTL or Discord IDs) are omitted from the message. A recipient without a usable target is skipped with a warning instead of broadcasting.
 
 ### Voice output
 
-For Alexa and SayIt the volume is set before speaking and restored afterwards. The volume state is derived from the speech state; if it does not exist, the text is still spoken. For Alexa groups or special setups enter the **volume state** manually (see [FAQ](#14-faq)). Pending volume resets are cancelled when the adapter stops.
+For Alexa and SayIt the volume is set before speaking and restored afterwards. The volume state is derived from the speech state; if it does not exist, the text is still spoken. For Alexa groups or special setups choose the **volume state** in the object browser (see [FAQ](#14-faq)). Pending volume resets are cancelled when the adapter stops.
 
 ## 6. Reminders and acknowledgement
 

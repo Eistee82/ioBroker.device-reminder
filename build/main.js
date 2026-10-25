@@ -193,17 +193,35 @@ class DeviceReminder extends utils.Adapter {
             reply({ error: "notReady" });
             return;
         }
-        handleCommand(registry, notifier, obj.command, obj.message, {
-            installedAdapters: async () => {
-                const res = await this.getObjectViewAsync("system", "adapter", {
+        handleCommand(registry, notifier, obj.command, obj.message, this.choiceEnv())
+            .then(reply)
+            .catch(err => reply({ error: errorMessage(err) }));
+    }
+    choiceEnv() {
+        return {
+            instances: async () => {
+                const res = await this.getObjectViewAsync("system", "instance", {
                     startkey: "system.adapter.",
                     endkey: "system.adapter.香",
                 });
-                return new Set((res?.rows ?? []).map(row => row.id.slice("system.adapter.".length)));
+                return (res?.rows ?? []).map(row => row.id.slice("system.adapter.".length));
             },
-        })
-            .then(reply)
-            .catch(err => reply({ error: errorMessage(err) }));
+            stateIds: async (prefix) => {
+                const res = await this.getObjectViewAsync("system", "state", {
+                    startkey: prefix,
+                    endkey: `${prefix}香`,
+                });
+                return (res?.rows ?? []).map(row => row.id);
+            },
+            objectName: async (id) => {
+                const name = (await this.getForeignObjectAsync(id))?.common?.name;
+                if (typeof name === "string") {
+                    return name;
+                }
+                return name ? (name[this.language ?? "en"] ?? name.en) : undefined;
+            },
+            stateValue: async (id) => (await this.getForeignStateAsync(id))?.val,
+        };
     }
     onUnload(callback) {
         this.unloading = true;

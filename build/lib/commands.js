@@ -1,6 +1,10 @@
-import { messengerKindOptions } from "./messenger/adapters.js";
+import { alexaDeviceChoices, messengerInstanceChoices, telegramTargetChoices, } from "./messenger/choices.js";
 function field(msg, key) {
     return typeof msg === "object" && msg !== null ? msg[key] : undefined;
+}
+function text(msg, key) {
+    const v = field(msg, key);
+    return typeof v === "string" ? v : "";
 }
 function deviceIdOf(msg) {
     const id = field(msg, "deviceId");
@@ -11,11 +15,12 @@ function toBool(val) {
 }
 export async function handleCommand(reg, notifier, cmd, msg, env) {
     switch (cmd) {
-        case "getMessengerKinds": {
-            const current = field(msg, "current");
-            const installed = env ? await env.installedAdapters() : new Set();
-            return messengerKindOptions(installed, typeof current === "string" ? current : undefined);
-        }
+        case "getMessengerInstances":
+            return env ? messengerInstanceChoices(env, text(msg, "current")) : [];
+        case "getAlexaDevices":
+            return env ? alexaDeviceChoices(env, text(msg, "instance")) : [];
+        case "getTelegramTargets":
+            return env ? telegramTargetChoices(env, text(msg, "instance"), text(msg, "target")) : [];
         case "list":
             return reg.ids().map(id => ({ id, name: reg.get(id)?.config.name ?? id }));
         case "testRecipient": {

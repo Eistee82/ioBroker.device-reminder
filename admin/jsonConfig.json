@@ -242,157 +242,36 @@
 						},
 						{
 							"type": "selectSendTo",
-							"attr": "kind",
-							"label": "rcp_kind",
-							"xs": 12,
-							"sm": 6,
-							"md": 3,
-							"lg": 3,
-							"xl": 3,
-							"command": "getMessengerKinds",
-							"jsonData": "{\"current\": \"${data.kind}\"}",
-							"help": "rcp_kindHelp"
-						},
-						{
-							"type": "text",
-							"attr": "id",
-							"label": "rcp_id",
-							"xs": 12,
-							"sm": 6,
-							"md": 3,
-							"lg": 3,
-							"xl": 3,
-							"readOnly": true
-						},
-						{
-							"type": "instance",
 							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "telegram",
-							"allowDeactivate": true,
+							"label": "rcp_messenger",
+							"command": "getMessengerInstances",
+							"jsonData": "{\"current\": \"${data.instance}\"}",
+							"noTranslation": true,
+							"help": "rcp_messengerHelp",
 							"xs": 12,
 							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'telegram'"
+							"md": 6,
+							"lg": 6,
+							"xl": 6
 						},
 						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "pushover",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'pushover'"
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "signal-cmb",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'signal'"
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "email",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'email'"
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "matrix-org",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'matrix'"
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "discord",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'discord'"
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "ntfy",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'ntfy'"
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "pushsafer",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'pushsafer'"
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "gotify",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'gotify'"
-						},
-						{
-							"type": "objectId",
+							"type": "selectSendTo",
 							"attr": "stateId",
-							"label": "rcp_stateId",
+							"label": "rcp_echo",
+							"command": "getAlexaDevices",
+							"jsonData": "{\"instance\": \"${data.instance}\"}",
+							"alsoDependsOn": [
+								"instance"
+							],
+							"noTranslation": true,
+							"help": "rcp_echoHelp",
+							"hidden": "!['alexa2'].includes((data.instance || '').split('.')[0])",
+							"newLine": true,
 							"xs": 12,
 							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "!['alexa','sayit','whatsapp'].includes(data.kind)",
-							"help": "rcp_stateIdHelp",
-							"types": "state"
+							"md": 6,
+							"lg": 6,
+							"xl": 6
 						},
 						{
 							"type": "number",
@@ -400,10 +279,10 @@
 							"label": "rcp_volume",
 							"xs": 12,
 							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "!['alexa','sayit'].includes(data.kind)",
+							"md": 3,
+							"lg": 3,
+							"xl": 3,
+							"hidden": "!['alexa2','sayit'].includes((data.instance || '').split('.')[0])",
 							"min": 0,
 							"max": 100,
 							"help": "rcp_volumeHelp"
@@ -414,10 +293,10 @@
 							"label": "rcp_volumeStateId",
 							"xs": 12,
 							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "!['alexa','sayit'].includes(data.kind)",
+							"md": 3,
+							"lg": 3,
+							"xl": 3,
+							"hidden": "!['alexa2','sayit'].includes((data.instance || '').split('.')[0])",
 							"help": "rcp_volumeStateIdHelp",
 							"types": "state"
 						},
@@ -430,7 +309,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['telegram'].includes(data.kind)",
+							"hidden": "!['telegram'].includes((data.instance || '').split('.')[0])",
 							"options": [
 								{
 									"label": "rcp_tgNone",
@@ -444,19 +323,28 @@
 									"label": "rcp_tgChat",
 									"value": "chatId"
 								}
-							]
+							],
+							"newLine": true
 						},
 						{
-							"type": "text",
+							"type": "autocompleteSendTo",
 							"attr": "target",
 							"label": "rcp_target",
+							"command": "getTelegramTargets",
+							"jsonData": "{\"instance\": \"${data.instance}\", \"target\": \"${data.telegramTarget}\"}",
+							"alsoDependsOn": [
+								"instance",
+								"telegramTarget"
+							],
+							"freeSolo": true,
+							"noTranslation": true,
+							"help": "rcp_targetHelp",
+							"hidden": "!['telegram'].includes((data.instance || '').split('.')[0]) || (data.telegramTarget || 'none') === 'none'",
 							"xs": 12,
 							"sm": 6,
 							"md": 4,
 							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'telegram' || (data.telegramTarget || 'none') === 'none'",
-							"help": "rcp_targetHelp"
+							"xl": 4
 						},
 						{
 							"type": "text",
@@ -467,7 +355,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['pushover','ntfy','pushsafer','gotify'].includes(data.kind)"
+							"hidden": "!['pushover','ntfy','pushsafer','gotify'].includes((data.instance || '').split('.')[0])"
 						},
 						{
 							"type": "text",
@@ -478,7 +366,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['pushover','pushsafer'].includes(data.kind)"
+							"hidden": "!['pushover','pushsafer'].includes((data.instance || '').split('.')[0])"
 						},
 						{
 							"type": "number",
@@ -489,7 +377,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['pushover','ntfy','pushsafer','gotify'].includes(data.kind)",
+							"hidden": "!['pushover','ntfy','pushsafer','gotify'].includes((data.instance || '').split('.')[0])",
 							"min": -2,
 							"max": 10,
 							"help": "rcp_priorityHelp"
@@ -503,7 +391,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['pushover','pushsafer'].includes(data.kind)"
+							"hidden": "!['pushover','pushsafer'].includes((data.instance || '').split('.')[0])"
 						},
 						{
 							"type": "number",
@@ -514,7 +402,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['pushover'].includes(data.kind)",
+							"hidden": "!['pushover'].includes((data.instance || '').split('.')[0])",
 							"min": 0
 						},
 						{
@@ -526,7 +414,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['ntfy'].includes(data.kind)",
+							"hidden": "!['ntfy'].includes((data.instance || '').split('.')[0])",
 							"help": "rcp_topicHelp"
 						},
 						{
@@ -538,7 +426,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['email'].includes(data.kind)"
+							"hidden": "!['email'].includes((data.instance || '').split('.')[0])"
 						},
 						{
 							"type": "text",
@@ -549,7 +437,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['email'].includes(data.kind)"
+							"hidden": "!['email'].includes((data.instance || '').split('.')[0])"
 						},
 						{
 							"type": "text",
@@ -560,7 +448,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['discord'].includes(data.kind)"
+							"hidden": "!['discord'].includes((data.instance || '').split('.')[0])"
 						},
 						{
 							"type": "text",
@@ -571,7 +459,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['discord'].includes(data.kind)"
+							"hidden": "!['discord'].includes((data.instance || '').split('.')[0])"
 						},
 						{
 							"type": "text",
@@ -582,7 +470,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['discord'].includes(data.kind)",
+							"hidden": "!['discord'].includes((data.instance || '').split('.')[0])",
 							"help": "rcp_discordHelp"
 						},
 						{
@@ -594,7 +482,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['discord'].includes(data.kind)"
+							"hidden": "!['discord'].includes((data.instance || '').split('.')[0])"
 						},
 						{
 							"type": "text",
@@ -605,7 +493,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['discord'].includes(data.kind)"
+							"hidden": "!['discord'].includes((data.instance || '').split('.')[0])"
 						},
 						{
 							"type": "timePicker",
@@ -617,7 +505,8 @@
 							"lg": 3,
 							"xl": 3,
 							"format": "HH:mm",
-							"help": "rcp_windowHelp"
+							"help": "rcp_windowHelp",
+							"newLine": true
 						},
 						{
 							"type": "timePicker",
@@ -640,7 +529,8 @@
 							"sm": 6,
 							"md": 3,
 							"lg": 3,
-							"xl": 3
+							"xl": 3,
+							"help": "rcp_testHelp"
 						}
 					]
 				}

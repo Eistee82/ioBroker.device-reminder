@@ -16,12 +16,17 @@ export function defaultInstance(kind) {
     const entry = MESSENGER_ADAPTERS[kind];
     return entry ? `${entry.adapter}.0` : "";
 }
-export function messengerKindOptions(installed, current) {
-    return Object.entries(MESSENGER_ADAPTERS)
-        .filter(([kind, m]) => installed.has(m.adapter) || kind === current)
-        .map(([kind, m]) => ({
-        label: installed.has(m.adapter) ? m.label : `${m.label} (not installed)`,
-        value: kind,
-    }));
+export function kindFromInstance(instance) {
+    const adapter = (instance ?? "").split(".")[0];
+    return Object.keys(MESSENGER_ADAPTERS).find(k => MESSENGER_ADAPTERS[k].adapter === adapter);
+}
+export function fixedTextState(kind, instance) {
+    if (kind === "sayit") {
+        return `${instance}.tts.text`;
+    }
+    if (kind === "whatsapp") {
+        return `${instance}.sendMessage`;
+    }
+    return undefined;
 }
 //# sourceMappingURL=adapters.js.map

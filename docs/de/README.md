@@ -117,36 +117,38 @@ Jede Gerätekarte zeigt Status, Leistung, Laufzeit, Anzeigen für „läuft“ u
 
 ## 5. Empfänger
 
-Ein Empfänger ist ein Ziel für Nachrichten. Lege Empfänger im Reiter **Empfänger** an und wähle sie je Gerät aus. Jeder Empfänger kann aktiviert oder deaktiviert werden, hat ein optionales **Zeitfenster** und eine **Test**-Schaltfläche. Das schreibgeschützte Feld **ID** eines Empfängers zeigt die Empfänger-ID, die der sendTo-Befehl `testRecipient` und der Blockly-Block erwarten.
+Ein Empfänger ist ein Ziel für Nachrichten. Lege Empfänger im Reiter **Empfänger** an und wähle sie je Gerät aus. Jeder Empfänger kann aktiviert oder deaktiviert werden, hat ein optionales **Zeitfenster** und eine **Test**-Schaltfläche (vorher speichern).
+
+Zuerst wählst du den **Messenger**: Die Liste zeigt alle installierten Instanzen der unterstützten Messenger-Adapter (zum Beispiel „Alexa (alexa2.0)“ oder „Telegram (telegram.0)“). Danach erscheinen nur die Felder dieses Messengers, und alles Auswählbare ist eine Auswahlliste oder ein Objekt-Browser – keine ID muss eingetippt werden. Die Empfänger-ID wird intern verwaltet; der Blockly-Testblock listet die Empfänger mit Namen.
 
 ### Zeitfenster
 
-Mit **aktiv von** und **aktiv bis** (`HH:MM`) erhält ein Empfänger Nachrichten nur innerhalb des Fensters. Ein Fenster darf über Mitternacht gehen (zum Beispiel 22:00 bis 06:00). Fehlt eine Grenze, beginnt das Fenster um 00:00 bzw. endet um 23:59. Zeitfenster gelten für jede Empfängerart. Erinnerungen außerhalb des Fensters werden auf den nächsten Fensterbeginn verschoben.
+Mit **Aktiv ab** und **Aktiv bis** (`HH:MM`) erhält ein Empfänger Nachrichten nur innerhalb des Fensters. Ein Fenster darf über Mitternacht gehen (zum Beispiel 22:00 bis 06:00). Gleiche Zeiten (wie die Voreinstellung 00:00 – 00:00) bedeuten keine Einschränkung. Zeitfenster gelten für jeden Messenger. Erinnerungen außerhalb des Fensters werden auf den nächsten Fensterbeginn verschoben.
 
 **Nicht stören** (State `config.doNotDisturb` je Gerät) unterdrückt nur Sprachausgaben (Alexa, SayIt). Testnachrichten ignorieren Zeitfenster und Nicht stören.
 
-### Messenger-Arten
+### Messenger
 
-| Art | Einstellungen |
+| Messenger | Einstellungen |
 | --- | --- |
-| Alexa | alexa2-Sprach-State, Lautstärke, optionaler Lautstärke-State |
-| SayIt | sayit-Sprach-State, Lautstärke, optionaler Lautstärke-State |
-| WhatsApp | Adapter-Instanz und der State, in den der Text geschrieben wird |
-| Telegram | Adapter-Instanz, Zieltyp (Benutzer, Chat-ID oder keins) und Ziel. Gruppenchats haben negative Chat-IDs |
-| Pushover | Adapter-Instanz, Titel, Gerät, Priorität, Ton, TTL |
-| Signal | Adapter-Instanz |
-| E-Mail | Adapter-Instanz, Absender, Empfänger (der Betreff wird aus dem Text abgeleitet) |
-| Matrix | Adapter-Instanz |
-| Discord | Adapter-Instanz, Benutzer-ID, Benutzer-Tag, Benutzername, Server-ID, Kanal-ID |
-| ntfy | Adapter-Instanz, Topic (Pflicht), Titel, Priorität |
-| Pushsafer | Adapter-Instanz, Titel, Gerät, Ton, Priorität |
-| Gotify | Adapter-Instanz, Titel, Priorität |
+| Alexa | Echo-Gerät oder -Gruppe (Auswahl aus der alexa2-Instanz), Lautstärke, optionaler Lautstärke-State |
+| SayIt | Lautstärke, optionaler Lautstärke-State (der Text geht an `tts.text` der Instanz) |
+| WhatsApp | nichts weiter (der Text geht an `sendMessage` der whatsapp-cmb-Instanz) |
+| Telegram | Zieltyp (alle Nutzer, Benutzername oder Chat-ID) und Ziel, auswählbar aus den Nutzern der Telegram-Instanz. Gruppenchats haben negative Chat-IDs |
+| Pushover | Titel, Gerät, Priorität, Ton, TTL |
+| Signal | nichts weiter (signal-cmb) |
+| E-Mail | Absender, Empfänger (der Betreff entsteht aus dem Text) |
+| Matrix | nichts weiter (matrix-org) |
+| Discord | Benutzer-ID, Benutzer-Tag, Benutzername, Server-ID, Kanal-ID |
+| ntfy | Topic (Pflicht), Titel, Priorität |
+| Pushsafer | Titel, Gerät, Ton, Priorität |
+| Gotify | Titel, Priorität |
 
-Das Formular zeigt nur die Felder der gewählten Art. Leere optionale Felder (zum Beispiel TTL oder Discord-IDs) werden nicht mitgesendet. Telegram sendet `user` bzw. `chatId`, Pushover sendet Priorität, Retry, Expire und Gerät korrekt. Ein Empfänger ohne brauchbares Ziel wird mit einer Warnung übersprungen, statt an alle zu senden.
+Leere optionale Felder (zum Beispiel TTL oder Discord-IDs) werden nicht mitgesendet. Ein Empfänger ohne verwendbares Ziel wird mit einer Warnung übersprungen, statt an alle zu senden.
 
 ### Sprachausgabe
 
-Bei Alexa und SayIt wird die Lautstärke vor dem Sprechen gesetzt und danach zurückgestellt. Der Lautstärke-State wird aus dem Sprach-State abgeleitet; fehlt er, wird der Text trotzdem gesprochen. Bei Alexa-Gruppen oder Sonderfällen trägst du den **Lautstärke-State** manuell ein (siehe [FAQ](#14-faq)). Ausstehende Lautstärke-Rücksetzungen werden beim Beenden des Adapters verworfen.
+Bei Alexa und SayIt wird die Lautstärke vor der Ansage gesetzt und danach zurückgestellt. Der Lautstärke-State wird aus dem Sprach-State abgeleitet; fehlt er, wird der Text trotzdem gesprochen. Für Alexa-Gruppen oder besondere Setups wählst du den **Lautstärke-State** im Objekt-Browser (siehe [FAQ](#14-faq)). Ausstehende Lautstärke-Rücksetzungen werden beim Beenden des Adapters abgebrochen.
 
 ## 6. Erinnerungen und Quittierung
 

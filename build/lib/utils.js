@@ -46,6 +46,9 @@ export function parseHhmm(s) {
 export function isInWindow(now, from, until) {
     const start = parseHhmm(from) ?? 0;
     const end = parseHhmm(until) ?? MINUTES_PER_DAY - 1;
+    if (start === end) {
+        return true;
+    }
     const current = now.getHours() * 60 + now.getMinutes();
     if (start <= end) {
         return start <= current && current <= end;

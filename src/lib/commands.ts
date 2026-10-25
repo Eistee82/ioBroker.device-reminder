@@ -1,18 +1,33 @@
 import type { DeviceRegistry } from "./deviceRegistry.js";
-import { messengerKindOptions } from "./messenger/adapters.js";
+import {
+	alexaDeviceChoices,
+	type ChoiceEnv,
+	messengerInstanceChoices,
+	telegramTargetChoices,
+} from "./messenger/choices.js";
 import type { Notifier } from "./notifier.js";
 
 /** Commands accepted via `sendTo`. */
-export type Command = "testRecipient" | "status" | "acknowledge" | "setDnd" | "list" | "getMessengerKinds";
+export type Command =
+	| "testRecipient"
+	| "status"
+	| "acknowledge"
+	| "setDnd"
+	| "list"
+	| "getMessengerInstances"
+	| "getAlexaDevices"
+	| "getTelegramTargets";
 
-/** Access to the ioBroker installation needed by some commands. */
-export interface CommandEnv {
-	/** Names of the installed adapters (`system.adapter.<name>`). */
-	installedAdapters(): Promise<Set<string>>;
-}
+/** Access to the ioBroker installation needed by the select commands of the admin UI. */
+export type CommandEnv = ChoiceEnv;
 
 function field(msg: unknown, key: string): unknown {
 	return typeof msg === "object" && msg !== null ? (msg as Record<string, unknown>)[key] : undefined;
+}
+
+function text(msg: unknown, key: string): string {
+	const v = field(msg, key);
+	return typeof v === "string" ? v : "";
 }
 
 function deviceIdOf(msg: unknown): string {
@@ -31,7 +46,7 @@ function toBool(val: unknown): boolean {
  * @param notifier - Notifier (for test messages)
  * @param cmd - Command name
  * @param msg - Message payload
- * @param env - Access to the installation (installed adapters)
+ * @param env - Access to the installation (for the selects of the admin UI)
  */
 export async function handleCommand(
 	reg: DeviceRegistry,
@@ -41,11 +56,12 @@ export async function handleCommand(
 	env?: CommandEnv,
 ): Promise<unknown> {
 	switch (cmd as Command) {
-		case "getMessengerKinds": {
-			const current = field(msg, "current");
-			const installed = env ? await env.installedAdapters() : new Set<string>();
-			return messengerKindOptions(installed, typeof current === "string" ? current : undefined);
-		}
+		case "getMessengerInstances":
+			return env ? messengerInstanceChoices(env, text(msg, "current")) : [];
+		case "getAlexaDevices":
+			return env ? alexaDeviceChoices(env, text(msg, "instance")) : [];
+		case "getTelegramTargets":
+			return env ? telegramTargetChoices(env, text(msg, "instance"), text(msg, "target")) : [];
 		case "list":
 			return reg.ids().map(id => ({ id, name: reg.get(id)?.config.name ?? id }));
 		case "testRecipient": {
