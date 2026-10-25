@@ -1,0 +1,46 @@
+{
+	"_comment": [
+		"Older 3.x instance native saved before some messenger tables existed: no messenger tables at all (no alexa/sayit/telegram/... keys) and no custom table.",
+		"Derived from 3.1.2 admin/lib/index_m.js save() and createArray(): the linkedDevice.finalIds entry only carries the messenger lists that existed at save time (here only telegram, referencing a row that is not stored any more; no matrix/discord/signal/email keys).",
+		"3.1.2 main.js reads devicesInput[messenger].length for every messenger, so missing lists must be treated as empty. status.ids is empty (stateAction etc. fall back to the defaults)."
+	],
+	"linkedDevice": {
+		"finalIds": {
+			"0": {
+				"type": "dryer",
+				"pathConsumption": "sonoff.0.Trockner.ENERGY_Power",
+				"pathSwitch": "sonoff.0.Trockner.POWER",
+				"startText": "Trockner läuft",
+				"endText": "Trockner fertig",
+				"enabled": true,
+				"name": "Trockner",
+				"telegram": ["0"],
+				"timer": "15",
+				"autoOff": true,
+				"abort": false,
+				"id": "0"
+			}
+		}
+	},
+	"devices": {
+		"ids": [
+			{
+				"name": "Trockner",
+				"type": "dryer",
+				"consumption": "sonoff.0.Trockner.ENERGY_Power",
+				"switch": "sonoff.0.Trockner.POWER",
+				"startText": "Trockner läuft",
+				"endText": "Trockner fertig",
+				"id": "0"
+			}
+		]
+	},
+	"default": {
+		"ids": [
+			{ "name": "washing-machine", "startVal": 30, "endVal": 15, "standby": 1, "startCount": 2, "endCount": 50, "id": 0 },
+			{ "name": "dryer", "startVal": 120, "endVal": 15, "standby": 1, "startCount": 2, "endCount": 20, "id": 1 },
+			{ "name": "dishwasher", "startVal": 15, "endVal": 0.25, "standby": 0.5, "startCount": 2, "endCount": 120, "id": 2 }
+		]
+	},
+	"status": { "ids": [] }
+}

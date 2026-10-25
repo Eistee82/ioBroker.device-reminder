@@ -1,0 +1,109 @@
+{
+	"_comment": [
+		"3.1.2 instance native with two devices of the same name and names with umlauts, spaces and dots.",
+		"Derived from 3.1.2 admin/lib/index_m.js save(): device names are free text and not checked for uniqueness; 3.1.2 main.js createDP() uses the raw name as state prefix ('<name>.Status'), so both 'Waschmaschine' devices shared their states.",
+		"finalIds keys are the numeric row ids from createId(); key order is ascending, which defines the order of the migrated devices."
+	],
+	"linkedDevice": {
+		"finalIds": {
+			"0": {
+				"type": "washing-machine",
+				"pathConsumption": "shelly.0.SHPLG-S#AAA111#1.Relay0.Power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "Wäsche oben fertig",
+				"enabled": true,
+				"name": "Waschmaschine",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "",
+				"autoOff": false,
+				"abort": false,
+				"id": "0"
+			},
+			"1": {
+				"type": "washing-machine",
+				"pathConsumption": "shelly.0.SHPLG-S#BBB222#1.Relay0.Power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "Wäsche unten fertig",
+				"enabled": true,
+				"name": "Waschmaschine",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "",
+				"autoOff": false,
+				"abort": false,
+				"id": "1"
+			},
+			"2": {
+				"type": "dryer",
+				"pathConsumption": "shelly.0.SHPLG-S#CCC333#1.Relay0.Power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Wasch.Maschine Keller",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "",
+				"autoOff": false,
+				"abort": false,
+				"id": "2"
+			},
+			"3": {
+				"type": "dishwasher",
+				"pathConsumption": "shelly.0.SHPLG-S#DDD444#1.Relay0.Power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Spülmaschine",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "",
+				"autoOff": false,
+				"abort": false,
+				"id": "3"
+			}
+		}
+	},
+	"default": {
+		"ids": [
+			{ "name": "washing-machine", "startVal": 30, "endVal": 15, "standby": 1, "startCount": 2, "endCount": 50, "id": 0 },
+			{ "name": "dryer", "startVal": 120, "endVal": 15, "standby": 1, "startCount": 2, "endCount": 20, "id": 1 },
+			{ "name": "dishwasher", "startVal": 15, "endVal": 0.25, "standby": 0.5, "startCount": 2, "endCount": 120, "id": 2 }
+		]
+	},
+	"status": {
+		"ids": [{ "stateAction": "in action", "stateStandby": "standby", "stateOff": "switched off" }]
+	}
+}

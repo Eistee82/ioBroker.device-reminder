@@ -1,0 +1,98 @@
+{
+	"_comment": [
+		"3.1.2 instance native with exactly one device and no messenger rows.",
+		"Derived from 3.1.2 admin/lib/index_m.js save(): all tables of data.js keysCntrlInput are saved, empty tables as { ids: [] } (finalIds is deleted when empty).",
+		"The device has no power switch and no texts; type is a default type name. timer is the input string of the linkedDevice row."
+	],
+	"linkedDevice": {
+		"ids": [
+			{
+				"enabled": true,
+				"name": "Waschmaschine",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"autoOff": false,
+				"timer": "",
+				"abort": false,
+				"id": "0"
+			}
+		],
+		"finalIds": {
+			"0": {
+				"type": "washing-machine",
+				"pathConsumption": "hm-rpc.0.MEQ0123456.2.POWER",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Waschmaschine",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": 0,
+				"autoOff": false,
+				"abort": false,
+				"id": "0"
+			}
+		}
+	},
+	"devices": {
+		"ids": [
+			{
+				"name": "Waschmaschine",
+				"type": "washing-machine",
+				"consumption": "hm-rpc.0.MEQ0123456.2.POWER",
+				"switch": "",
+				"startText": "",
+				"endText": "",
+				"id": "0"
+			}
+		]
+	},
+	"alexa": { "ids": [] },
+	"sayit": { "ids": [] },
+	"telegram": { "ids": [] },
+	"whatsapp": { "ids": [] },
+	"pushover": { "ids": [] },
+	"signal": { "ids": [] },
+	"email": { "ids": [] },
+	"matrix": { "ids": [] },
+	"discord": { "ids": [] },
+	"default": {
+		"ids": [
+			{ "name": "washing-machine", "startVal": 30, "endVal": 15, "standby": 1, "startCount": 2, "endCount": 50, "id": 0 },
+			{ "name": "dryer", "startVal": 120, "endVal": 15, "standby": 1, "startCount": 2, "endCount": 20, "id": 1 },
+			{ "name": "dishwasher", "startVal": 15, "endVal": 0.25, "standby": 0.5, "startCount": 2, "endCount": 120, "id": 2 }
+		]
+	},
+	"custom": {
+		"ids": [
+			{ "name": "custom1", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 0 },
+			{ "name": "custom2", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 1 },
+			{ "name": "custom3", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 2 },
+			{ "name": "custom4", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 3 },
+			{ "name": "custom5", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 4 },
+			{ "name": "custom6", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 5 },
+			{ "name": "custom7", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 6 },
+			{ "name": "custom8", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 7 },
+			{ "name": "custom9", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 8 },
+			{ "name": "custom10", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 9 }
+		]
+	},
+	"status": {
+		"ids": [{ "stateAction": "in action", "stateStandby": "standby", "stateOff": "switched off" }]
+	}
+}

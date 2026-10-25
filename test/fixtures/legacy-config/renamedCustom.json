@@ -1,0 +1,124 @@
+{
+	"_comment": [
+		"3.1.2 instance native with renamed and edited custom types and edited default values.",
+		"Derived from 3.1.2 admin/lib/data.js (custom table: name editable, default table: name read-only, values editable) and main.js funcCreateObject(): the device 'type' stores the type NAME and is looked up first in default.ids, then in custom.ids.",
+		"custom.ids row id 1 (custom2) was renamed to 'Kaffeemaschine', row id 4 (custom5) keeps its name, row id 9 (custom10) was renamed to 'Pumpe'. Device 'Pool' uses a type name that does not exist any more (warning expected).",
+		"Default type 'dishwasher' has edited values; the row order of custom.ids was changed by the user (rows are matched by id, not by position)."
+	],
+	"linkedDevice": {
+		"finalIds": {
+			"0": {
+				"type": "Kaffeemaschine",
+				"pathConsumption": "shelly.0.shellyplug-s-ABC123.Relay0.Power",
+				"pathSwitch": "shelly.0.shellyplug-s-ABC123.Relay0.Switch",
+				"startText": "Kaffee kocht",
+				"endText": "Kaffee fertig",
+				"enabled": true,
+				"name": "Kaffee",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "",
+				"autoOff": false,
+				"abort": false,
+				"id": "0"
+			},
+			"1": {
+				"type": "custom5",
+				"pathConsumption": "shelly.0.shellyplug-s-DEF456.Relay0.Power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "Fertig",
+				"enabled": true,
+				"name": "Heizlüfter",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "",
+				"autoOff": false,
+				"abort": false,
+				"id": "1"
+			},
+			"2": {
+				"type": "Poolpumpe",
+				"pathConsumption": "shelly.0.shellyplug-s-GHI789.Relay0.Power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Pool",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "",
+				"autoOff": false,
+				"abort": false,
+				"id": "2"
+			},
+			"3": {
+				"type": "dishwasher",
+				"pathConsumption": "zigbee.0.00158d0001a2b3c4.load_power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "Geschirr sauber",
+				"enabled": true,
+				"name": "Spüler",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": "",
+				"autoOff": false,
+				"abort": false,
+				"id": "3"
+			}
+		}
+	},
+	"default": {
+		"ids": [
+			{ "comment": "", "name": "washing-machine", "startVal": 30, "endVal": 15, "standby": 1, "startCount": 2, "endCount": 50, "id": 0 },
+			{ "comment": "", "name": "dryer", "startVal": 120, "endVal": 15, "standby": 1, "startCount": 2, "endCount": 20, "id": 1 },
+			{ "comment": "eigene Werte", "name": "dishwasher", "startVal": "12,5", "endVal": 1, "standby": 0.3, "startCount": 3, "endCount": 90, "id": 2 }
+		]
+	},
+	"custom": {
+		"ids": [
+			{ "comment": "", "name": "custom1", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 0 },
+			{ "comment": "Siebträger", "name": "Kaffeemaschine", "startVal": 800, "endVal": 20, "standby": 2, "startCount": 1, "endCount": 6, "id": 1 },
+			{ "comment": "", "name": "custom3", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 2 },
+			{ "comment": "", "name": "custom4", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 3 },
+			{ "comment": "", "name": "Pumpe", "startVal": 100, "endVal": 10, "standby": 1, "startCount": 2, "endCount": 10, "id": 9 },
+			{ "comment": "", "name": "custom5", "startVal": 1500, "endVal": 50, "standby": 1, "startCount": 1, "endCount": 3, "id": 4 },
+			{ "comment": "", "name": "custom6", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 5 },
+			{ "comment": "", "name": "custom7", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 6 },
+			{ "comment": "", "name": "custom8", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 7 },
+			{ "comment": "", "name": "custom9", "startVal": 30, "endVal": 5, "standby": 1, "startCount": 1, "endCount": 20, "id": 8 }
+		]
+	},
+	"status": {
+		"ids": [{ "stateAction": "in action", "stateStandby": "standby", "stateOff": "switched off" }]
+	}
+}
