@@ -1,14 +1,9 @@
-# Only patch and security updates are merged automatically (after all CI checks passed);
-# minor updates need a manual review.
+# Rules for iobroker-bot-orga/action-automerge-dependabot (only "semver:" types are supported).
+# Only patch updates are merged automatically, and only after all required CI checks passed.
+# Minor updates need a manual review; major updates are never merged by the action (hard-coded).
 - match:
     dependency_type: production
     update_type: "semver:patch"
 - match:
-    dependency_type: production
-    update_type: "security:patch"
-- match:
     dependency_type: development
     update_type: "semver:patch"
-- match:
-    dependency_type: development
-    update_type: "security:patch"
