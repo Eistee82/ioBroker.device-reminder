@@ -1,9 +1,14 @@
+# Only patch and security updates are merged automatically (after all CI checks passed);
+# minor updates need a manual review.
 - match:
     dependency_type: production
     update_type: "semver:patch"
 - match:
     dependency_type: production
-    update_type: "security:minor"
+    update_type: "security:patch"
 - match:
     dependency_type: development
-    update_type: "semver:minor"
+    update_type: "semver:patch"
+- match:
+    dependency_type: development
+    update_type: "security:patch"
