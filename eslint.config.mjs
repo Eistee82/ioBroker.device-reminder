@@ -29,6 +29,7 @@ export default [
 		languageOptions: {
 			globals: {
 				Blockly: "readonly",
+				javascript: "readonly",
 				window: "readonly",
 				document: "readonly",
 				systemLang: "readonly",
