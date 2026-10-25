@@ -143,13 +143,18 @@ class DeviceReminder extends utils.Adapter {
             this.log.warn(`Generated ids could not be saved: ${errorMessage(err)}`);
         }
     }
-    initDeviceManagement() {
+    async initDeviceManagement() {
         if (!this.registry || !this.notifier) {
-            return Promise.resolve();
+            return;
         }
         new ReminderDeviceManagement(this);
         this.log.debug("Device manager ready");
-        return Promise.resolve();
+        const own = await this.getForeignObjectAsync(`system.adapter.${this.namespace}`);
+        const supported = own?.common
+            ?.supportedMessages?.deviceManager;
+        if (supported !== true) {
+            this.log.warn(`The instance object does not announce the device manager (common.supportedMessages.deviceManager), so admin does not show the devices. Run "iobroker upload device-reminder" and restart the instance.`);
+        }
     }
     onStateChange(id, state) {
         const registry = this.registry;

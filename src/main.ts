@@ -182,15 +182,23 @@ class DeviceReminder extends utils.Adapter {
 	}
 
 	/** Hook for the device manager (Task 13). */
-	private initDeviceManagement(): Promise<void> {
+	private async initDeviceManagement(): Promise<void> {
 		if (!this.registry || !this.notifier) {
-			return Promise.resolve();
+			return;
 		}
 		// The device manager reads `instanceConfig`, `registry` and `notifier` of this adapter (all set at this point)
 		// and answers the `dm:*` messages, which `onMessage` leaves alone.
 		new ReminderDeviceManagement(this as unknown as DeviceReminderLike);
 		this.log.debug("Device manager ready");
-		return Promise.resolve();
+		// Admin lists an instance in the device manager only if its instance object announces it
+		const own = await this.getForeignObjectAsync(`system.adapter.${this.namespace}`);
+		const supported = (own?.common as { supportedMessages?: { deviceManager?: boolean } } | undefined)
+			?.supportedMessages?.deviceManager;
+		if (supported !== true) {
+			this.log.warn(
+				`The instance object does not announce the device manager (common.supportedMessages.deviceManager), so admin does not show the devices. Run "iobroker upload device-reminder" and restart the instance.`,
+			);
+		}
 	}
 
 	private onStateChange(id: string, state: ioBroker.State | null | undefined): void {
