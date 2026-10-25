@@ -9,6 +9,8 @@ import { DeviceRegistry } from "./lib/deviceRegistry.js";
 import type { ObjectWriter } from "./lib/deviceObjects.js";
 import { ensureDeviceObjects } from "./lib/deviceObjects.js";
 import type { NotifierHost } from "./lib/host.js";
+import type { LegacyStateIo } from "./lib/migration.js";
+import { isLegacyConfig, migrateLegacyConfig, migrateLegacyStates } from "./lib/migration.js";
 import { Notifier } from "./lib/notifier.js";
 import { errorMessage } from "./lib/utils.js";
 
@@ -76,9 +78,69 @@ class DeviceReminder extends utils.Adapter {
 		}
 	}
 
-	/** Hook for the migration of a 3.1.2 configuration (Task 14). */
+	/**
+	 * Migrate a 3.1.2 configuration (Task 14): save the old native to `info.legacyConfig`, convert it,
+	 * move the old states to the new device objects and replace the instance native (the adapter restarts).
+	 * On errors the native stays unchanged and the adapter keeps running.
+	 */
 	private async initMigration(): Promise<void> {
-		// Filled in by the migration task.
+		const native = this.config as unknown as Record<string, unknown>;
+		// On an upgrade js-controller adds the new default keys of io-package.json (configVersion, types, ...)
+		// to the old native, so these keys must not prevent the detection of a 3.1.2 configuration.
+		const v4Keys = new Set([
+			"configVersion",
+			"types",
+			"recipients",
+			"statusTexts",
+			"pollIntervalSec",
+			"historyHtml",
+		]);
+		const legacy = Object.fromEntries(Object.entries(native).filter(([key]) => !v4Keys.has(key)));
+		if (!isLegacyConfig(legacy)) {
+			return;
+		}
+		try {
+			this.log.info("3.1.2 configuration found, starting migration");
+			await this.setState("info.legacyConfig", JSON.stringify(native), true);
+			const result = migrateLegacyConfig(legacy);
+			const prefix = `${this.namespace}.`;
+			const io: LegacyStateIo = {
+				getOwnState: async id => (await this.getStateAsync(id))?.val ?? null,
+				setOwnState: async (id, v) => {
+					await this.setState(id, v, true);
+				},
+				getObjectIds: async oldName => {
+					const res = await this.getObjectViewAsync("system", "state", {
+						startkey: `${prefix}${oldName}.`,
+						endkey: `${prefix}${oldName}.香`,
+					});
+					return (res?.rows ?? []).map(row => row.id.slice(prefix.length));
+				},
+				delObject: id => this.delObjectAsync(id),
+				ensureDevice: (id, cfg) => ensureDeviceObjects(this.objectWriter(), id, cfg, result.instance),
+				foreignObjectExists: async id => !!(await this.getForeignObjectAsync(id)),
+			};
+			const warnings = [...result.warnings, ...(await migrateLegacyStates(io, result.devices))];
+
+			const objId = `system.adapter.${this.namespace}`;
+			const obj = await this.getForeignObjectAsync(objId);
+			if (!obj) {
+				throw new Error(`${objId} not found`);
+			}
+			this.log.info(
+				`Migrated ${result.devices.length} devices, ${result.instance.recipients.length} recipients from 3.1.2`,
+			);
+			for (const w of warnings) {
+				this.log.warn(`Migration: ${w}`);
+			}
+			// Continue with the new configuration until js-controller restarts the instance
+			this.config = { ...result.instance };
+			// Replace (not merge) the native, so no 3.1.2 key is left
+			obj.native = { ...result.instance };
+			await this.setForeignObjectAsync(objId, obj);
+		} catch (err) {
+			this.log.error(`Migration from 3.1.2 failed, configuration left unchanged: ${errorMessage(err)}`);
+		}
 	}
 
 	/** Hook for the device manager (Task 13). */
