@@ -241,7 +241,7 @@
 							"xl": 4
 						},
 						{
-							"type": "select",
+							"type": "selectSendTo",
 							"attr": "kind",
 							"label": "rcp_kind",
 							"xs": 12,
@@ -249,56 +249,9 @@
 							"md": 3,
 							"lg": 3,
 							"xl": 3,
-							"options": [
-								{
-									"label": "Alexa",
-									"value": "alexa"
-								},
-								{
-									"label": "SayIt",
-									"value": "sayit"
-								},
-								{
-									"label": "WhatsApp",
-									"value": "whatsapp"
-								},
-								{
-									"label": "Telegram",
-									"value": "telegram"
-								},
-								{
-									"label": "Pushover",
-									"value": "pushover"
-								},
-								{
-									"label": "Signal",
-									"value": "signal"
-								},
-								{
-									"label": "E-Mail",
-									"value": "email"
-								},
-								{
-									"label": "Matrix",
-									"value": "matrix"
-								},
-								{
-									"label": "Discord",
-									"value": "discord"
-								},
-								{
-									"label": "ntfy",
-									"value": "ntfy"
-								},
-								{
-									"label": "Pushsafer",
-									"value": "pushsafer"
-								},
-								{
-									"label": "Gotify",
-									"value": "gotify"
-								}
-							]
+							"command": "getMessengerKinds",
+							"jsonData": "{\"current\": \"${data.kind}\"}",
+							"help": "rcp_kindHelp"
 						},
 						{
 							"type": "text",
@@ -310,45 +263,6 @@
 							"lg": 3,
 							"xl": 3,
 							"readOnly": true
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "alexa2",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'alexa'"
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "sayit",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'sayit'"
-						},
-						{
-							"type": "instance",
-							"attr": "instance",
-							"label": "rcp_instance",
-							"adapter": "whatsapp-cmb",
-							"allowDeactivate": true,
-							"xs": 12,
-							"sm": 6,
-							"md": 4,
-							"lg": 4,
-							"xl": 4,
-							"hidden": "data.kind !== 'whatsapp'"
 						},
 						{
 							"type": "instance",
@@ -380,7 +294,7 @@
 							"type": "instance",
 							"attr": "instance",
 							"label": "rcp_instance",
-							"adapter": "signal-cma",
+							"adapter": "signal-cmb",
 							"allowDeactivate": true,
 							"xs": 12,
 							"sm": 6,
@@ -406,7 +320,7 @@
 							"type": "instance",
 							"attr": "instance",
 							"label": "rcp_instance",
-							"adapter": "matrix",
+							"adapter": "matrix-org",
 							"allowDeactivate": true,
 							"xs": 12,
 							"sm": 6,
@@ -476,7 +390,9 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['alexa','sayit','whatsapp'].includes(data.kind)",
+							"help": "rcp_stateIdHelp",
+							"types": "state"
 						},
 						{
 							"type": "number",
@@ -487,9 +403,10 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'",
+							"hidden": "!['alexa','sayit'].includes(data.kind)",
 							"min": 0,
-							"max": 100
+							"max": 100,
+							"help": "rcp_volumeHelp"
 						},
 						{
 							"type": "objectId",
@@ -500,7 +417,9 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['alexa','sayit'].includes(data.kind)",
+							"help": "rcp_volumeStateIdHelp",
+							"types": "state"
 						},
 						{
 							"type": "select",
@@ -511,7 +430,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'telegram'",
+							"hidden": "!['telegram'].includes(data.kind)",
 							"options": [
 								{
 									"label": "rcp_tgNone",
@@ -536,7 +455,8 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "!['telegram','signal','whatsapp','matrix'].includes(data.kind) || (data.kind === 'telegram' && (data.telegramTarget || 'none') === 'none')"
+							"hidden": "data.kind !== 'telegram' || (data.telegramTarget || 'none') === 'none'",
+							"help": "rcp_targetHelp"
 						},
 						{
 							"type": "text",
@@ -547,7 +467,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord'"
+							"hidden": "!['pushover','ntfy','pushsafer','gotify'].includes(data.kind)"
 						},
 						{
 							"type": "text",
@@ -558,7 +478,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'gotify'"
+							"hidden": "!['pushover','pushsafer'].includes(data.kind)"
 						},
 						{
 							"type": "number",
@@ -569,9 +489,10 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord'",
+							"hidden": "!['pushover','ntfy','pushsafer','gotify'].includes(data.kind)",
 							"min": -2,
-							"max": 10
+							"max": 10,
+							"help": "rcp_priorityHelp"
 						},
 						{
 							"type": "text",
@@ -582,7 +503,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'gotify'"
+							"hidden": "!['pushover','pushsafer'].includes(data.kind)"
 						},
 						{
 							"type": "number",
@@ -593,7 +514,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'gotify'",
+							"hidden": "!['pushover'].includes(data.kind)",
 							"min": 0
 						},
 						{
@@ -605,7 +526,8 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['ntfy'].includes(data.kind)",
+							"help": "rcp_topicHelp"
 						},
 						{
 							"type": "text",
@@ -616,7 +538,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['email'].includes(data.kind)"
 						},
 						{
 							"type": "text",
@@ -627,7 +549,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['email'].includes(data.kind)"
 						},
 						{
 							"type": "text",
@@ -638,7 +560,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['discord'].includes(data.kind)"
 						},
 						{
 							"type": "text",
@@ -649,7 +571,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['discord'].includes(data.kind)"
 						},
 						{
 							"type": "text",
@@ -660,7 +582,8 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['discord'].includes(data.kind)",
+							"help": "rcp_discordHelp"
 						},
 						{
 							"type": "text",
@@ -671,7 +594,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['discord'].includes(data.kind)"
 						},
 						{
 							"type": "text",
@@ -682,7 +605,7 @@
 							"md": 4,
 							"lg": 4,
 							"xl": 4,
-							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+							"hidden": "!['discord'].includes(data.kind)"
 						},
 						{
 							"type": "timePicker",
@@ -693,7 +616,8 @@
 							"md": 3,
 							"lg": 3,
 							"xl": 3,
-							"format": "HH:mm"
+							"format": "HH:mm",
+							"help": "rcp_windowHelp"
 						},
 						{
 							"type": "timePicker",

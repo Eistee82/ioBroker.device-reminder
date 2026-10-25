@@ -95,6 +95,16 @@ describe("handleCommand", () => {
 		});
 	});
 
+	it("getMessengerKinds lists the installed messengers and keeps the current kind", async () => {
+		const { reg, notifier } = await setup();
+		const env = { installedAdapters: async () => new Set(["telegram", "discord"]) };
+		assert.deepStrictEqual(await handleCommand(reg, notifier, "getMessengerKinds", { current: "alexa" }, env), [
+			{ label: "Alexa (not installed)", value: "alexa" },
+			{ label: "Telegram", value: "telegram" },
+			{ label: "Discord", value: "discord" },
+		]);
+	});
+
 	it("unknown command returns an error", async () => {
 		const { reg, notifier } = await setup();
 		assert.deepStrictEqual(await handleCommand(reg, notifier, "foo", {}), { error: "unknownCommand" });

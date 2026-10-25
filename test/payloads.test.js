@@ -90,7 +90,7 @@ describe("buildDelivery payloads", () => {
 	});
 
 	it("matrix sends plain text", () => {
-		assert.strictEqual(msg({ kind: "matrix", instance: "matrix.0" }).message, "Hello");
+		assert.strictEqual(msg({ kind: "matrix", instance: "matrix-org.0" }).message, "Hello");
 	});
 
 	it("discord omits empty fields", () => {

@@ -1,14 +1,4 @@
-const DEFAULT_INSTANCE = {
-    telegram: "telegram.0",
-    pushover: "pushover.0",
-    signal: "signal-cmb.0",
-    email: "email.0",
-    matrix: "matrix.0",
-    discord: "discord.0",
-    ntfy: "ntfy.0",
-    pushsafer: "pushsafer.0",
-    gotify: "gotify.0",
-};
+import { defaultInstance } from "./adapters.js";
 function put(target, key, value) {
     if (value === undefined || value === "") {
         return;
@@ -25,7 +15,7 @@ export function mailSubject(text) {
         .slice(0, 200);
 }
 export function buildDelivery(r, text) {
-    const instance = r.instance || DEFAULT_INSTANCE[r.kind] || "";
+    const instance = r.instance || defaultInstance(r.kind);
     const send = (message) => ({ kind: "sendTo", instance, command: "send", message });
     const m = {};
     switch (r.kind) {

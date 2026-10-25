@@ -1,4 +1,5 @@
 import type { RecipientConfig } from "../config.js";
+import { defaultInstance } from "./adapters.js";
 
 /** Delivery through `sendTo` to another adapter instance. */
 export interface SendToCall {
@@ -20,22 +21,6 @@ export interface SetStateCall {
 	/** Text to write. */
 	val: string;
 }
-
-/**
- * Default adapter instance per messenger kind (used when the recipient has no instance configured).
- * `instance` of a recipient is the complete instance id such as `telegram.0`.
- */
-const DEFAULT_INSTANCE: Record<string, string> = {
-	telegram: "telegram.0",
-	pushover: "pushover.0",
-	signal: "signal-cmb.0",
-	email: "email.0",
-	matrix: "matrix.0",
-	discord: "discord.0",
-	ntfy: "ntfy.0",
-	pushsafer: "pushsafer.0",
-	gotify: "gotify.0",
-};
 
 /**
  * Add a field only if the value is set (non-empty string or finite number).
@@ -72,7 +57,7 @@ export function mailSubject(text: string): string {
  * discord user or channel, ntfy topic) also return `null` instead of a broadcast. Field names follow the README of each target adapter:
  * ioBroker.telegram (`text`, `user`, `chatId`), ioBroker.pushover (`message`, `title`, `sound`, `priority`,
  * `device`, `ttl`, `retry`, `expire`), ioBroker.signal-cmb (`text`), ioBroker.email (`text`, `to`, `subject`,
- * `from`), ioBroker.matrix (plain text), ioBroker.discord (`content`, `userId`, `userTag`, `userName`,
+ * `from`), ioBroker.matrix-org (plain text), ioBroker.discord (`content`, `userId`, `userTag`, `userName`,
  * `serverId`, `channelId`), ioBroker.ntfy (`message`, `title`, `topic`, `priority`), ioBroker.pushsafer
  * (`message`, `title`, `device`, `sound`, `priority`), ioBroker.gotify (`message`, `title`, `priority`).
  *
@@ -80,7 +65,7 @@ export function mailSubject(text: string): string {
  * @param text - Message text
  */
 export function buildDelivery(r: RecipientConfig, text: string): SendToCall | SetStateCall | null {
-	const instance = r.instance || DEFAULT_INSTANCE[r.kind] || "";
+	const instance = r.instance || defaultInstance(r.kind);
 	const send = (message: unknown): SendToCall => ({ kind: "sendTo", instance, command: "send", message });
 	const m: Record<string, unknown> = {};
 	switch (r.kind) {

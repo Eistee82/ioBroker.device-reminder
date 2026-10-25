@@ -276,7 +276,7 @@ describe("migration", () => {
 				emailFrom: "iobroker@example.com",
 				emailTo: "max@example.com",
 			});
-			assert.strictEqual(recipient(result, "matrix-0").instance, "matrix.0");
+			assert.strictEqual(recipient(result, "matrix-0").instance, "matrix-org.0");
 			assert.deepStrictEqual(recipient(result, "discord-0"), {
 				id: "discord-0",
 				name: "Discord Max",

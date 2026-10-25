@@ -1,8 +1,15 @@
 import type { DeviceRegistry } from "./deviceRegistry.js";
+import { messengerKindOptions } from "./messenger/adapters.js";
 import type { Notifier } from "./notifier.js";
 
 /** Commands accepted via `sendTo`. */
-export type Command = "testRecipient" | "status" | "acknowledge" | "setDnd" | "list";
+export type Command = "testRecipient" | "status" | "acknowledge" | "setDnd" | "list" | "getMessengerKinds";
+
+/** Access to the ioBroker installation needed by some commands. */
+export interface CommandEnv {
+	/** Names of the installed adapters (`system.adapter.<name>`). */
+	installedAdapters(): Promise<Set<string>>;
+}
 
 function field(msg: unknown, key: string): unknown {
 	return typeof msg === "object" && msg !== null ? (msg as Record<string, unknown>)[key] : undefined;
@@ -24,14 +31,21 @@ function toBool(val: unknown): boolean {
  * @param notifier - Notifier (for test messages)
  * @param cmd - Command name
  * @param msg - Message payload
+ * @param env - Access to the installation (installed adapters)
  */
 export async function handleCommand(
 	reg: DeviceRegistry,
 	notifier: Notifier,
 	cmd: string,
 	msg: unknown,
+	env?: CommandEnv,
 ): Promise<unknown> {
 	switch (cmd as Command) {
+		case "getMessengerKinds": {
+			const current = field(msg, "current");
+			const installed = env ? await env.installedAdapters() : new Set<string>();
+			return messengerKindOptions(installed, typeof current === "string" ? current : undefined);
+		}
 		case "list":
 			return reg.ids().map(id => ({ id, name: reg.get(id)?.config.name ?? id }));
 		case "testRecipient": {

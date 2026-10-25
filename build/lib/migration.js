@@ -59,7 +59,7 @@ const INSTANCE_ADAPTER = {
     telegram: "telegram",
     pushover: "pushover",
     signal: "signal-cmb",
-    matrix: "matrix",
+    matrix: "matrix-org",
     discord: "discord",
 };
 const PUSHOVER_PRIORITY = { normal: 0, high: 1, quiet: -1, confirmation: 2 };

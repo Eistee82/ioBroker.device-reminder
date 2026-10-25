@@ -1,3 +1,4 @@
+import { messengerKindOptions } from "./messenger/adapters.js";
 function field(msg, key) {
     return typeof msg === "object" && msg !== null ? msg[key] : undefined;
 }
@@ -8,8 +9,13 @@ function deviceIdOf(msg) {
 function toBool(val) {
     return val === true || val === 1 || val === "true" || val === "1";
 }
-export async function handleCommand(reg, notifier, cmd, msg) {
+export async function handleCommand(reg, notifier, cmd, msg, env) {
     switch (cmd) {
+        case "getMessengerKinds": {
+            const current = field(msg, "current");
+            const installed = env ? await env.installedAdapters() : new Set();
+            return messengerKindOptions(installed, typeof current === "string" ? current : undefined);
+        }
         case "list":
             return reg.ids().map(id => ({ id, name: reg.get(id)?.config.name ?? id }));
         case "testRecipient": {

@@ -237,7 +237,15 @@ class DeviceReminder extends utils.Adapter {
 			reply({ error: "notReady" });
 			return;
 		}
-		handleCommand(registry, notifier, obj.command, obj.message)
+		handleCommand(registry, notifier, obj.command, obj.message, {
+			installedAdapters: async () => {
+				const res = await this.getObjectViewAsync("system", "adapter", {
+					startkey: "system.adapter.",
+					endkey: "system.adapter.香",
+				});
+				return new Set((res?.rows ?? []).map(row => row.id.slice("system.adapter.".length)));
+			},
+		})
 			.then(reply)
 			.catch(err => reply({ error: errorMessage(err) }));
 	}

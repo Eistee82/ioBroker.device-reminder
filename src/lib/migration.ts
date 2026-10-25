@@ -107,7 +107,7 @@ const INSTANCE_ADAPTER: Partial<Record<LegacyMessenger, string>> = {
 	telegram: "telegram",
 	pushover: "pushover",
 	signal: "signal-cmb",
-	matrix: "matrix",
+	matrix: "matrix-org",
 	discord: "discord",
 };
 
