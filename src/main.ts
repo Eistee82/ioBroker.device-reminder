@@ -1,12 +1,13 @@
 import * as utils from "@iobroker/adapter-core";
 import { fileURLToPath } from "node:url";
 import { handleCommand } from "./lib/commands.js";
-import type { DeviceConfig, InstanceConfig } from "./lib/config.js";
+import type { DeviceConfig, IdPatch, InstanceConfig } from "./lib/config.js";
 import { normalizeDeviceConfig, normalizeInstanceConfig } from "./lib/config.js";
 import type { DeviceReminderLike } from "./lib/deviceManagement.js";
 import { ReminderDeviceManagement } from "./lib/deviceManagement.js";
 import { DeviceRegistry } from "./lib/deviceRegistry.js";
 import type { ObjectWriter } from "./lib/deviceObjects.js";
+import { DeviceSync } from "./lib/deviceSync.js";
 import { ensureDeviceObjects } from "./lib/deviceObjects.js";
 import type { NotifierHost } from "./lib/host.js";
 import type { LegacyStateIo } from "./lib/migration.js";
@@ -21,6 +22,7 @@ class DeviceReminder extends utils.Adapter {
 	private instanceConfig: InstanceConfig = normalizeInstanceConfig({}).config;
 	private notifier: Notifier | null = null;
 	private registry: DeviceRegistry | null = null;
+	private sync: DeviceSync | null = null;
 	private pollTimer: ioBroker.Interval | undefined = undefined;
 	private subscribed = new Set<string>();
 	private objectQueue: Promise<void> = Promise.resolve();
@@ -39,24 +41,30 @@ class DeviceReminder extends utils.Adapter {
 		try {
 			await this.initMigration();
 
-			const { config, warnings } = normalizeInstanceConfig(this.config as unknown as Record<string, unknown>);
+			const { config, warnings, generatedIds, idPatch } = normalizeInstanceConfig(
+				this.config as unknown as Record<string, unknown>,
+			);
 			for (const w of warnings) {
 				this.log.warn(w);
 			}
 			this.instanceConfig = config;
+			if (generatedIds) {
+				await this.persistGeneratedIds(idPatch);
+			}
 
 			const host = this.createHost();
 			this.notifier = new Notifier(host, () => this.instanceConfig.recipients);
 			const registry = new DeviceRegistry(host, this.notifier, () => this.instanceConfig);
 			this.registry = registry;
+			const sync = new DeviceSync(registry, this.objectWriter(), () => this.instanceConfig, this.log);
+			this.sync = sync;
 
 			for (const [deviceId, obj] of await this.loadDeviceObjects()) {
 				const cfg = this.deviceConfigOf(deviceId, obj);
 				if (!cfg) {
 					continue;
 				}
-				await ensureDeviceObjects(this.objectWriter(), deviceId, cfg, this.instanceConfig);
-				await registry.upsert(deviceId, cfg);
+				await sync.apply(deviceId, cfg);
 			}
 
 			for (const pattern of OWN_SUBSCRIPTIONS) {
@@ -140,6 +148,33 @@ class DeviceReminder extends utils.Adapter {
 			await this.setForeignObjectAsync(objId, obj);
 		} catch (err) {
 			this.log.error(`Migration from 3.1.2 failed, configuration left unchanged: ${errorMessage(err)}`);
+		}
+	}
+
+	/**
+	 * Store ids that were generated for new recipients or device types in the instance native, so
+	 * references of devices stay valid when rows are deleted or reordered (js-controller restarts the instance).
+	 *
+	 * @param patch - Raw `recipients` / `types` rows with the generated ids
+	 */
+	private async persistGeneratedIds(patch: IdPatch): Promise<void> {
+		try {
+			const objId = `system.adapter.${this.namespace}`;
+			const obj = await this.getForeignObjectAsync(objId);
+			if (!obj) {
+				throw new Error(`${objId} not found`);
+			}
+			const native = obj.native as Record<string, unknown>;
+			if (patch.recipients) {
+				native.recipients = patch.recipients;
+			}
+			if (patch.types) {
+				native.types = patch.types;
+			}
+			await this.setForeignObjectAsync(objId, obj);
+			this.log.info("Ids generated for new recipients or device types and saved, the adapter restarts once");
+		} catch (err) {
+			this.log.warn(`Generated ids could not be saved: ${errorMessage(err)}`);
 		}
 	}
 
@@ -230,25 +265,11 @@ class DeviceReminder extends utils.Adapter {
 	 * @param obj - Device object, or null if it was deleted
 	 */
 	private async applyDeviceObject(deviceId: string, obj: ioBroker.Object | null): Promise<void> {
-		const registry = this.registry;
-		if (!registry || this.unloading) {
+		if (!this.registry || !this.sync || this.unloading) {
 			return;
 		}
 		const cfg = obj ? this.deviceConfigOf(deviceId, obj) : null;
-		const current = registry.get(deviceId);
-		if (!cfg) {
-			if (current) {
-				registry.remove(deviceId);
-				this.log.info(`Device ${deviceId} removed`);
-			}
-		} else if (!current) {
-			await ensureDeviceObjects(this.objectWriter(), deviceId, cfg, this.instanceConfig);
-			await registry.upsert(deviceId, cfg);
-			this.log.info(`Device ${cfg.name} added`);
-		} else if (JSON.stringify(current.config) !== JSON.stringify(cfg)) {
-			await registry.upsert(deviceId, cfg);
-			this.log.debug(`Configuration of device ${cfg.name} updated`);
-		}
+		await this.sync.apply(deviceId, cfg);
 		await this.syncForeignSubscriptions();
 	}
 

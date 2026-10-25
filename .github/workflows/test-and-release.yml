@@ -23,6 +23,18 @@ jobs:
           node-version: '24.x'
           lint: true
 
+  # build/ is committed so the adapter can be installed from GitHub: it must match the sources
+  build-check:
+    needs: [check-and-lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+      - name: Build and compare with the committed build
+        run: npm ci && npm run build && git diff --exit-code build/
+
   adapter-tests:
     needs: [check-and-lint]
     runs-on: ${{ matrix.os }}
@@ -49,7 +61,7 @@ jobs:
           node-version: '24.x'
       - name: Build and test widgets
         if: ${{ hashFiles('src-widgets/package.json') != '' }}
-        run: npm ci && npm run build:widgets && npm run test:widgets
+        run: npm ci && npm --prefix src-widgets ci && npm --prefix src-widgets run lint && npm run build:widgets && npm run test:widgets
 
   deploy:
     needs: [adapter-tests]

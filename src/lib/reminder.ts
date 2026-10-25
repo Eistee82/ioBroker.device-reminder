@@ -48,14 +48,9 @@ export class ReminderScheduler {
 		this.schedule(this.intervalMs());
 	}
 
-	/** Acknowledge: stops the cycle. */
+	/** Acknowledge: stops the cycle (the `acknowledged` actions are run by the device registry). */
 	public acknowledge(): void {
-		if (!this.running) {
-			return;
-		}
 		this.stop();
-		const { cfg } = this.getDevice();
-		void runActions(this.host, cfg.actions, "acknowledged");
 	}
 
 	/** A restart of the device counts as acknowledgement. */
@@ -127,8 +122,10 @@ export class ReminderScheduler {
 				return;
 			}
 			if (res.skippedWindow.length > 0) {
-				const next = this.notifier.nextWindowStartFor(cfg.recipients, new Date(this.host.now()));
-				if (next) {
+				// Only the recipients that were actually skipped decide when to retry; a recipient that is
+				// inside its window but was not reached (do not disturb, no target) must not re-arm the timer at once.
+				const next = this.notifier.nextWindowStartFor(res.skippedWindow, new Date(this.host.now()));
+				if (next && next.getTime() > this.host.now()) {
 					this.schedule(next.getTime() - this.host.now());
 					return;
 				}

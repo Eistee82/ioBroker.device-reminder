@@ -6,7 +6,7 @@ import Generic from "./Generic";
 import { PREVIEW_SVG } from "./previewIcon";
 
 import { estimateProgress } from "./progress";
-import { type OperationEntry, type SocketLike, formatDuration, parseOperations, watchDevice } from "./deviceData";
+import { type OperationEntry, type SocketLike, formatDuration, parseOperations, str, watchDevice } from "./deviceData";
 
 type DeviceCardRxData = {
 	oid: string;
@@ -56,7 +56,7 @@ export default class DeviceCard extends Generic<DeviceCardRxData, DeviceCardStat
 	}
 
 	getWidgetInfo(): RxWidgetInfo {
-		return DeviceCard.getWidgetInfo();
+		return (this.constructor as typeof DeviceCard).getWidgetInfo();
 	}
 
 	componentDidMount(): void {
@@ -94,7 +94,7 @@ export default class DeviceCard extends Generic<DeviceCardRxData, DeviceCardStat
 		await socket.setState(`${this.state.rxData.oid}.${sub}`, { val, ack: false });
 	}
 
-	private renderHistory(operations: OperationEntry[]): React.JSX.Element {
+	private static renderHistory(operations: OperationEntry[]): React.JSX.Element {
 		if (!operations.length) {
 			return <Typography variant="body2">{Generic.t("no_history")}</Typography>;
 		}
@@ -139,7 +139,7 @@ export default class DeviceCard extends Generic<DeviceCardRxData, DeviceCardStat
 			<Card style={{ width: "100%", height: "100%", overflow: "auto" }}>
 				<CardContent>
 					<Typography variant="h6">{name}</Typography>
-					<Typography variant="body1">{String(v.status ?? "")}</Typography>
+					<Typography variant="body1">{str(v.status)}</Typography>
 					<Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", my: 0.5 }}>
 						{running && (
 							<Chip
@@ -166,7 +166,7 @@ export default class DeviceCard extends Generic<DeviceCardRxData, DeviceCardStat
 					{!compact && (
 						<Typography variant="body2">
 							{typeof v.consumption === "number" ? `${v.consumption} W` : "-"} |{" "}
-							{String(v.runtime ?? "0:00:00")}
+							{str(v.runtime, "0:00:00")}
 						</Typography>
 					)}
 					{progress.percent !== null && (
@@ -207,7 +207,7 @@ export default class DeviceCard extends Generic<DeviceCardRxData, DeviceCardStat
 							</IconButton>
 						)}
 					</Box>
-					<Collapse in={this.state.expanded && !compact}>{this.renderHistory(operations)}</Collapse>
+					<Collapse in={this.state.expanded && !compact}>{DeviceCard.renderHistory(operations)}</Collapse>
 				</CardContent>
 			</Card>
 		);

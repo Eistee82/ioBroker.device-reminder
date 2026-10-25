@@ -4,7 +4,7 @@ import type { RxRenderWidgetProps, RxWidgetInfo, VisRxWidgetProps, VisRxWidgetSt
 import Generic from "./Generic";
 import { PREVIEW_SVG } from "./previewIcon";
 
-import { type SocketLike, watchDevice } from "./deviceData";
+import { type SocketLike, str, watchDevice } from "./deviceData";
 
 type DeviceOverviewRxData = {
 	instance: string;
@@ -62,7 +62,7 @@ export default class DeviceOverview extends Generic<DeviceOverviewRxData, Device
 	}
 
 	getWidgetInfo(): RxWidgetInfo {
-		return DeviceOverview.getWidgetInfo();
+		return (this.constructor as typeof DeviceOverview).getWidgetInfo();
 	}
 
 	componentDidMount(): void {
@@ -135,7 +135,7 @@ export default class DeviceOverview extends Generic<DeviceOverviewRxData, Device
 								>
 									<ListItemText
 										primary={id.split(".").pop()}
-										secondary={`${String(v.status ?? "")} | ${consumption} | ${String(v.runtime ?? "0:00:00")}`}
+										secondary={`${str(v.status)} | ${consumption} | ${str(v.runtime, "0:00:00")}`}
 									/>
 									<Box>
 										{v.finished === true && (

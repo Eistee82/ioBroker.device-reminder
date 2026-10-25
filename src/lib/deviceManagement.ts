@@ -20,6 +20,7 @@ import { buildDeviceSchema, buildSourceSchema, deviceConfigToForm, formToDeviceC
 import type { ObjectWriter } from "./deviceObjects.js";
 import { ensureDeviceObjects } from "./deviceObjects.js";
 import type { DeviceRegistry } from "./deviceRegistry.js";
+import { plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import type { LearningSuggestion } from "./learning.js";
 import type { Notifier } from "./notifier.js";
@@ -44,71 +45,6 @@ type DeviceRefresh = DeviceRefreshResponse<Id>;
 
 /** Object IDs below the namespace that are no devices and must not be used as device ID. */
 const RESERVED_IDS = ["info"];
-
-function tr(en: string, de: string): ioBroker.Translated {
-	return { en, de };
-}
-
-const TEXT = {
-	addDevice: tr("Add device", "Gerät hinzufügen"),
-	addTitle: tr("Add device", "Gerät hinzufügen"),
-	editTitle: tr("Edit device", "Gerät bearbeiten"),
-	sourceMissing: tr(
-		"Select a source object or choose manual entry.",
-		"Wähle ein Quell-Objekt oder aktiviere die manuelle Eingabe.",
-	),
-	edit: tr("Edit", "Bearbeiten"),
-	delete: tr("Delete", "Löschen"),
-	deleteConfirm: tr(
-		"Delete this device with all its states? This cannot be undone.",
-		"Dieses Gerät mit allen States löschen? Das kann nicht rückgängig gemacht werden.",
-	),
-	toggleEnabled: tr("Enable or disable", "Aktivieren oder deaktivieren"),
-	dndOn: tr("Do not disturb: switch on", "Nicht stören: einschalten"),
-	dndOff: tr("Do not disturb: switch off", "Nicht stören: ausschalten"),
-	acknowledge: tr("Acknowledge", "Quittieren"),
-	learnStart: tr("Start learning", "Anlernen starten"),
-	learnStop: tr("Stop learning", "Anlernen beenden"),
-	test: tr("Send test message", "Testnachricht senden"),
-	testSent: tr("The test message was sent.", "Die Testnachricht wurde gesendet."),
-	testNobody: tr(
-		"The test message reached nobody. Check the recipients of the device.",
-		"Die Testnachricht hat niemanden erreicht. Prüfe die Empfänger des Geräts.",
-	),
-	learnStarted: tr(
-		"Recording started. Run the device once completely, then choose Stop learning.",
-		"Aufzeichnung gestartet. Lass das Gerät einmal komplett laufen und wähle danach Anlernen beenden.",
-	),
-	learnTitle: tr("Learned device type", "Angelernter Gerätetyp"),
-	learnConfirm: tr(
-		"Saving creates a new device type and restarts the adapter instance. Continue?",
-		"Das Speichern legt einen neuen Gerätetyp an und startet die Adapter-Instanz neu. Fortfahren?",
-	),
-	learnSaved: tr(
-		"The device type was saved. Select it for your device after the restart.",
-		"Der Gerätetyp wurde gespeichert. Wähle ihn nach dem Neustart für dein Gerät aus.",
-	),
-	learnTooFewSamples: tr(
-		"The recording is too short to derive a device type.",
-		"Die Aufzeichnung ist zu kurz, um einen Gerätetyp abzuleiten.",
-	),
-	learnNoRun: tr("No run was detected in the recording.", "In der Aufzeichnung wurde kein Lauf erkannt."),
-	running: tr("Running", "Läuft"),
-	finished: tr("Finished, not acknowledged", "Fertig, nicht quittiert"),
-	status: tr("Status", "Status"),
-	consumption: tr("Power", "Leistung"),
-	runtime: tr("Runtime", "Laufzeit"),
-	identifier: tr("Power state", "Leistungs-State"),
-	powerMissing: (id: string): ioBroker.Translated =>
-		tr(`Power state ${id} not found`, `Leistungs-State ${id} nicht gefunden`),
-	unknownType: (id: string): ioBroker.Translated =>
-		tr(`Unknown device type "${id}"`, `Unbekannter Gerätetyp "${id}"`),
-	notFound: tr("Device not found.", "Gerät nicht gefunden."),
-	on: tr("On", "Ein"),
-	off: tr("Off", "Aus"),
-	yes: tr("Yes", "Ja"),
-	no: tr("No", "Nein"),
-};
 
 const LEARN_ERRORS: Record<string, ioBroker.Translated> = {
 	tooFewSamples: TEXT.learnTooFewSamples,
@@ -686,7 +622,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 
 		const result = await registry.stopLearning(id);
 		if ("error" in result) {
-			await ctx.showMessage(LEARN_ERRORS[result.error] ?? tr(result.error, result.error));
+			await ctx.showMessage(LEARN_ERRORS[result.error] ?? plain(result.error));
 			return this.updateOf(id);
 		}
 		await this.saveLearnedType(id, result, ctx);
@@ -814,14 +750,11 @@ function parseLearnForm(
 		endDurationSec: n("endDurationSec"),
 	};
 	if (name === "") {
-		return { error: tr("The device type needs a name.", "Der Gerätetyp braucht einen Namen.") };
+		return { error: TEXT.typeNeedsName };
 	}
 	if (Object.values(parsed).some(v => !Number.isFinite(v) || v < 0) || parsed.startCount < 1 || parsed.endCount < 2) {
 		return {
-			error: tr(
-				"All values must be numbers of 0 or more; start count at least 1, end count at least 2.",
-				"Alle Werte müssen Zahlen ab 0 sein; Start-Anzahl mindestens 1, End-Anzahl mindestens 2.",
-			),
+			error: TEXT.typeValuesInvalid,
 		};
 	}
 	return { type: { name, ...parsed } };

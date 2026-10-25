@@ -1,4 +1,5 @@
 import type { DetectionMode, TypeThresholds } from "./detector/types.js";
+import { allocateDeviceId } from "./ids.js";
 import { parseNumber } from "./utils.js";
 
 /** Messenger kind. */
@@ -196,9 +197,9 @@ function builtinType(
 	name: string,
 	startVal: number,
 	endVal: number,
+	standby: number,
 	startCount: number,
 	endCount: number,
-	standby: number,
 ): DeviceTypeConfig {
 	return {
 		id,
@@ -222,9 +223,9 @@ function customType(index: number): DeviceTypeConfig {
 		builtin: false,
 		startVal: 30,
 		endVal: 5,
+		standby: 1,
 		startCount: 1,
-		endCount: 1,
-		standby: 20,
+		endCount: 20,
 		mode: "count",
 		startDurationSec: 60,
 		endDurationSec: 300,
@@ -291,14 +292,9 @@ function optNum(val: unknown): number | undefined {
 	return parseNumber(val) ?? undefined;
 }
 
-function normalizeType(raw: unknown, index: number, warnings: string[]): DeviceTypeConfig | null {
+function normalizeType(raw: unknown, index: number, id: string, warnings: string[]): DeviceTypeConfig | null {
 	if (!isRecord(raw)) {
 		warnings.push(`Device type #${index + 1} ignored: not an object`);
-		return null;
-	}
-	const id = str(raw.id).trim();
-	if (id === "") {
-		warnings.push(`Device type #${index + 1} ignored: no id`);
 		return null;
 	}
 	const builtin = DEFAULT_TYPES.find(t => t.id === id);
@@ -319,7 +315,7 @@ function normalizeType(raw: unknown, index: number, warnings: string[]): DeviceT
 	};
 }
 
-function normalizeRecipient(raw: unknown, index: number, warnings: string[]): RecipientConfig | null {
+function normalizeRecipient(raw: unknown, index: number, id: string, warnings: string[]): RecipientConfig | null {
 	if (!isRecord(raw)) {
 		warnings.push(`Recipient #${index + 1} ignored: not an object`);
 		return null;
@@ -330,7 +326,7 @@ function normalizeRecipient(raw: unknown, index: number, warnings: string[]): Re
 		return null;
 	}
 	const rec: RecipientConfig = {
-		id: str(raw.id).trim() || `recipient${index + 1}`,
+		id,
 		name: str(raw.name).trim() || kind,
 		enabled: bool(raw.enabled, true),
 		kind,
@@ -373,6 +369,27 @@ function normalizeRecipient(raw: unknown, index: number, warnings: string[]): Re
 	return rec;
 }
 
+/** Raw rows of the native with generated ids filled in. */
+export interface IdPatch {
+	/** Recipients. */
+	recipients?: unknown[];
+	/** Device types. */
+	types?: unknown[];
+}
+
+function generateRecipientId(raw: Record<string, unknown>, index: number, taken: Set<string>): string {
+	const kind = MESSENGER_KINDS.find(k => k === raw.kind) ?? "recipient";
+	const stamp = Date.now().toString(36);
+	let n = index;
+	let id = `${kind}-${stamp}${n}`;
+	while (taken.has(id)) {
+		n++;
+		id = `${kind}-${stamp}${n}`;
+	}
+	taken.add(id);
+	return id;
+}
+
 /**
  * Normalize the instance configuration (adapter native) and fill defaults.
  *
@@ -381,15 +398,33 @@ function normalizeRecipient(raw: unknown, index: number, warnings: string[]): Re
 export function normalizeInstanceConfig(native: Record<string, unknown>): {
 	config: InstanceConfig;
 	warnings: string[];
+	/** Whether ids were generated for recipients or types that had none (or a duplicate one). */
+	generatedIds: boolean;
+	/** Raw `recipients` / `types` rows with the generated ids filled in; to be stored in the native. */
+	idPatch: IdPatch;
 } {
 	const warnings: string[] = [];
 	const src = isRecord(native) ? native : {};
+	const idPatch: IdPatch = {};
 
 	let types: DeviceTypeConfig[] = [];
 	if (Array.isArray(src.types)) {
 		const seen = new Set<string>();
+		const taken = new Set<string>([
+			...DEFAULT_TYPES.map(t => t.id),
+			...src.types.map(raw => (isRecord(raw) ? str(raw.id).trim() : "")).filter(id => id !== ""),
+		]);
+		const rawRows: unknown[] = [...src.types];
 		src.types.forEach((raw, i) => {
-			const t = normalizeType(raw, i, warnings);
+			let id = isRecord(raw) ? str(raw.id).trim() : "";
+			if (isRecord(raw) && id === "") {
+				// A type added in the admin table has no id yet: derive a stable one from its name
+				id = allocateDeviceId(str(raw.name).trim() || "custom", taken);
+				taken.add(id);
+				rawRows[i] = { ...raw, id };
+				idPatch.types = rawRows;
+			}
+			const t = normalizeType(raw, i, id, warnings);
 			if (!t) {
 				return;
 			}
@@ -411,13 +446,20 @@ export function normalizeInstanceConfig(native: Record<string, unknown>): {
 	const recipients: RecipientConfig[] = [];
 	if (Array.isArray(src.recipients)) {
 		const seen = new Set<string>();
+		const taken = new Set<string>(
+			src.recipients.map(raw => (isRecord(raw) ? str(raw.id).trim() : "")).filter(id => id !== ""),
+		);
+		const rawRows: unknown[] = [...src.recipients];
 		src.recipients.forEach((raw, i) => {
-			const r = normalizeRecipient(raw, i, warnings);
-			if (!r) {
-				return;
+			let id = isRecord(raw) ? str(raw.id).trim() : "";
+			if (isRecord(raw) && (id === "" || seen.has(id))) {
+				// New (or cloned) recipient: generate a unique id that does not depend on the position
+				id = generateRecipientId(raw, i, taken);
+				rawRows[i] = { ...raw, id };
+				idPatch.recipients = rawRows;
 			}
-			if (seen.has(r.id)) {
-				warnings.push(`Recipient "${r.id}" ignored: duplicate id`);
+			const r = normalizeRecipient(raw, i, id, warnings);
+			if (!r) {
 				return;
 			}
 			seen.add(r.id);
@@ -445,6 +487,8 @@ export function normalizeInstanceConfig(native: Record<string, unknown>): {
 			historyHtml: bool(src.historyHtml, false),
 		},
 		warnings,
+		generatedIds: idPatch.recipients !== undefined || idPatch.types !== undefined,
+		idPatch,
 	};
 }
 

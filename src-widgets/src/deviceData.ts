@@ -8,6 +8,16 @@ export interface SocketLike {
 	unsubscribeState(ids: string | string[], handler: StateHandler): void;
 }
 
+/**
+ * Text of a primitive value, otherwise the default
+ *
+ * @param x value
+ * @param d default
+ */
+export function str(x: unknown, d = ""): string {
+	return typeof x === "string" || typeof x === "number" || typeof x === "boolean" ? String(x) : d;
+}
+
 export interface OperationEntry {
 	start: string;
 	end: string;
@@ -56,7 +66,7 @@ export function parseOperations(raw: unknown): OperationEntry[] {
 		}
 		return parsed
 			.filter((e): e is Record<string, unknown> => typeof e === "object" && e !== null)
-			.map(e => ({ start: String(e.start ?? ""), end: String(e.end ?? ""), runtime: String(e.runtime ?? "") }));
+			.map(e => ({ start: str(e.start), end: str(e.end), runtime: str(e.runtime) }));
 	} catch {
 		return [];
 	}

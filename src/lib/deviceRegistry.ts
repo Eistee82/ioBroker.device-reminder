@@ -281,8 +281,12 @@ export class DeviceRegistry implements RuntimeListener {
 		if (!entry) {
 			return;
 		}
+		const wasFinished = isTrue(await this.host.getOwnState(`${deviceId}.finished`));
 		entry.reminder.acknowledge();
 		await entry.runtime.onOwnStateChange("acknowledge", true, false);
+		if (wasFinished) {
+			await runActions(this.host, entry.runtime.config.actions, "acknowledged");
+		}
 	}
 
 	/**

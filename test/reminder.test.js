@@ -148,7 +148,7 @@ describe("ReminderScheduler", () => {
 		assert.strictEqual(host.sent.length, 0);
 	});
 
-	it("runs reminder and acknowledged actions", async () => {
+	it("runs the reminder actions (acknowledged actions belong to the registry)", async () => {
 		const { host, s } = setup({
 			actions: [
 				{ event: "reminder", stateId: "lamp.on", value: "true" },
@@ -160,7 +160,45 @@ describe("ReminderScheduler", () => {
 		assert.deepStrictEqual(host.writes, [{ id: "lamp.on", val: true }]);
 		s.acknowledge();
 		await new Promise(resolve => setImmediate(resolve));
-		assert.deepStrictEqual(host.writes[1], { id: "lamp.on", val: false });
+		assert.strictEqual(host.writes.length, 1);
+		assert.strictEqual(s.active, false);
+	});
+
+	it("does not re-arm every second when only one of two recipients is outside its window", async () => {
+		const start = new Date(2026, 0, 5, 21, 0).getTime();
+		const host = makeHost(start);
+		const recipients = [
+			{ ...tg, activeFrom: "08:00", activeUntil: "20:00" },
+			{
+				id: "al",
+				name: "Alexa",
+				enabled: true,
+				kind: "alexa",
+				stateId: "alexa.0.speak",
+				activeFrom: "08:00",
+				activeUntil: "22:00",
+			},
+		];
+		const notifier = new Notifier(host, () => recipients);
+		const cfg = {
+			recipients: ["tg", "al"],
+			actions: [],
+			reminder: { enabled: true, intervalMin: 30, maxCount: 3, text: "", ackStateId: "" },
+		};
+		const s = new ReminderScheduler(host, notifier, () => ({ cfg, text: "Done", doNotDisturb: true }));
+		s.onFinished();
+		let fires = 0;
+		const origSet = host.setTimeout;
+		host.setTimeout = (cb, ms) => {
+			fires++;
+			return origSet(cb, ms);
+		};
+		await host.advance(30 * MIN); // first reminder: telegram outside window, alexa under DND
+		await host.advance(60_000);
+		await host.advance(60_000);
+		assert.ok(fires <= 3, `re-armed ${fires} times in 2 minutes`);
+		assert.strictEqual(host.sent.length, 0);
+		assert.strictEqual(s.active, true);
 	});
 
 	it("dispose leaves no open timers", async () => {

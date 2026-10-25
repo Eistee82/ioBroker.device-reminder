@@ -43,7 +43,7 @@ Ziel ist eine **komplette Neuentwicklung (V4)** nach aktuellen ioBroker-Standard
 | Abhängigkeiten | `@iobroker/adapter-core >= 3.2.3`, `@iobroker/type-detector` (6.x), `@iobroker/dm-utils` (3.x, API `v3`); `common.supportedMessages.deviceManager: true` + `custom: true`. Keine weiteren Laufzeit-Deps ohne Grund (das alte `jsonata` entfällt). |
 | Dev-Deps | `@iobroker/testing >= 5`, `@iobroker/adapter-dev`, `@iobroker/eslint-config`, `@alcalzone/release-script` (+ Plugins iobroker, license, manual-review), `@tsconfig/node22`, `typescript`, `mocha`, `c8` |
 | Timer | ausschließlich `this.setTimeout/setInterval/clearTimeout/clearInterval/delay`; alles in `onUnload` aufräumen |
-| Tier | 3 (`common.tier`) · `common.type`: `household` (prüfen; 3.1.2 nutzte `energy`) |
+| Tier | 3 (`common.tier`) · `common.type`: `logic` (wie im Repository `sources-dist.json`; 3.1.2 nutzte `energy`, das Repository nennt `logic`) |
 | Sprachen | alle Texte (io-package titleLang/desc, Admin-i18n, State-Namen) in den 11 Pflichtsprachen |
 | Vorlage | Projektstruktur, Workflows, Scripts, `CLAUDE.md`, `.claude/skills/precommit-check` analog zu `D:/Windows/Desktop/iobroker.hoymiles` |
 | Git-Workflow | nie direkt auf `main`; Feature-Branches; PRs nur auf ausdrückliche Anweisung |
@@ -239,7 +239,7 @@ README kurz nach Checklisten-Struktur (Badges, Changelog unter `### **WORK IN PR
 - Neue State-IDs (Breaking) mit Werteübernahme und Löschen der alten Objekte.
 - Custom-Typen unbegrenzt statt fix 10.
 - Nachrichten außerhalb eines Zeitfensters werden verworfen, nicht gepuffert.
-- `common.type` wechselt evtl. von `energy` auf `household`.
+- `common.type` bleibt `logic` (wie im Repository eingetragen).
 - Erkennungsmodus (Anzahl / zeitbasiert) wird **pro Typ** gewählt; ein Gerät erbt ihn über seinen Typ. „Kombiniert“ heißt: Anzahl- UND Dauer-Bedingung müssen beide erfüllt sein.
 - Erinnerungen: ein Zyklus und ein Zähler **pro Gerät**; jeder Versand prüft das Zeitfenster jedes Empfängers einzeln; liegt kein Empfänger im Fenster, pausiert der Zyklus bis zum nächsten Fensterbeginn eines Empfängers.
 - Zeitfenster über Mitternacht (z. B. 22:00–06:00) werden in V4 unterstützt, ändert keine bestehende Config.

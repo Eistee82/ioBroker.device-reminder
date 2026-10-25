@@ -188,6 +188,36 @@ describe("DeviceRegistry", () => {
 		);
 	});
 
+	it("runs the acknowledged actions even when reminders are off, and only once", async () => {
+		const ctx = setup();
+		await ctx.reg.upsert(
+			"washer",
+			makeCfg({
+				reminder: { ...DEFAULT_REMINDER, enabled: false },
+				actions: [
+					{ event: "end", stateId: ACTION, value: "true" },
+					{ event: "acknowledged", stateId: ACTION, value: "false" },
+				],
+			}),
+		);
+		await runCycle(ctx);
+		assert.strictEqual(ctx.host.own("washer.finished"), true);
+		assert.deepStrictEqual(
+			ctx.host.writes.filter(w => w.id === ACTION).map(w => w.val),
+			[true],
+		);
+		await ctx.reg.routeOwnState("washer.acknowledge", true, false);
+		await flush();
+		assert.strictEqual(ctx.host.own("washer.finished"), false);
+		assert.deepStrictEqual(
+			ctx.host.writes.filter(w => w.id === ACTION).map(w => w.val),
+			[true, false],
+		);
+		await ctx.reg.routeOwnState("washer.acknowledge", true, false);
+		await flush();
+		assert.strictEqual(ctx.host.writes.filter(w => w.id === ACTION).length, 2, "repeated press runs nothing");
+	});
+
 	it("an external acknowledge state stops the reminder", async () => {
 		const ctx = setup();
 		await ctx.reg.upsert(
