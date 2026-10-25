@@ -1,7 +1,8 @@
 import assert from "node:assert";
 import { LegacyDetector } from "../build/lib/detector/legacy.js";
+import { createDetector } from "../build/lib/detector/index.js";
 import oracleModule from "./fixtures/legacyOracle.cjs";
-import { curves, abortedRun, dishwasher, washingMachine, withTimes } from "./helpers/curves.js";
+import { curves, abortedRun, dishwasher, flapping, washingMachine, withTimes } from "./helpers/curves.js";
 
 const { createOracle } = oracleModule;
 
@@ -216,6 +217,146 @@ describe("LegacyDetector", () => {
 			for (const { power, now } of withTimes(washingMachine)) {
 				assert.deepStrictEqual(detector.tick(power, now), oracle.tick(power));
 			}
+		});
+	});
+
+	describe("corrected abort detection (abortFixed)", () => {
+		it("standbyCount = max(ceil(endCount / 2), 2)", () => {
+			const opts = { abort: true, abortFixed: true };
+			assert.strictEqual(new LegacyDetector(TYPES["washing-machine"], opts).standbyCount, 25);
+			assert.strictEqual(new LegacyDetector(TYPES.custom, opts).standbyCount, 10);
+			assert.strictEqual(new LegacyDetector({ ...TYPES.custom, endCount: 3 }, opts).standbyCount, 2);
+			assert.strictEqual(new LegacyDetector({ ...TYPES.custom, endCount: 1 }, opts).standbyCount, 2);
+		});
+
+		it("washing machine + abortFixed + abortedRun: aborted, no finished", () => {
+			const events = eventsOf(TYPES["washing-machine"], { abort: true, abortFixed: true }, abortedRun);
+			assert.deepStrictEqual(
+				events.filter(e => e !== "running"),
+				["started", "aborted"],
+			);
+		});
+
+		it("abortFixed without abort changes nothing at the events", () => {
+			for (const curve of Object.values(curves)) {
+				const fixed = eventsOf(TYPES["washing-machine"], { abort: false, abortFixed: true }, curve);
+				const plain = eventsOf(TYPES["washing-machine"], { abort: false }, curve);
+				assert.deepStrictEqual(fixed, plain);
+			}
+		});
+
+		it("abortFixed: false stays identical to 3.1.2", () => {
+			for (const curve of Object.values(curves)) {
+				const detector = new LegacyDetector(TYPES["washing-machine"], {
+					abort: true,
+					abortFixed: false,
+					minStartMs: 0,
+					minEndMs: 0,
+				});
+				const oracle = createOracle(TYPES["washing-machine"], { abort: true });
+				for (const { power, now } of withTimes(curve)) {
+					assert.deepStrictEqual(detector.tick(power, now), oracle.tick(power));
+				}
+			}
+		});
+	});
+
+	describe("combined mode (count + duration)", () => {
+		/**
+		 * @param {object} thresholds type thresholds
+		 * @param {number} startDurationSec minimum start duration
+		 * @param {number} endDurationSec minimum end duration
+		 */
+		function combined(thresholds, startDurationSec, endDurationSec) {
+			return createDetector(
+				{ ...thresholds, mode: "combined", startDurationSec, endDurationSec },
+				{ abort: false, abortFixed: false },
+			);
+		}
+
+		/**
+		 * @param {object} detector detector under test
+		 * @param {number[]} curve power values
+		 * @param {number} endVal end threshold
+		 * @returns {{ finishedAt: number[], lastHighBefore: number[], startedAt: number[] }} event times in ms
+		 */
+		function timeline(detector, curve, endVal) {
+			const out = { finishedAt: [], lastHighBefore: [], startedAt: [] };
+			let lastHigh = -1;
+			for (const { power, now } of withTimes(curve)) {
+				if (power >= endVal) {
+					lastHigh = now;
+				}
+				const { events } = detector.tick(power, now);
+				if (events.includes("started")) {
+					out.startedAt.push(now);
+				}
+				if (events.includes("finished")) {
+					out.finishedAt.push(now);
+					out.lastHighBefore.push(lastHigh);
+				}
+			}
+			return out;
+		}
+
+		it("washing machine + endDurationSec 300: finished at the earliest 300 s after the last value >= endVal", () => {
+			const thresholds = TYPES["washing-machine"];
+			const t = timeline(combined(thresholds, 0, 300), washingMachine, thresholds.endVal);
+			assert.strictEqual(t.finishedAt.length, 1);
+			assert.ok(t.finishedAt[0] - t.lastHighBefore[0] >= 300_000);
+		});
+
+		it("short endCount: count ends early, combined waits for endDurationSec", () => {
+			const thresholds = { ...TYPES["washing-machine"], endCount: 3 };
+			const count = timeline(new LegacyDetector(thresholds, { abort: false }), washingMachine, thresholds.endVal);
+			const comb = timeline(combined(thresholds, 0, 300), washingMachine, thresholds.endVal);
+			// count ends during the first pause already
+			assert.ok(count.finishedAt.length > 1);
+			assert.ok(count.finishedAt[0] - count.lastHighBefore[0] < 300_000);
+			assert.strictEqual(comb.finishedAt.length, 1);
+			assert.ok(comb.finishedAt[0] - comb.lastHighBefore[0] >= 300_000);
+			// exactly when the power has been below endVal for 300 s (first sample below + 300 s)
+			assert.strictEqual(comb.finishedAt[0], comb.lastHighBefore[0] + 10_000 + 300_000);
+		});
+
+		it("startDurationSec: flapping around the start threshold does not start", () => {
+			const thresholds = { ...TYPES.custom, startCount: 1 };
+			const count = timeline(new LegacyDetector(thresholds, { abort: false }), flapping, thresholds.endVal);
+			const comb = timeline(combined(thresholds, 30, 0), flapping, thresholds.endVal);
+			assert.ok(count.startedAt.length > 0);
+			assert.strictEqual(comb.startedAt.length, 0);
+		});
+
+		it("startDurationSec delays the start until the power has been >= startVal long enough", () => {
+			const thresholds = { ...TYPES["washing-machine"] };
+			const count = timeline(new LegacyDetector(thresholds, { abort: false }), washingMachine, thresholds.endVal);
+			const comb = timeline(combined(thresholds, 60, 0), washingMachine, thresholds.endVal);
+			// count: startCount 2 reached at tick 4 (40 s); first value >= startVal at tick 3 (30 s), 60 s later = 90 s
+			assert.strictEqual(count.startedAt[0], 40_000);
+			assert.strictEqual(comb.startedAt[0], 90_000);
+		});
+
+		it("durations 0 are identical to 3.1.2", () => {
+			for (const curve of Object.values(curves)) {
+				for (const thresholds of Object.values(MATRIX_TYPES)) {
+					const detector = combined(thresholds, 0, 0);
+					const oracle = createOracle(thresholds, { abort: false });
+					for (const { power, now } of withTimes(curve)) {
+						assert.deepStrictEqual(detector.tick(power, now), oracle.tick(power));
+					}
+				}
+			}
+		});
+
+		it("reset clears the duration tracking", () => {
+			const thresholds = TYPES["washing-machine"];
+			const detector = combined(thresholds, 60, 0);
+			detector.tick(100, 0);
+			detector.tick(100, 30_000);
+			detector.reset();
+			assert.deepStrictEqual(detector.tick(100, 60_000).events, []);
+			assert.deepStrictEqual(detector.tick(100, 70_000).events, []);
+			assert.deepStrictEqual(detector.tick(100, 120_000).events, ["started"]);
 		});
 	});
 });

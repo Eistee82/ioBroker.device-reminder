@@ -6,11 +6,14 @@ export type { DetectorEvent, DeviceStatus, TickResult, TypeThresholds } from "./
 export interface LegacyOptions {
 	/** Abort detection (device switched off by hand while running). */
 	abort: boolean;
-	/** Corrected abort detection (Task 3). Ignored for now. */
+	/**
+	 * Corrected abort detection: standbyCount = max(ceil(endCount / 2), 2), so that the standby buffer
+	 * can reach valCancel (in 3.1.2 it mostly cannot).
+	 */
 	abortFixed?: boolean;
-	/** Minimum duration above the start threshold in ms (Task 3). Ignored for now. */
+	/** Combined mode: "started" additionally needs power >= startVal for at least this many ms (0 = off). */
 	minStartMs?: number;
-	/** Minimum duration below the end threshold in ms (Task 3). Ignored for now. */
+	/** Combined mode: "finished" additionally needs power < endVal for at least this many ms (0 = off). */
 	minEndMs?: number;
 }
 
@@ -61,7 +64,13 @@ export class LegacyDetector implements Detector {
 	public readonly valCancel: number;
 
 	private readonly abort: boolean;
+	private readonly minStartMs: number;
+	private readonly minEndMs: number;
 	private isStarted = false;
+	/** Timestamp since which the power is continuously >= startVal, otherwise null. */
+	private aboveStartSince: number | null = null;
+	/** Timestamp since which the power is continuously < endVal, otherwise null. */
+	private belowEndSince: number | null = null;
 	private buffers: Record<BufferName, number[]> = { start: [], end: [], standby: [] };
 	private averages: Record<BufferName, number> = { start: 0, end: 0, standby: 0 };
 
@@ -75,9 +84,15 @@ export class LegacyDetector implements Detector {
 		this.standbyValue = thresholds.standby || 1;
 		this.startCount = thresholds.startCount;
 		this.endCount = thresholds.endCount;
-		this.standbyCount = thresholds.endVal <= 10 ? thresholds.endVal || 10 : 10;
+		this.standbyCount = options.abortFixed
+			? Math.max(Math.ceil(thresholds.endCount / 2), 2)
+			: thresholds.endVal <= 10
+				? thresholds.endVal || 10
+				: 10;
 		this.valCancel = thresholds.endCount / 2;
 		this.abort = options.abort;
+		this.minStartMs = options.minStartMs ?? 0;
+		this.minEndMs = options.minEndMs ?? 0;
 	}
 
 	/** Whether a run is in progress. */
@@ -99,19 +114,59 @@ export class LegacyDetector implements Detector {
 		this.isStarted = false;
 		this.buffers = { start: [], end: [], standby: [] };
 		this.averages = { start: 0, end: 0, standby: 0 };
+		this.aboveStartSince = null;
+		this.belowEndSince = null;
 	}
 
 	/**
 	 * Evaluate one poll step with the last known power value.
 	 *
 	 * @param power - Last known power in W
-	 * @param _now - Timestamp in ms (used by the time-based options)
+	 * @param now - Timestamp in ms (used by the minimum durations of the combined mode)
 	 */
-	public tick(power: number, _now: number): TickResult {
+	public tick(power: number, now: number): TickResult {
 		const out: TickOutput = { events: [], status: null, average: null };
+		this.trackDurations(power, now);
 		this.fillBuffers(power, out);
-		this.evaluate(out);
+		this.evaluate(out, now);
 		return { events: out.events, status: out.status, average: out.average, started: this.isStarted };
+	}
+
+	/**
+	 * Remember since when the power is continuously above the start or below the end threshold.
+	 *
+	 * @param power - Power value in W
+	 * @param now - Timestamp in ms
+	 */
+	private trackDurations(power: number, now: number): void {
+		if (power >= this.startValue) {
+			this.aboveStartSince ??= now;
+		} else {
+			this.aboveStartSince = null;
+		}
+		if (power < this.endValue) {
+			this.belowEndSince ??= now;
+		} else {
+			this.belowEndSince = null;
+		}
+	}
+
+	/**
+	 * Whether the minimum start duration (combined mode) is met; always true without it.
+	 *
+	 * @param now - Timestamp in ms
+	 */
+	private startDurationMet(now: number): boolean {
+		return this.minStartMs <= 0 || (this.aboveStartSince !== null && now - this.aboveStartSince >= this.minStartMs);
+	}
+
+	/**
+	 * Whether the minimum end duration (combined mode) is met; always true without it.
+	 *
+	 * @param now - Timestamp in ms
+	 */
+	private endDurationMet(now: number): boolean {
+		return this.minEndMs <= 0 || (this.belowEndSince !== null && now - this.belowEndSince >= this.minEndMs);
 	}
 
 	private countOf(name: BufferName): number {
@@ -166,8 +221,9 @@ export class LegacyDetector implements Detector {
 	 * 3.1.2 `evaluateStatus` (without messages, autoOff and runtime, which belong to the device runtime).
 	 *
 	 * @param out - Outputs of the current tick
+	 * @param now - Timestamp in ms
 	 */
-	private evaluate(out: TickOutput): void {
+	private evaluate(out: TickOutput, now: number): void {
 		const avg = this.averages;
 
 		// abort detection
@@ -185,7 +241,12 @@ export class LegacyDetector implements Detector {
 		}
 
 		// start
-		if (avg.start > this.startValue && this.buffers.start.length >= this.startCount && !this.isStarted) {
+		if (
+			avg.start > this.startValue &&
+			this.buffers.start.length >= this.startCount &&
+			!this.isStarted &&
+			this.startDurationMet(now)
+		) {
 			this.isStarted = true;
 			out.events.push("started");
 			out.status = "running";
@@ -195,7 +256,12 @@ export class LegacyDetector implements Detector {
 			// operating branch
 			out.events.push("running");
 			out.status = "running";
-		} else if (this.isStarted && avg.end < this.endValue && this.buffers.end.length >= this.endCount * (2 / 3)) {
+		} else if (
+			this.isStarted &&
+			avg.end < this.endValue &&
+			this.buffers.end.length >= this.endCount * (2 / 3) &&
+			this.endDurationMet(now)
+		) {
 			// end detection
 			out.events.push("finished");
 			this.isStarted = false;
