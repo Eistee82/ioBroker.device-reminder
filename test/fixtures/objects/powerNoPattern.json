@@ -1,0 +1,14 @@
+{
+	"custom.0.plug": {
+		"_id": "custom.0.plug",
+		"type": "device",
+		"common": { "name": "Custom plug" },
+		"native": {}
+	},
+	"custom.0.plug.power": {
+		"_id": "custom.0.plug.power",
+		"type": "state",
+		"common": { "name": "Power", "type": "string", "role": "value.power", "read": true, "write": false },
+		"native": {}
+	}
+}

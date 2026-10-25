@@ -1,0 +1,20 @@
+{
+	"zigbee.0.plug1": {
+		"_id": "zigbee.0.plug1",
+		"type": "device",
+		"common": { "name": "Messsteckdose" },
+		"native": {}
+	},
+	"zigbee.0.plug1.power": {
+		"_id": "zigbee.0.plug1.power",
+		"type": "state",
+		"common": { "name": "Power", "type": "number", "role": "value.power", "unit": "W", "read": true, "write": false },
+		"native": {}
+	},
+	"zigbee.0.plug1.voltage": {
+		"_id": "zigbee.0.plug1.voltage",
+		"type": "state",
+		"common": { "name": "Voltage", "type": "number", "role": "value.voltage", "unit": "V", "read": true, "write": false },
+		"native": {}
+	}
+}

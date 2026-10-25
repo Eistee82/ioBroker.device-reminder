@@ -1,0 +1,26 @@
+{
+	"shelly.0.SHPLG1": {
+		"_id": "shelly.0.SHPLG1",
+		"type": "device",
+		"common": { "name": "Shelly Plug" },
+		"native": {}
+	},
+	"shelly.0.SHPLG1.Relay0": {
+		"_id": "shelly.0.SHPLG1.Relay0",
+		"type": "channel",
+		"common": { "name": "Relay 0" },
+		"native": {}
+	},
+	"shelly.0.SHPLG1.Relay0.Switch": {
+		"_id": "shelly.0.SHPLG1.Relay0.Switch",
+		"type": "state",
+		"common": { "name": "Switch", "type": "boolean", "role": "switch", "read": true, "write": true },
+		"native": {}
+	},
+	"shelly.0.SHPLG1.Relay0.Power": {
+		"_id": "shelly.0.SHPLG1.Relay0.Power",
+		"type": "state",
+		"common": { "name": "Power", "type": "number", "role": "value.power", "unit": "W", "read": true, "write": false },
+		"native": {}
+	}
+}

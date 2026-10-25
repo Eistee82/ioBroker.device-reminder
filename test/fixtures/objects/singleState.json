@@ -1,0 +1,8 @@
+{
+	"sensor.0.kitchen.power": {
+		"_id": "sensor.0.kitchen.power",
+		"type": "state",
+		"common": { "name": "Kitchen power", "type": "number", "role": "value.power", "unit": "W", "read": true, "write": false },
+		"native": {}
+	}
+}

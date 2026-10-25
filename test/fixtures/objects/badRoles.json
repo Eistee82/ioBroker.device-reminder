@@ -1,0 +1,20 @@
+{
+	"tuya.0.dev1": {
+		"_id": "tuya.0.dev1",
+		"type": "device",
+		"common": { "name": "Unbekannt" },
+		"native": {}
+	},
+	"tuya.0.dev1.toggle": {
+		"_id": "tuya.0.dev1.toggle",
+		"type": "state",
+		"common": { "name": "Toggle", "type": "boolean", "role": "indicator", "read": true, "write": true },
+		"native": {}
+	},
+	"tuya.0.dev1.value": {
+		"_id": "tuya.0.dev1.value",
+		"type": "state",
+		"common": { "name": "Wert", "type": "number", "role": "value", "read": true, "write": false },
+		"native": {}
+	}
+}

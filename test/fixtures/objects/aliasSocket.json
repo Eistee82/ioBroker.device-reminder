@@ -1,0 +1,20 @@
+{
+	"alias.0.Waschmaschine": {
+		"_id": "alias.0.Waschmaschine",
+		"type": "channel",
+		"common": { "name": "Waschmaschine" },
+		"native": {}
+	},
+	"alias.0.Waschmaschine.SWITCH": {
+		"_id": "alias.0.Waschmaschine.SWITCH",
+		"type": "state",
+		"common": { "name": "Schalter", "type": "boolean", "role": "switch", "read": true, "write": true },
+		"native": {}
+	},
+	"alias.0.Waschmaschine.POWER": {
+		"_id": "alias.0.Waschmaschine.POWER",
+		"type": "state",
+		"common": { "name": "Leistung", "type": "number", "role": "value.power", "unit": "W", "read": true, "write": false },
+		"native": {}
+	}
+}
