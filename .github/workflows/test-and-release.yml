@@ -37,17 +37,19 @@ jobs:
           build: true
           unit-test-command: "npm test"
 
-  # Active as soon as the widget project exists (Task 16).
+  # Runs its steps as soon as the widget project exists (Task 16). hashFiles is only valid in step conditions.
   widget-tests:
     needs: [check-and-lint]
-    if: ${{ hashFiles('src-widgets/package.json') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
+        if: ${{ hashFiles('src-widgets/package.json') != '' }}
         with:
           node-version: '24.x'
-      - run: npm ci && npm run build:widgets && npm run test:widgets
+      - name: Build and test widgets
+        if: ${{ hashFiles('src-widgets/package.json') != '' }}
+        run: npm ci && npm run build:widgets && npm run test:widgets
 
   deploy:
     needs: [adapter-tests]
