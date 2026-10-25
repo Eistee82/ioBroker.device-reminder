@@ -143,7 +143,7 @@
     ],
     "visWidgets": {
       "device-reminder": {
-        "name": "vis2deviceReminder",
+        "name": "deviceReminder",
         "url": "device-reminder/customWidgets.js",
         "components": [
           "DeviceCard",
