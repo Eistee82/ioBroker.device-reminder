@@ -727,9 +727,17 @@
 			"type": "panel",
 			"label": "tabDevices",
 			"items": {
-				"_placeholder": {
+				"_help": {
 					"type": "staticText",
-					"text": "placeholderText",
+					"text": "devicesHelp",
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
+				},
+				"_deviceManager": {
+					"type": "deviceManager",
 					"xs": 12,
 					"sm": 12,
 					"md": 12,

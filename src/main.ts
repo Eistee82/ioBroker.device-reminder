@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { handleCommand } from "./lib/commands.js";
 import type { DeviceConfig, InstanceConfig } from "./lib/config.js";
 import { normalizeDeviceConfig, normalizeInstanceConfig } from "./lib/config.js";
+import type { DeviceReminderLike } from "./lib/deviceManagement.js";
+import { ReminderDeviceManagement } from "./lib/deviceManagement.js";
 import { DeviceRegistry } from "./lib/deviceRegistry.js";
 import type { ObjectWriter } from "./lib/deviceObjects.js";
 import { ensureDeviceObjects } from "./lib/deviceObjects.js";
@@ -80,8 +82,15 @@ class DeviceReminder extends utils.Adapter {
 	}
 
 	/** Hook for the device manager (Task 13). */
-	private async initDeviceManagement(): Promise<void> {
-		// Filled in by the device manager task.
+	private initDeviceManagement(): Promise<void> {
+		if (!this.registry || !this.notifier) {
+			return Promise.resolve();
+		}
+		// The device manager reads `instanceConfig`, `registry` and `notifier` of this adapter (all set at this point)
+		// and answers the `dm:*` messages, which `onMessage` leaves alone.
+		new ReminderDeviceManagement(this as unknown as DeviceReminderLike);
+		this.log.debug("Device manager ready");
+		return Promise.resolve();
 	}
 
 	private onStateChange(id: string, state: ioBroker.State | null | undefined): void {
