@@ -29,7 +29,7 @@ Detects when household devices such as washing machines, dryers and dishwashers 
 
 ### **WORK IN PROGRESS**
 
-- (Eistee82) BREAKING: new state IDs as device objects (`<deviceId>.status`, ...), the 3.1.2 configuration and states are migrated automatically on the first start (see documentation)
+- (Eistee82) BREAKING: complete rewrite with new state IDs, requires Node.js 22, js-controller 6 and admin 7.8 - settings from 3.1.2 are migrated automatically
 - (Eistee82) Device manager to add, edit and operate devices, with automatic detection of sockets and power meters
 - (Eistee82) New detection modes (time-based, combined) and corrected abort detection (default off)
 - (Eistee82) Reminders until acknowledged, actions on start, end, reminder and acknowledgement, and a learning mode for thresholds
