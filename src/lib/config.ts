@@ -397,6 +397,21 @@ export function completeRecipientRow(raw: Record<string, unknown>): Record<strin
 	return changed ? next : raw;
 }
 
+/**
+ * Recipient from one row of the settings (used to test a row that is not saved yet).
+ *
+ * @param raw - Raw recipient row
+ */
+export function recipientFromRow(raw: unknown): { recipient: RecipientConfig | null; warnings: string[] } {
+	const warnings: string[] = [];
+	if (!isRecord(raw)) {
+		return { recipient: null, warnings: ["Recipient #1 ignored: not an object"] };
+	}
+	const row = completeRecipientRow(raw);
+	const recipient = normalizeRecipient(row, 0, str(row.id).trim() || "test", warnings);
+	return { recipient, warnings };
+}
+
 /** Raw rows of the native with generated ids filled in. */
 export interface IdPatch {
 	/** Recipients. */

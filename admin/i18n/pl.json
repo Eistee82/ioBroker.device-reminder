@@ -102,7 +102,7 @@
 	"rcp_targetHelp": "Wybierz użytkownika lub czat znany instancji telegramu.",
 	"rcp_telegramTarget": "Cel telegramu",
 	"rcp_test": "Wyślij wiadomość testową",
-	"rcp_testHelp": "Najpierw zapisz ustawienia, a następnie wyślij wiadomość testową.",
+	"rcp_testHelp": "Wysyła wiadomość testową z pokazanymi tutaj ustawieniami (również przed zapisaniem).",
 	"rcp_tgChat": "Identyfikator czatu",
 	"rcp_tgNone": "Wszyscy użytkownicy",
 	"rcp_tgUser": "Nazwa użytkownika",

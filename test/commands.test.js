@@ -95,6 +95,17 @@ describe("handleCommand", () => {
 		});
 	});
 
+	it("testRecipient tests an unsaved row of the settings", async () => {
+		const { reg, notifier, host } = await setup();
+		const row = { name: "New", enabled: true, instance: "telegram.1", telegramTarget: "chatId", target: "-100" };
+		assert.deepStrictEqual(await handleCommand(reg, notifier, "testRecipient", { recipient: row }), { ok: true });
+		const last = host.sent.at(-1);
+		assert.strictEqual(last.instance, "telegram.1");
+		assert.deepStrictEqual(last.message, { text: "Test message from device-reminder", chatId: "-100" });
+		const bad = await handleCommand(reg, notifier, "testRecipient", { recipient: { name: "x" } });
+		assert.strictEqual(bad.ok, false);
+	});
+
 	it("select commands answer with the choices of the installation", async () => {
 		const { reg, notifier } = await setup();
 		const env = {

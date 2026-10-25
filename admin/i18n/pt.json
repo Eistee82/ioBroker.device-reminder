@@ -102,7 +102,7 @@
 	"rcp_targetHelp": "Escolha um usuário ou chat conhecido pela instância do telegrama.",
 	"rcp_telegramTarget": "Alvo do telegrama",
 	"rcp_test": "Enviar mensagem de teste",
-	"rcp_testHelp": "Salve as configurações primeiro e depois envie uma mensagem de teste.",
+	"rcp_testHelp": "Envia uma mensagem de teste com as configurações mostradas aqui (também antes de salvar).",
 	"rcp_tgChat": "ID do bate-papo",
 	"rcp_tgNone": "Todos os usuários",
 	"rcp_tgUser": "Nome de usuário",

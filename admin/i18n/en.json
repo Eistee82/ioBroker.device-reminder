@@ -136,5 +136,5 @@
 	"rcp_messengerHelp": "All installed instances of the supported messenger adapters.",
 	"rcp_echo": "Echo device",
 	"rcp_echoHelp": "Echo devices and groups of the chosen alexa2 instance.",
-	"rcp_testHelp": "Save the settings first, then send a test message."
+	"rcp_testHelp": "Sends a test message with the settings shown here (also before saving)."
 }

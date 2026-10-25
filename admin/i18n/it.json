@@ -102,7 +102,7 @@
 	"rcp_targetHelp": "Scegli un utente o una chat nota all'istanza di Telegram.",
 	"rcp_telegramTarget": "Obiettivo di Telegramma",
 	"rcp_test": "Invia messaggio di prova",
-	"rcp_testHelp": "Salvare prima le impostazioni, quindi inviare un messaggio di prova.",
+	"rcp_testHelp": "Invia un messaggio di prova con le impostazioni qui riportate (anche prima del salvataggio).",
 	"rcp_tgChat": "ID chat",
 	"rcp_tgNone": "All users",
 	"rcp_tgUser": "Nome utente",

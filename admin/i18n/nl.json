@@ -102,7 +102,7 @@
 	"rcp_targetHelp": "Kies een gebruiker of chat die bekend is bij de telegraminstantie.",
 	"rcp_telegramTarget": "Telegramdoel",
 	"rcp_test": "Testbericht verzenden",
-	"rcp_testHelp": "Sla eerst de instellingen op en stuur vervolgens een testbericht.",
+	"rcp_testHelp": "Verstuurt een testbericht met de hier getoonde instellingen (ook vóór opslaan).",
 	"rcp_tgChat": "Chat-ID",
 	"rcp_tgNone": "Alle gebruikers",
 	"rcp_tgUser": "Gebruikersnaam",

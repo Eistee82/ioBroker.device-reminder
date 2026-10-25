@@ -102,7 +102,7 @@
 	"rcp_targetHelp": "Choisissez un utilisateur ou un chat connu de l'instance de télégramme.",
 	"rcp_telegramTarget": "Cible du télégramme",
 	"rcp_test": "Envoyer un message test",
-	"rcp_testHelp": "Enregistrez d'abord les paramètres, puis envoyez un message test.",
+	"rcp_testHelp": "Envoie un message test avec les paramètres affichés ici (également avant l'enregistrement).",
 	"rcp_tgChat": "Identifiant de discussion",
 	"rcp_tgNone": "Tous les utilisateurs",
 	"rcp_tgUser": "Nom d'utilisateur",

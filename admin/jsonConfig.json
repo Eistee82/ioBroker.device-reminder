@@ -527,7 +527,7 @@
 						{
 							"type": "sendTo",
 							"command": "testRecipient",
-							"jsonData": "{\"id\": \"${data.id}\"}",
+							"jsonData": "{\"recipient\": ${JSON.stringify(data)}}",
 							"label": "rcp_test",
 							"variant": "outlined",
 							"xs": 12,
@@ -535,7 +535,24 @@
 							"md": 3,
 							"lg": 3,
 							"xl": 3,
-							"help": "rcp_testHelp"
+							"help": "rcp_testHelp",
+							"showProcess": true,
+							"icon": "send",
+							"result": {
+								"ok": {
+									"en": "Test message sent",
+									"de": "Testnachricht gesendet",
+									"ru": "Тестовое сообщение отправлено",
+									"pt": "Mensagem de teste enviada",
+									"nl": "Testbericht verzonden",
+									"fr": "Message de test envoyé",
+									"it": "Messaggio di prova inviato",
+									"es": "Mensaje de prueba enviado",
+									"pl": "Wiadomość testowa wysłana",
+									"uk": "Тестове повідомлення надіслано",
+									"zh-cn": "测试消息已发送"
+								}
+							}
 						}
 					]
 				}

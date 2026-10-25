@@ -296,10 +296,10 @@ Gerätezustände sind relativ zum Geräteobjekt `<deviceId>` angegeben. Info-Zus
 | `finished` | boolean | indicator | r | - | Fertig | True nach einem beendeten Lauf bis zur Quittierung |
 | `lastFinished` | number | date | r | - | Zuletzt fertig | Zeitstempel des letzten Endes |
 | `acknowledge` | boolean | button | w | - | Quittieren | true schreiben zum Quittieren; stoppt Erinnerungen und führt die Aktionen für acknowledged aus |
-| `config.doNotDisturb` | boolean | switch | rw | - | Nicht stören | Unterdrückt Sprachausgaben dieses Geräts |
+| `config.doNotDisturb` | boolean | switch.enable | rw | - | Nicht stören | Unterdrückt Sprachausgaben dieses Geräts |
 | `config.runtimeMax` | number | level | rw | min | Maximale Laufzeit | Maximale Laufzeit in Minuten; darüber wird alertRuntime true |
-| `learning.start` | boolean | button | w | - | Anlernen starten | true schreiben startet die Aufnahme eines Laufs |
-| `learning.stop` | boolean | button | w | - | Anlernen beenden | true schreiben beendet die Aufnahme und berechnet den Vorschlag |
+| `learning.start` | boolean | button.start | w | - | Anlernen starten | true schreiben startet die Aufnahme eines Laufs |
+| `learning.stop` | boolean | button.stop | w | - | Anlernen beenden | true schreiben beendet die Aufnahme und berechnet den Vorschlag |
 | `learning.active` | boolean | indicator | r | - | Anlernen aktiv | True, solange ein Lauf aufgenommen wird |
 | `learning.result` | string | json | r | - | Anlern-Ergebnis | JSON: Schwellwerte, startDurationSec, endDurationSec, durationSec, samples oder ein Fehler (tooFewSamples, noRun) |
 | `lastOperationsHtml` | string | html | r | - | Letzte Vorgänge (HTML) | HTML-Tabelle der letzten Läufe (nur wenn in den allgemeinen Einstellungen aktiviert) |
@@ -307,6 +307,9 @@ Gerätezustände sind relativ zum Geräteobjekt `<deviceId>` angegeben. Info-Zus
 <!-- END STATES -->
 
 ## 14. FAQ
+
+**Warum erscheint das Gerät im Reiter „Geräte“ nicht unter „Native Geräte“?**
+Der Geräte-Adapter listet nur Objekte, die einem Raum oder einer Funktion zugeordnet sind. Ordne das Geräte-Objekt (zum Beispiel `device-reminder.0.waschmaschine`) unter **Kategorien** (oder im Objekt-Browser) einem Raum oder einer Funktion zu; es erscheint dann als Leistungsmesser mit „läuft“-Anzeige.
 
 **Meine Steckdose sendet nur bei Änderung. Das Gerät wird nie erkannt.**
 Nutze für den Gerätetyp den Erkennungsmodus **Zeit** (oder **Kombiniert**). Der Modus Anzahl braucht regelmäßige Werte.

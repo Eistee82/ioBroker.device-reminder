@@ -102,7 +102,7 @@
 	"rcp_targetHelp": "选择电报实例已知的用户或聊天。",
 	"rcp_telegramTarget": "Telegram target",
 	"rcp_test": "发送测试消息",
-	"rcp_testHelp": "先保存设置，然后发送测试消息。",
+	"rcp_testHelp": "使用此处显示的设置发送测试消息（也在保存之前）。",
 	"rcp_tgChat": "聊天ID",
 	"rcp_tgNone": "所有用户",
 	"rcp_tgUser": "用户名",

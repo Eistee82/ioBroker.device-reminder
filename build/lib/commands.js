@@ -1,3 +1,4 @@
+import { recipientFromRow } from "./config.js";
 import { alexaDeviceChoices, messengerInstanceChoices, telegramTargetChoices, } from "./messenger/choices.js";
 function field(msg, key) {
     return typeof msg === "object" && msg !== null ? msg[key] : undefined;
@@ -24,6 +25,11 @@ export async function handleCommand(reg, notifier, cmd, msg, env) {
         case "list":
             return reg.ids().map(id => ({ id, name: reg.get(id)?.config.name ?? id }));
         case "testRecipient": {
+            const row = field(msg, "recipient");
+            if (row && typeof row === "object") {
+                const { recipient, warnings } = recipientFromRow(row);
+                return recipient ? notifier.sendTest(recipient) : { ok: false, error: warnings.join(", ") };
+            }
             const id = field(msg, "id");
             if (typeof id !== "string" || id === "") {
                 return { ok: false, error: "missingRecipient" };

@@ -296,10 +296,10 @@ Device states are relative to the device object `<deviceId>`. Info states are on
 | `finished` | boolean | indicator | r | - | Finished | True after a run finished until it is acknowledged |
 | `lastFinished` | number | date | r | - | Last finished | Timestamp of the last finish |
 | `acknowledge` | boolean | button | w | - | Acknowledge | Write true to acknowledge; stops reminders and runs the acknowledged actions |
-| `config.doNotDisturb` | boolean | switch | rw | - | Do not disturb | Suppresses voice outputs of this device |
+| `config.doNotDisturb` | boolean | switch.enable | rw | - | Do not disturb | Suppresses voice outputs of this device |
 | `config.runtimeMax` | number | level | rw | min | Maximum runtime | Maximum runtime in minutes; above it alertRuntime becomes true |
-| `learning.start` | boolean | button | w | - | Start learning | Write true to start recording a run |
-| `learning.stop` | boolean | button | w | - | Stop learning | Write true to stop recording and compute the suggestion |
+| `learning.start` | boolean | button.start | w | - | Start learning | Write true to start recording a run |
+| `learning.stop` | boolean | button.stop | w | - | Stop learning | Write true to stop recording and compute the suggestion |
 | `learning.active` | boolean | indicator | r | - | Learning active | True while a run is recorded |
 | `learning.result` | string | json | r | - | Learning result | JSON: thresholds, startDurationSec, endDurationSec, durationSec, samples, or an error (tooFewSamples, noRun) |
 | `lastOperationsHtml` | string | html | r | - | Last operations (HTML) | HTML table of the last runs (only if enabled in the general settings) |
@@ -307,6 +307,9 @@ Device states are relative to the device object `<deviceId>`. Info states are on
 <!-- END STATES -->
 
 ## 14. FAQ
+
+**Why is the device not listed under "Native devices" in the Devices tab?**
+The devices adapter only lists objects that are assigned to a room or a function. Assign the device object (for example `device-reminder.0.waschmaschine`) to a room or function in **Categories** (or in the object browser); it is then shown as a power meter with a "running" indicator.
 
 **My plug only reports when the value changes. The device is never detected.**
 Use the detection mode **Time** (or **Combined**) for the device type. Count mode needs regular values.

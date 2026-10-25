@@ -102,7 +102,7 @@
 	"rcp_targetHelp": "Benutzer oder Chat aus der Telegram-Instanz wählen.",
 	"rcp_telegramTarget": "Telegram-Ziel",
 	"rcp_test": "Testnachricht senden",
-	"rcp_testHelp": "Zuerst speichern, dann eine Testnachricht senden.",
+	"rcp_testHelp": "Sendet eine Testnachricht mit den hier gezeigten Einstellungen (auch vor dem Speichern).",
 	"rcp_tgChat": "Chat-ID",
 	"rcp_tgNone": "Alle Nutzer",
 	"rcp_tgUser": "Benutzername",

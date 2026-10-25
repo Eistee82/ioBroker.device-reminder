@@ -231,4 +231,13 @@ describe("Notifier", () => {
 		assert.deepStrictEqual(await n.sendTest("tg"), { ok: true });
 		assert.strictEqual(host.sent.length, 1);
 	});
+
+	it("sendTest also accepts a recipient object and ignores the time window", async () => {
+		const host = makeHost();
+		const n = new Notifier(host, () => []);
+		const r = { ...telegram, id: "tmp", activeFrom: "01:00", activeUntil: "02:00" };
+		assert.deepStrictEqual(await n.sendTest(r), { ok: true });
+		assert.strictEqual(host.sent.length, 1);
+		assert.strictEqual((await n.sendTest({ ...r, enabled: false })).ok, false);
+	});
 });

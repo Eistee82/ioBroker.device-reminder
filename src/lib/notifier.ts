@@ -71,36 +71,42 @@ export class Notifier {
 					continue;
 				}
 			}
-			try {
-				if (isVoice) {
-					if (!r.stateId) {
-						this.host.log.warn(
-							`Recipient ${r.name} has no target configured (state, user/chat, channel or topic), message skipped`,
-						);
-						continue;
-					}
-					await this.voice.speak(r, text);
-					result.sent.push(r.id);
-					continue;
-				}
-				const call = buildDelivery(r, text);
-				if (!call) {
-					this.host.log.warn(
-						`Recipient ${r.name} has no target configured (state, user/chat, channel or topic), message skipped`,
-					);
-					continue;
-				}
-				if (call.kind === "sendTo") {
-					this.host.sendTo(call.instance, call.command, call.message);
-				} else {
-					await this.host.setForeignValue(call.id, call.val);
-				}
+			if (await this.deliver(r, text)) {
 				result.sent.push(r.id);
-			} catch (err) {
-				this.host.log.warn(`Sending to ${r.name} failed: ${errorMessage(err)}`);
 			}
 		}
 		return result;
+	}
+
+	/**
+	 * Deliver a text to one recipient (no window / do-not-disturb checks).
+	 *
+	 * @param r - Recipient
+	 * @param text - Message text
+	 * @returns true if the message was handed over
+	 */
+	private async deliver(r: RecipientConfig, text: string): Promise<boolean> {
+		try {
+			const isVoice = r.kind === "alexa" || r.kind === "sayit";
+			const call = isVoice ? null : buildDelivery(r, text);
+			if ((isVoice && !r.stateId) || (!isVoice && !call)) {
+				this.host.log.warn(
+					`Recipient ${r.name} has no target configured (state, user/chat, channel or topic), message skipped`,
+				);
+				return false;
+			}
+			if (isVoice) {
+				await this.voice.speak(r, text);
+			} else if (call?.kind === "sendTo") {
+				this.host.sendTo(call.instance, call.command, call.message);
+			} else if (call) {
+				await this.host.setForeignValue(call.id, call.val);
+			}
+			return true;
+		} catch (err) {
+			this.host.log.warn(`Sending to ${r.name} failed: ${errorMessage(err)}`);
+			return false;
+		}
 	}
 
 	/**
@@ -126,27 +132,21 @@ export class Notifier {
 	}
 
 	/**
-	 * Send a test message to one recipient.
+	 * Send a test message to one recipient: a saved one by id, or the (possibly unsaved) row of the settings.
 	 *
-	 * @param recipientId - Recipient id
+	 * @param recipient - Recipient id or recipient
 	 */
-	public async sendTest(recipientId: string): Promise<{ ok: boolean; error?: string }> {
-		const r = this.getRecipients().find(x => x.id === recipientId);
+	public async sendTest(recipient: string | RecipientConfig): Promise<{ ok: boolean; error?: string }> {
+		const r = typeof recipient === "string" ? this.getRecipients().find(x => x.id === recipient) : recipient;
 		if (!r) {
-			return { ok: false, error: `Recipient ${recipientId} not found` };
+			return { ok: false, error: `Recipient ${String(recipient)} not found` };
 		}
 		if (r.enabled === false) {
 			return { ok: false, error: `Recipient ${r.name} is disabled` };
 		}
-		try {
-			const res = await this.notify([recipientId], "Test message from device-reminder", {
-				doNotDisturb: false,
-				test: true,
-			});
-			return res.sent.length > 0 ? { ok: true } : { ok: false, error: `Sending to ${r.name} failed` };
-		} catch (err) {
-			return { ok: false, error: errorMessage(err) };
-		}
+		return (await this.deliver(r, "Test message from device-reminder"))
+			? { ok: true }
+			: { ok: false, error: `Sending to ${r.name} failed` };
 	}
 
 	/** Clear all timers. */

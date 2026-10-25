@@ -131,6 +131,7 @@
     "adminUI": {
       "config": "json"
     },
+    "messagebox": true,
     "supportedMessages": {
       "deviceManager": true,
       "custom": true

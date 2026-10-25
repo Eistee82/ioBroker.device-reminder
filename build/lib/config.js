@@ -191,6 +191,15 @@ export function completeRecipientRow(raw) {
     const changed = ["kind", "instance", "stateId"].some(k => next[k] !== raw[k]);
     return changed ? next : raw;
 }
+export function recipientFromRow(raw) {
+    const warnings = [];
+    if (!isRecord(raw)) {
+        return { recipient: null, warnings: ["Recipient #1 ignored: not an object"] };
+    }
+    const row = completeRecipientRow(raw);
+    const recipient = normalizeRecipient(row, 0, str(row.id).trim() || "test", warnings);
+    return { recipient, warnings };
+}
 function generateRecipientId(raw, index, taken) {
     const kind = MESSENGER_KINDS.find(k => k === raw.kind) ?? "recipient";
     const stamp = Date.now().toString(36);

@@ -1,3 +1,4 @@
+import { recipientFromRow } from "./config.js";
 import type { DeviceRegistry } from "./deviceRegistry.js";
 import {
 	alexaDeviceChoices,
@@ -65,6 +66,12 @@ export async function handleCommand(
 		case "list":
 			return reg.ids().map(id => ({ id, name: reg.get(id)?.config.name ?? id }));
 		case "testRecipient": {
+			const row = field(msg, "recipient");
+			if (row && typeof row === "object") {
+				// test button of the settings: the row may not be saved yet
+				const { recipient, warnings } = recipientFromRow(row);
+				return recipient ? notifier.sendTest(recipient) : { ok: false, error: warnings.join(", ") };
+			}
 			const id = field(msg, "id");
 			if (typeof id !== "string" || id === "") {
 				return { ok: false, error: "missingRecipient" };

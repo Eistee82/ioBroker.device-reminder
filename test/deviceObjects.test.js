@@ -62,9 +62,12 @@ describe("deviceObjects", () => {
 		}
 		const patterns = new ChannelDetector().detect({ objects, id: "device-reminder.0.waschmaschine" });
 		assert.ok(patterns && patterns.length > 0, "no pattern detected");
-		assert.ok(
-			patterns.some(p => ["info", "electricity"].includes(p.type)),
-			`unexpected types: ${patterns.map(p => p.type).join(",")}`,
-		);
+		// the main pattern is a power meter with the running indicator, never a socket: a "socket" would
+		// take do-not-disturb as its on/off switch in the devices adapter, material or Matter
+		assert.strictEqual(patterns[0].type, "electricity");
+		const main = Object.fromEntries(patterns[0].states.filter(s => s.id).map(s => [s.name, s.id]));
+		assert.strictEqual(main.ELECTRIC_POWER, "device-reminder.0.waschmaschine.consumption");
+		assert.strictEqual(main.WORKING, "device-reminder.0.waschmaschine.running");
+		assert.ok(!patterns.some(p => p.type === "socket"), "detected as socket");
 	});
 });
