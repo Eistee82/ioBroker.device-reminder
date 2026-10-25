@@ -149,7 +149,8 @@
           "DeviceCard",
           "DeviceOverview"
         ],
-        "i18n": true
+        "i18n": "component",
+        "bundlerType": "module"
       }
     },
     "restartAdapters": [
