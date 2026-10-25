@@ -36,12 +36,13 @@ export async function telegramTargetChoices(env, instance, target) {
     catch {
         return [];
     }
+    const useUsername = (await env.objectNative(`system.adapter.${instance}`))?.useUsername === true;
     return Object.entries(users).map(([chatId, u]) => {
         const name = u.firstName || u.userName || chatId;
         if (target === "chatId") {
             return { label: `${name} (${chatId})`, value: chatId };
         }
-        const value = u.userName || u.firstName || chatId;
+        const value = (useUsername && u.userName) || u.firstName || u.userName || chatId;
         return { label: u.userName ? `${name} (@${u.userName})` : name, value };
     });
 }

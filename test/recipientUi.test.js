@@ -31,6 +31,7 @@ function env(o = {}) {
 		instances: async () => o.instances ?? [],
 		stateIds: async prefix => (o.states ?? []).filter(id => id.startsWith(prefix)),
 		objectName: async id => (o.names ?? {})[id],
+		objectNative: async id => (o.natives ?? {})[id],
 		stateValue: async id => (o.values ?? {})[id],
 	};
 }
@@ -109,13 +110,6 @@ describe("completeRecipientRow", () => {
 		assert.strictEqual(row.instance, "alexa2.1");
 	});
 
-	it("cleans a telegram user target to the plain user name", () => {
-		for (const target of ["Alina @AMEistee", "@AMEistee", "AMEistee"]) {
-			const row = completeRecipientRow({ instance: "telegram.0", telegramTarget: "user", target });
-			assert.strictEqual(row.target, "AMEistee");
-		}
-	});
-
 	it("returns the same object when nothing is missing", () => {
 		const row = { kind: "email", instance: "email.0" };
 		assert.strictEqual(completeRecipientRow(row), row);
@@ -166,7 +160,16 @@ describe("choices for the admin UI", () => {
 	it("lists telegram users and chats", async () => {
 		const users = JSON.stringify({ 123: { firstName: "Anna", userName: "anna" }, "-100": { firstName: "Family" } });
 		const e = env({ values: { "telegram.0.communicate.users": users } });
+		// default of the telegram adapter: `user` is matched against the first name
 		assert.deepStrictEqual(await telegramTargetChoices(e, "telegram.0", "user"), [
+			{ label: "Anna (@anna)", value: "Anna" },
+			{ label: "Family", value: "Family" },
+		]);
+		const withUserName = env({
+			values: { "telegram.0.communicate.users": users },
+			natives: { "system.adapter.telegram.0": { useUsername: true } },
+		});
+		assert.deepStrictEqual(await telegramTargetChoices(withUserName, "telegram.0", "user"), [
 			{ label: "Anna (@anna)", value: "anna" },
 			{ label: "Family", value: "Family" },
 		]);

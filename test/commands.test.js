@@ -101,6 +101,7 @@ describe("handleCommand", () => {
 			instances: async () => ["telegram.0", "admin.0"],
 			stateIds: async () => ["alexa2.0.Echo-Devices.G1.Commands.speak"],
 			objectName: async () => "Küche",
+			objectNative: async () => ({}),
 			stateValue: async () => JSON.stringify({ 1: { firstName: "Anna" } }),
 		};
 		assert.deepStrictEqual(await handleCommand(reg, notifier, "getMessengerInstances", {}, env), [

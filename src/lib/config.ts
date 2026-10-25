@@ -393,14 +393,7 @@ export function completeRecipientRow(raw: Record<string, unknown>): Record<strin
 	if (fixed) {
 		next.stateId = fixed;
 	}
-	if (kind === "telegram" && next.telegramTarget === "user" && typeof next.target === "string") {
-		// "@name" or a picked "First @name" label: the telegram adapter expects the plain user name
-		const m = /@([^\s@]+)\s*$/.exec(next.target);
-		if (m) {
-			next.target = m[1];
-		}
-	}
-	const changed = (["kind", "instance", "stateId", "target"] as const).some(k => next[k] !== raw[k]);
+	const changed = (["kind", "instance", "stateId"] as const).some(k => next[k] !== raw[k]);
 	return changed ? next : raw;
 }
 

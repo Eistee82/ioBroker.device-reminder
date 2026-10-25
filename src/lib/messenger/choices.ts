@@ -27,6 +27,12 @@ export interface ChoiceEnv {
 	 */
 	objectName(id: string): Promise<string | undefined>;
 	/**
+	 * Native settings of an object (for example of an adapter instance).
+	 *
+	 * @param id - Object id
+	 */
+	objectNative(id: string): Promise<Record<string, unknown> | undefined>;
+	/**
 	 * Value of a foreign state.
 	 *
 	 * @param id - State id
@@ -92,13 +98,15 @@ export async function telegramTargetChoices(env: ChoiceEnv, instance: string, ta
 	} catch {
 		return [];
 	}
+	const useUsername = (await env.objectNative(`system.adapter.${instance}`))?.useUsername === true;
 	return Object.entries(users).map(([chatId, u]) => {
 		const name = u.firstName || u.userName || chatId;
 		if (target === "chatId") {
 			return { label: `${name} (${chatId})`, value: chatId };
 		}
-		// the telegram adapter matches `user` against the user name or the first name
-		const value = u.userName || u.firstName || chatId;
+		// the telegram adapter matches `user` against the first name, or against the user name if
+		// "use user name" is enabled in that instance (and the user has one)
+		const value = (useUsername && u.userName) || u.firstName || u.userName || chatId;
 		return { label: u.userName ? `${name} (@${u.userName})` : name, value };
 	});
 }

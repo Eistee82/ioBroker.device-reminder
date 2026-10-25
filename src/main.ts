@@ -274,6 +274,8 @@ class DeviceReminder extends utils.Adapter {
 				}
 				return name ? (name[this.language ?? "en"] ?? name.en) : undefined;
 			},
+			objectNative: async id =>
+				(await this.getForeignObjectAsync(id))?.native as Record<string, unknown> | undefined,
 			stateValue: async id => (await this.getForeignStateAsync(id))?.val,
 		};
 	}
