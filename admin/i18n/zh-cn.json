@@ -1,0 +1,8 @@
+{
+	"introText": "设备提醒会检测家用设备何时启动和结束并通知您。",
+	"placeholderText": "此部分在稍后的步骤中配置。",
+	"tabDevices": "设备",
+	"tabGeneral": "一般的",
+	"tabRecipients": "收件人",
+	"tabTypes": "设备类型"
+}

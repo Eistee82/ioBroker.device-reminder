@@ -1,0 +1,8 @@
+{
+	"introText": "Device Reminder detecta cuándo se inician y finalizan los dispositivos domésticos y le avisa.",
+	"placeholderText": "Esta sección se configura en un paso posterior.",
+	"tabDevices": "Dispositivos",
+	"tabGeneral": "General",
+	"tabRecipients": "Destinatarios",
+	"tabTypes": "Tipos de dispositivos"
+}

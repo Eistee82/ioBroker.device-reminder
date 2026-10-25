@@ -1,0 +1,66 @@
+name: Test and Release
+
+on:
+  push:
+    branches:
+      - "main"
+      - "feature/**"
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-**"
+  pull_request: {}
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ioBroker/testing-action-check@v2
+        with:
+          node-version: '24.x'
+          lint: true
+
+  adapter-tests:
+    needs: [check-and-lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        node-version: [22.x, 24.x, 26.x]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: ioBroker/testing-action-adapter@v1
+        with:
+          node-version: ${{ matrix.node-version }}
+          build: true
+          unit-test-command: "npm test"
+
+  # Active as soon as the widget project exists (Task 16).
+  widget-tests:
+    needs: [check-and-lint]
+    if: ${{ hashFiles('src-widgets/package.json') != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+      - run: npm ci && npm run build:widgets && npm run test:widgets
+
+  deploy:
+    needs: [adapter-tests]
+    if: |
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: ioBroker/testing-action-deploy@v1
+        with:
+          node-version: '24.x'
+          build: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}

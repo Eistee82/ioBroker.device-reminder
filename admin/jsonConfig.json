@@ -1,0 +1,66 @@
+{
+	"type": "tabs",
+	"i18n": true,
+	"items": {
+		"_tabGeneral": {
+			"type": "panel",
+			"label": "tabGeneral",
+			"items": {
+				"_intro": {
+					"type": "staticText",
+					"text": "introText",
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
+				}
+			}
+		},
+		"_tabTypes": {
+			"type": "panel",
+			"label": "tabTypes",
+			"items": {
+				"_placeholder": {
+					"type": "staticText",
+					"text": "placeholderText",
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
+				}
+			}
+		},
+		"_tabRecipients": {
+			"type": "panel",
+			"label": "tabRecipients",
+			"items": {
+				"_placeholder": {
+					"type": "staticText",
+					"text": "placeholderText",
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
+				}
+			}
+		},
+		"_tabDevices": {
+			"type": "panel",
+			"label": "tabDevices",
+			"items": {
+				"_placeholder": {
+					"type": "staticText",
+					"text": "placeholderText",
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
+				}
+			}
+		}
+	}
+}

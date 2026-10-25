@@ -1,0 +1,8 @@
+{
+	"introText": "Device Reminder wykrywa, kiedy urządzenia gospodarstwa domowego rozpoczynają się i kończą, i powiadamia Cię.",
+	"placeholderText": "Ta sekcja jest konfigurowana w późniejszym kroku.",
+	"tabDevices": "Urządzenia",
+	"tabGeneral": "Ogólny",
+	"tabRecipients": "Odbiorcy",
+	"tabTypes": "Typy urządzeń"
+}

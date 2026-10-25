@@ -1,0 +1,78 @@
+{
+	"name": "iobroker.device-reminder",
+	"version": "3.1.2",
+	"description": "ioBroker adapter that detects when household devices start and finish and notifies you via 12 messengers, voice output and reminders",
+	"type": "module",
+	"main": "build/main.js",
+	"files": [
+		"build/",
+		"admin/",
+		"widgets/",
+		"io-package.json",
+		"LICENSE"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Eistee82/ioBroker.device-reminder.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Eistee82/ioBroker.device-reminder/issues"
+	},
+	"homepage": "https://github.com/Eistee82/ioBroker.device-reminder#readme",
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"build:widgets": "node -e \"console.log('build:widgets: widget project not set up yet (Task 16)')\"",
+		"watch": "tsc -p tsconfig.build.json --watch",
+		"clean": "rimraf build/",
+		"check": "tsc --noEmit",
+		"lint": "eslint src/ test/",
+		"lint:fix": "eslint src/ test/ --fix",
+		"pretest": "npm run build",
+		"pretest:widgets-unit": "node -e \"console.log('pretest:widgets-unit: widget project not set up yet (Task 16)')\"",
+		"test:package": "mocha test/package.cjs --exit",
+		"test:unit": "c8 --lines 80 --branches 70 --functions 80 mocha \"test/*.test.js\" --exit",
+		"test:integration": "mocha test/integration.cjs --exit",
+		"test:widgets": "node -e \"console.log('test:widgets: widget project not set up yet (Task 16)')\"",
+		"test": "npm run test:package && npm run test:unit",
+		"translate": "translate-adapter",
+		"release": "release-script",
+		"test:repo": "npx --yes @iobroker/repochecker https://github.com/Eistee82/ioBroker.device-reminder --local"
+	},
+	"keywords": [
+		"ioBroker",
+		"device reminder",
+		"household",
+		"washing machine",
+		"notification",
+		"smart home"
+	],
+	"author": {
+		"name": "Eistee82"
+	},
+	"license": "MIT",
+	"engines": {
+		"node": ">=22"
+	},
+	"dependencies": {
+		"@iobroker/adapter-core": "^3.4.3",
+		"@iobroker/dm-utils": "^3.2.1",
+		"@iobroker/type-detector": "^6.2.0"
+	},
+	"devDependencies": {
+		"@alcalzone/release-script": "^5.2.1",
+		"@alcalzone/release-script-plugin-iobroker": "^5.2.0",
+		"@alcalzone/release-script-plugin-license": "^5.2.2",
+		"@alcalzone/release-script-plugin-manual-review": "^5.2.0",
+		"@iobroker/adapter-dev": "^1.5.0",
+		"@iobroker/eslint-config": "^2.3.4",
+		"@iobroker/testing": "^6.3.1",
+		"@tsconfig/node22": "^22.0.6",
+		"@types/node": "^22.20.5",
+		"c8": "^12.0.0",
+		"eslint-plugin-mocha": "^11.3.0",
+		"mocha": "^12.0.3",
+		"rimraf": "^6.1.3",
+		"tsx": "^4.23.15",
+		"typescript": "~5.7.0"
+	}
+}

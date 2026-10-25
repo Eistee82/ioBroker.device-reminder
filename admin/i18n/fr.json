@@ -1,0 +1,8 @@
+{
+	"introText": "Device Reminder détecte le démarrage et la fin des appareils domestiques et vous en informe.",
+	"placeholderText": "Cette section est configurée dans une étape ultérieure.",
+	"tabDevices": "Appareils",
+	"tabGeneral": "Général",
+	"tabRecipients": "Destinataires",
+	"tabTypes": "Types d'appareils"
+}

@@ -1,0 +1,8 @@
+{
+	"tabGeneral": "General",
+	"tabTypes": "Device types",
+	"tabRecipients": "Recipients",
+	"tabDevices": "Devices",
+	"introText": "Device Reminder detects when household devices start and finish and notifies you.",
+	"placeholderText": "This section is configured in a later step."
+}
