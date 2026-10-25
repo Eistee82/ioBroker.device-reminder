@@ -1,5 +1,22 @@
 {
 	"oid": "对象 ID",
 	"private": "私有",
-	"type": "类型"
+	"type": "类型",
+	"device_card": "设备卡片",
+	"device_overview": "设备概览",
+	"compact": "紧凑",
+	"color_running": "运行中颜色",
+	"color_finished": "已完成颜色",
+	"color_alert": "运行时长警报颜色",
+	"instance": "实例",
+	"select_device": "选择设备",
+	"no_devices": "没有设备",
+	"no_history": "尚无运行记录",
+	"running": "运行中",
+	"finished": "已完成",
+	"runtime_alert": "运行时长警报",
+	"remaining": "剩余",
+	"acknowledge": "确认",
+	"do_not_disturb": "请勿打扰",
+	"history": "历史"
 }

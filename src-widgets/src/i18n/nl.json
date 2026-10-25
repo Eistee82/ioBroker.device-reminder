@@ -1,5 +1,22 @@
 {
 	"oid": "Object-ID",
 	"private": "Privé",
-	"type": "Type"
+	"type": "Type",
+	"device_card": "Apparaatkaart",
+	"device_overview": "Apparaatoverzicht",
+	"compact": "Compact",
+	"color_running": "Kleur actief",
+	"color_finished": "Kleur klaar",
+	"color_alert": "Kleur duurmelding",
+	"instance": "Instantie",
+	"select_device": "Selecteer een apparaat",
+	"no_devices": "Geen apparaten",
+	"no_history": "Nog geen cycli",
+	"running": "Actief",
+	"finished": "Klaar",
+	"runtime_alert": "Duurmelding",
+	"remaining": "resterend",
+	"acknowledge": "Bevestigen",
+	"do_not_disturb": "Niet storen",
+	"history": "Geschiedenis"
 }

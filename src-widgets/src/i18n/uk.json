@@ -1,5 +1,22 @@
 {
 	"oid": "ID об'єкта",
 	"private": "Приватний",
-	"type": "Тип"
+	"type": "Тип",
+	"device_card": "Картка пристрою",
+	"device_overview": "Огляд пристроїв",
+	"compact": "Компактний",
+	"color_running": "Колір: працює",
+	"color_finished": "Колір: завершено",
+	"color_alert": "Колір: попередження про тривалість",
+	"instance": "Екземпляр",
+	"select_device": "Виберіть пристрій",
+	"no_devices": "Немає пристроїв",
+	"no_history": "Циклів ще немає",
+	"running": "Працює",
+	"finished": "Завершено",
+	"runtime_alert": "Попередження про тривалість",
+	"remaining": "залишилось",
+	"acknowledge": "Підтвердити",
+	"do_not_disturb": "Не турбувати",
+	"history": "Історія"
 }

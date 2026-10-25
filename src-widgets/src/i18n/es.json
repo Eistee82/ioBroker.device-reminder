@@ -1,5 +1,22 @@
 {
 	"oid": "ID de objeto",
 	"private": "Privado",
-	"type": "Tipo"
+	"type": "Tipo",
+	"device_card": "Tarjeta de dispositivo",
+	"device_overview": "Resumen de dispositivos",
+	"compact": "Compacto",
+	"color_running": "Color en marcha",
+	"color_finished": "Color finalizado",
+	"color_alert": "Color de alerta de duración",
+	"instance": "Instancia",
+	"select_device": "Seleccionar un dispositivo",
+	"no_devices": "Sin dispositivos",
+	"no_history": "Aún no hay ciclos",
+	"running": "En marcha",
+	"finished": "Finalizado",
+	"runtime_alert": "Alerta de duración",
+	"remaining": "restante",
+	"acknowledge": "Confirmar",
+	"do_not_disturb": "No molestar",
+	"history": "Historial"
 }

@@ -1,5 +1,22 @@
 {
 	"oid": "ID obiektu",
 	"private": "Prywatny",
-	"type": "Typ"
+	"type": "Typ",
+	"device_card": "Karta urządzenia",
+	"device_overview": "Przegląd urządzeń",
+	"compact": "Kompaktowy",
+	"color_running": "Kolor w trakcie pracy",
+	"color_finished": "Kolor zakończenia",
+	"color_alert": "Kolor alertu czasu pracy",
+	"instance": "Instancja",
+	"select_device": "Wybierz urządzenie",
+	"no_devices": "Brak urządzeń",
+	"no_history": "Brak cykli",
+	"running": "W trakcie pracy",
+	"finished": "Zakończono",
+	"runtime_alert": "Alert czasu pracy",
+	"remaining": "pozostało",
+	"acknowledge": "Potwierdź",
+	"do_not_disturb": "Nie przeszkadzać",
+	"history": "Historia"
 }

@@ -1,5 +1,22 @@
 {
 	"oid": "ID объекта",
 	"private": "Приватный",
-	"type": "Тип"
+	"type": "Тип",
+	"device_card": "Карточка устройства",
+	"device_overview": "Обзор устройств",
+	"compact": "Компактный",
+	"color_running": "Цвет: работает",
+	"color_finished": "Цвет: завершено",
+	"color_alert": "Цвет: предупреждение о длительности",
+	"instance": "Экземпляр",
+	"select_device": "Выберите устройство",
+	"no_devices": "Нет устройств",
+	"no_history": "Циклов пока нет",
+	"running": "Работает",
+	"finished": "Завершено",
+	"runtime_alert": "Предупреждение о длительности",
+	"remaining": "осталось",
+	"acknowledge": "Подтвердить",
+	"do_not_disturb": "Не беспокоить",
+	"history": "История"
 }
