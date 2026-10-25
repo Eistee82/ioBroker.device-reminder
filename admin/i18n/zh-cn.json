@@ -99,7 +99,7 @@
 	"rcp_serverId": "服务器ID",
 	"rcp_sound": "声音",
 	"rcp_target": "用户名或聊天ID",
-	"rcp_targetHelp": "选择 telegram 实例已知的用户或聊天，或输入一个（群聊 ID 以减号开头）。",
+	"rcp_targetHelp": "选择电报实例已知的用户或聊天。",
 	"rcp_telegramTarget": "Telegram target",
 	"rcp_test": "发送测试消息",
 	"rcp_testHelp": "先保存设置，然后发送测试消息。",

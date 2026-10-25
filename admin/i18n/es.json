@@ -99,7 +99,7 @@
 	"rcp_serverId": "Server ID",
 	"rcp_sound": "Sonido",
 	"rcp_target": "Nombre de usuario o ID de chat",
-	"rcp_targetHelp": "Elija un usuario o chat conocido en la instancia de Telegram, o escriba uno (los ID de chat grupal comienzan con un signo menos).",
+	"rcp_targetHelp": "Elija un usuario o chat conocido en la instancia de Telegram.",
 	"rcp_telegramTarget": "Objetivo de telegrama",
 	"rcp_test": "Enviar mensaje de prueba",
 	"rcp_testHelp": "Primero guarde la configuración y luego envíe un mensaje de prueba.",

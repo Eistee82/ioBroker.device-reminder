@@ -127,7 +127,7 @@
 	"dm_learnSamples": "Recorded samples",
 	"rcp_volumeHelp": "The volume is set for the announcement and restored afterwards.",
 	"rcp_volumeStateIdHelp": "Only needed if the volume state is not found automatically (e.g. Alexa groups). Normally leave empty.",
-	"rcp_targetHelp": "Choose a user or chat known to the telegram instance, or type one (group chat IDs start with a minus sign).",
+	"rcp_targetHelp": "Choose a user or chat known to the telegram instance.",
 	"rcp_windowHelp": "Messages are only sent in this time window (also across midnight). Empty = always.",
 	"rcp_priorityHelp": "Priority of the target service (Pushover: -2 to 2, 2 = needs confirmation).",
 	"rcp_topicHelp": "ntfy topic the message is published to.",

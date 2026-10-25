@@ -99,7 +99,7 @@
 	"rcp_serverId": "ID do servidor",
 	"rcp_sound": "Som",
 	"rcp_target": "Nome de usuário ou ID do chat",
-	"rcp_targetHelp": "Escolha um usuário ou bate-papo conhecido pela instância do telegrama ou digite um (os IDs do bate-papo em grupo começam com um sinal de menos).",
+	"rcp_targetHelp": "Escolha um usuário ou chat conhecido pela instância do telegrama.",
 	"rcp_telegramTarget": "Alvo do telegrama",
 	"rcp_test": "Enviar mensagem de teste",
 	"rcp_testHelp": "Salve as configurações primeiro e depois envie uma mensagem de teste.",

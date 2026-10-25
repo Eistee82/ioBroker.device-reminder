@@ -99,7 +99,7 @@
 	"rcp_serverId": "Server-ID",
 	"rcp_sound": "Geluid",
 	"rcp_target": "Gebruikersnaam of chat-ID",
-	"rcp_targetHelp": "Kies een gebruiker of chat die bekend is bij de telegraminstantie, of typ er een (groepschat-ID's beginnen met een minteken).",
+	"rcp_targetHelp": "Kies een gebruiker of chat die bekend is bij de telegraminstantie.",
 	"rcp_telegramTarget": "Telegramdoel",
 	"rcp_test": "Testbericht verzenden",
 	"rcp_testHelp": "Sla eerst de instellingen op en stuur vervolgens een testbericht.",

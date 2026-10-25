@@ -109,6 +109,13 @@ describe("completeRecipientRow", () => {
 		assert.strictEqual(row.instance, "alexa2.1");
 	});
 
+	it("cleans a telegram user target to the plain user name", () => {
+		for (const target of ["Alina @AMEistee", "@AMEistee", "AMEistee"]) {
+			const row = completeRecipientRow({ instance: "telegram.0", telegramTarget: "user", target });
+			assert.strictEqual(row.target, "AMEistee");
+		}
+	});
+
 	it("returns the same object when nothing is missing", () => {
 		const row = { kind: "email", instance: "email.0" };
 		assert.strictEqual(completeRecipientRow(row), row);
@@ -160,12 +167,12 @@ describe("choices for the admin UI", () => {
 		const users = JSON.stringify({ 123: { firstName: "Anna", userName: "anna" }, "-100": { firstName: "Family" } });
 		const e = env({ values: { "telegram.0.communicate.users": users } });
 		assert.deepStrictEqual(await telegramTargetChoices(e, "telegram.0", "user"), [
-			{ label: "Anna @anna", value: "anna" },
-			{ label: "Family", value: "Family" },
+			{ label: "Anna", value: "anna", description: "@anna" },
+			{ label: "Family", value: "Family", description: undefined },
 		]);
 		assert.deepStrictEqual(await telegramTargetChoices(e, "telegram.0", "chatId"), [
-			{ label: "Anna @anna (123)", value: "123" },
-			{ label: "Family (-100)", value: "-100" },
+			{ label: "Anna", value: "123", description: "Chat ID 123" },
+			{ label: "Family", value: "-100", description: "Chat ID -100" },
 		]);
 		assert.deepStrictEqual(await telegramTargetChoices(env(), "telegram.0", "user"), []);
 	});

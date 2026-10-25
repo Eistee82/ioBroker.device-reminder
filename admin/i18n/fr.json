@@ -99,7 +99,7 @@
 	"rcp_serverId": "ID du serveur",
 	"rcp_sound": "Son",
 	"rcp_target": "Nom d'utilisateur ou identifiant de chat",
-	"rcp_targetHelp": "Choisissez un utilisateur ou une discussion connue de l'instance de télégramme, ou saisissez-en un (les identifiants de discussion de groupe commencent par un signe moins).",
+	"rcp_targetHelp": "Choisissez un utilisateur ou un chat connu de l'instance de télégramme.",
 	"rcp_telegramTarget": "Cible du télégramme",
 	"rcp_test": "Envoyer un message test",
 	"rcp_testHelp": "Enregistrez d'abord les paramètres, puis envoyez un message test.",

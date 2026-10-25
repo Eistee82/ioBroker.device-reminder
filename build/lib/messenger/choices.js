@@ -37,10 +37,12 @@ export async function telegramTargetChoices(env, instance, target) {
         return [];
     }
     return Object.entries(users).map(([chatId, u]) => {
-        const who = [u.firstName, u.userName ? `@${u.userName}` : ""].filter(Boolean).join(" ") || chatId;
-        return target === "chatId"
-            ? { label: `${who} (${chatId})`, value: chatId }
-            : { label: who, value: u.userName || u.firstName || chatId };
+        const name = u.firstName || u.userName || chatId;
+        if (target === "chatId") {
+            return { label: name, value: chatId, description: `Chat ID ${chatId}` };
+        }
+        const value = u.userName || u.firstName || chatId;
+        return { label: name, value, description: u.userName ? `@${u.userName}` : undefined };
     });
 }
 function label(instance) {

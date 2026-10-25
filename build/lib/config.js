@@ -188,7 +188,13 @@ export function completeRecipientRow(raw) {
     if (fixed) {
         next.stateId = fixed;
     }
-    const changed = ["kind", "instance", "stateId"].some(k => next[k] !== raw[k]);
+    if (kind === "telegram" && next.telegramTarget === "user" && typeof next.target === "string") {
+        const m = /@([^\s@]+)\s*$/.exec(next.target);
+        if (m) {
+            next.target = m[1];
+        }
+    }
+    const changed = ["kind", "instance", "stateId", "target"].some(k => next[k] !== raw[k]);
     return changed ? next : raw;
 }
 function generateRecipientId(raw, index, taken) {

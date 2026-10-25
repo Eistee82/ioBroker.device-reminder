@@ -99,7 +99,7 @@
 	"rcp_serverId": "Identyfikator serwera",
 	"rcp_sound": "Dźwięk",
 	"rcp_target": "Nazwa użytkownika lub identyfikator czatu",
-	"rcp_targetHelp": "Wybierz użytkownika lub czat znane instancji telegramu lub wpisz jednego (identyfikatory czatu grupowego zaczynają się od znaku minus).",
+	"rcp_targetHelp": "Wybierz użytkownika lub czat znany instancji telegramu.",
 	"rcp_telegramTarget": "Cel telegramu",
 	"rcp_test": "Wyślij wiadomość testową",
 	"rcp_testHelp": "Najpierw zapisz ustawienia, a następnie wyślij wiadomość testową.",

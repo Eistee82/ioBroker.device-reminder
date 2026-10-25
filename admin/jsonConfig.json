@@ -327,7 +327,7 @@
 							"newLine": true
 						},
 						{
-							"type": "autocompleteSendTo",
+							"type": "selectSendTo",
 							"attr": "target",
 							"label": "rcp_target",
 							"command": "getTelegramTargets",
@@ -336,7 +336,6 @@
 								"instance",
 								"telegramTarget"
 							],
-							"freeSolo": true,
 							"noTranslation": true,
 							"help": "rcp_targetHelp",
 							"hidden": "!['telegram'].includes((data.instance || '').split('.')[0]) || (data.telegramTarget || 'none') === 'none'",
@@ -344,7 +343,8 @@
 							"sm": 6,
 							"md": 4,
 							"lg": 4,
-							"xl": 4
+							"xl": 4,
+							"manual": true
 						},
 						{
 							"type": "text",

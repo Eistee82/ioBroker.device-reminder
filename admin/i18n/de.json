@@ -99,7 +99,7 @@
 	"rcp_serverId": "Server-ID",
 	"rcp_sound": "Ton",
 	"rcp_target": "Benutzername oder Chat-ID",
-	"rcp_targetHelp": "Benutzer oder Chat aus der Telegram-Instanz wählen oder eintragen (Gruppen-Chat-IDs beginnen mit einem Minus).",
+	"rcp_targetHelp": "Benutzer oder Chat aus der Telegram-Instanz wählen.",
 	"rcp_telegramTarget": "Telegram-Ziel",
 	"rcp_test": "Testnachricht senden",
 	"rcp_testHelp": "Zuerst speichern, dann eine Testnachricht senden.",
