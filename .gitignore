@@ -1,0 +1,35 @@
+# Compiled output
+build/
+
+# Dependencies
+node_modules/
+
+# IDE & developer-local
+.idea/
+.claude/
+CLAUDE.md
+*.code-workspace
+.dev-server/
+.playwright-mcp/
+.serena/
+.tmp/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Coverage
+coverage/
+coverage-tmp/
+
+# Widgets (sub-project)
+src-widgets/node_modules/
+src-widgets/build/
+
+# Package artifacts
+iobroker.*.tgz
+
+# OS files
+.DS_Store
+Thumbs.db
+.commitinfo
