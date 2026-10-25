@@ -105,15 +105,13 @@
       "washing machine",
       "dryer",
       "dishwasher",
-      "notification",
-      "smart home"
+      "notification"
     ],
     "licenseInformation": {
       "license": "MIT",
       "type": "free"
     },
     "platform": "Javascript/Node.js",
-    "main": "build/main.js",
     "icon": "device-reminder.png",
     "enabled": true,
     "extIcon": "https://raw.githubusercontent.com/Eistee82/ioBroker.device-reminder/main/admin/device-reminder.png",

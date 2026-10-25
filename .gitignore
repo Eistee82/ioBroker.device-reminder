@@ -34,3 +34,6 @@ iobroker.*.tgz
 .DS_Store
 Thumbs.db
 .commitinfo
+
+# Local scratch
+tmp/

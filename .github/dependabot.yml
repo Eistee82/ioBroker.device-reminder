@@ -14,6 +14,17 @@ updates:
     open-pull-requests-limit: 15
 
   - package-ecosystem: 'npm'
+    directory: '/src-widgets'
+    schedule:
+      interval: 'cron'
+      timezone: 'Europe/Berlin'
+      cronjob: '42 3 15 * *'
+    open-pull-requests-limit: 15
+    versioning-strategy: 'increase'
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: 'npm'
     directory: '/'
     schedule:
       interval: 'cron'

@@ -35,7 +35,7 @@
 	"dev_reminderText": "Повідомлення-нагадування",
 	"dev_required": "Це поле є обов'язковим для заповнення",
 	"dev_sourceId": "Джерело (сокет, пристрій або псевдонім)",
-	"dev_sourceInfo": "Select the socket, device or alias the device is connected to. The power and switch states are detected automatically. Choose manual entry to enter the states yourself.",
+	"dev_sourceInfo": "Виберіть розетку, пристрій або псевдонім, до якого підключено пристрій. Стани потужності та перемикання визначаються автоматично. Виберіть ручне введення, щоб указати стани самостійно.",
 	"dev_startText": "Почати повідомлення",
 	"dev_switchId": "Переключити стан (необов'язково)",
 	"dev_switchIdHelp": "Необхідний для автоматичного відключення.",
