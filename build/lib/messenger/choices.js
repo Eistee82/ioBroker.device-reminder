@@ -39,10 +39,10 @@ export async function telegramTargetChoices(env, instance, target) {
     return Object.entries(users).map(([chatId, u]) => {
         const name = u.firstName || u.userName || chatId;
         if (target === "chatId") {
-            return { label: name, value: chatId, description: `Chat ID ${chatId}` };
+            return { label: `${name} (${chatId})`, value: chatId };
         }
         const value = u.userName || u.firstName || chatId;
-        return { label: name, value, description: u.userName ? `@${u.userName}` : undefined };
+        return { label: u.userName ? `${name} (@${u.userName})` : name, value };
     });
 }
 function label(instance) {

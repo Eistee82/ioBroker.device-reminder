@@ -111,7 +111,7 @@ describe("handleCommand", () => {
 		]);
 		assert.deepStrictEqual(
 			await handleCommand(reg, notifier, "getTelegramTargets", { instance: "telegram.0", target: "user" }, env),
-			[{ label: "Anna", value: "Anna", description: undefined }],
+			[{ label: "Anna", value: "Anna" }],
 		);
 	});
 

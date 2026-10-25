@@ -95,11 +95,11 @@ export async function telegramTargetChoices(env: ChoiceEnv, instance: string, ta
 	return Object.entries(users).map(([chatId, u]) => {
 		const name = u.firstName || u.userName || chatId;
 		if (target === "chatId") {
-			return { label: name, value: chatId, description: `Chat ID ${chatId}` };
+			return { label: `${name} (${chatId})`, value: chatId };
 		}
 		// the telegram adapter matches `user` against the user name or the first name
 		const value = u.userName || u.firstName || chatId;
-		return { label: name, value, description: u.userName ? `@${u.userName}` : undefined };
+		return { label: u.userName ? `${name} (@${u.userName})` : name, value };
 	});
 }
 
