@@ -185,7 +185,7 @@ describe("Notifier", () => {
 		assert.strictEqual(host.openTimers(), 0);
 	});
 
-	it("dispose before 2000 ms leaves no timers and no writes", async () => {
+	it("dispose before 2000 ms restores the volume once and leaves no timers", async () => {
 		const vol = "alexa2.0.Echo.Commands.speak-volume";
 		const host = makeHost({ objects: [vol] });
 		const n = new Notifier(host, () => [alexa]);
@@ -194,7 +194,21 @@ describe("Notifier", () => {
 		n.dispose();
 		assert.strictEqual(host.openTimers(), 0);
 		await host.advance(3000);
-		assert.strictEqual(host.writes.length, before);
+		const after = host.writes.slice(before);
+		assert.strictEqual(after.length, 1, "only the volume restore is written");
+		assert.strictEqual(after[0].id, vol);
+	});
+
+	it("a second output to the same speaker restores the original volume", async () => {
+		const vol = "alexa2.0.Echo.Commands.speak-volume";
+		const host = makeHost({ objects: [vol], values: { [vol]: 15 } });
+		const n = new Notifier(host, () => [alexa]);
+		await n.notify(["alexa"], "First", { doNotDisturb: false });
+		await n.notify(["alexa"], "Second", { doNotDisturb: false });
+		await host.advance(3000);
+		const volWrites = host.writes.filter(w => w.id === vol);
+		assert.strictEqual(volWrites.at(-1).val, 15);
+		assert.strictEqual(host.openTimers(), 0);
 	});
 
 	it("nextWindowStartFor returns the earliest start of active recipients", () => {

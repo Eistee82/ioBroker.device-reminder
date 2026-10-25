@@ -48,9 +48,11 @@ export class VoiceOutput {
 			}
 		}
 		if (this.disposed) {
+			this.restoreNow(carried);
 			return;
 		}
 		if (!volumeExists) {
+			this.restoreNow(carried);
 			this.host.log.debug(`Volume state of ${r.name} does not exist, speaking without volume change`);
 			await this.host.setForeignValue(stateId, text);
 			return;
@@ -70,6 +72,7 @@ export class VoiceOutput {
 			restore = { id: volId, val: old };
 		}
 		if (this.disposed) {
+			this.restoreNow(carried);
 			return;
 		}
 		// an output started while we were reading replaces this one
@@ -78,7 +81,12 @@ export class VoiceOutput {
 		const entry: Pending = { handles: [], restore: concurrent ?? restore };
 		this.pending.set(r.id, entry);
 		await this.host.setForeignValue(volId, r.volume ?? DEFAULT_VOLUME);
-		if (this.disposed || this.pending.get(r.id) !== entry) {
+		if (this.disposed) {
+			// dispose() ran while the volume was being set: put the old volume back right away
+			this.restoreNow(entry.restore);
+			return;
+		}
+		if (this.pending.get(r.id) !== entry) {
 			return;
 		}
 		entry.handles.push(
@@ -98,12 +106,27 @@ export class VoiceOutput {
 		);
 	}
 
-	/** Clear all timers; nothing is written afterwards. */
+	/** Clear all timers and put changed volumes back; nothing is scheduled afterwards. */
 	public dispose(): void {
 		this.disposed = true;
-		for (const id of [...this.pending.keys()]) {
+		for (const [id, p] of [...this.pending.entries()]) {
 			this.cancel(id);
+			this.restoreNow(p.restore);
 		}
+	}
+
+	/**
+	 * Write a remembered volume back immediately (fire and forget).
+	 *
+	 * @param restore - Volume to restore, if any
+	 */
+	private restoreNow(restore: Pending["restore"] | undefined): void {
+		if (!restore) {
+			return;
+		}
+		this.host.setForeignValue(restore.id, restore.val).catch((err: unknown) => {
+			this.host.log.warn(`Volume reset failed: ${errorMessage(err)}`);
+		});
 	}
 
 	/**

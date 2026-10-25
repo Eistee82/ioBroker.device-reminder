@@ -74,7 +74,9 @@ export class Notifier {
 			try {
 				if (isVoice) {
 					if (!r.stateId) {
-						this.host.log.warn(`Recipient ${r.name} has no state configured`);
+						this.host.log.warn(
+							`Recipient ${r.name} has no target configured (state, user/chat, channel or topic), message skipped`,
+						);
 						continue;
 					}
 					await this.voice.speak(r, text);
@@ -83,7 +85,9 @@ export class Notifier {
 				}
 				const call = buildDelivery(r, text);
 				if (!call) {
-					this.host.log.warn(`Recipient ${r.name} has no state configured`);
+					this.host.log.warn(
+						`Recipient ${r.name} has no target configured (state, user/chat, channel or topic), message skipped`,
+					);
 					continue;
 				}
 				if (call.kind === "sendTo") {

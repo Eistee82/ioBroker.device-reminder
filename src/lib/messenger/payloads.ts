@@ -55,8 +55,21 @@ function put(target: Record<string, unknown>, key: string, value: string | numbe
 }
 
 /**
+ * Single-line mail subject: line breaks would allow header injection, so they are collapsed.
+ *
+ * @param text - Message text
+ */
+export function mailSubject(text: string): string {
+	return text
+		.replace(/[\r\n]+/g, " ")
+		.trim()
+		.slice(0, 200);
+}
+
+/**
  * Build the delivery for a recipient. Voice outputs (alexa, sayit) return `null` because they need
- * the volume handling of `VoiceOutput`. Field names follow the README of each target adapter:
+ * the volume handling of `VoiceOutput`; recipients without a required target (telegram user/chatId,
+ * discord user or channel, ntfy topic) also return `null` instead of a broadcast. Field names follow the README of each target adapter:
  * ioBroker.telegram (`text`, `user`, `chatId`), ioBroker.pushover (`message`, `title`, `sound`, `priority`,
  * `device`, `ttl`, `retry`, `expire`), ioBroker.signal-cmb (`text`), ioBroker.email (`text`, `to`, `subject`,
  * `from`), ioBroker.matrix (plain text), ioBroker.discord (`content`, `userId`, `userTag`, `userName`,
@@ -81,10 +94,12 @@ export function buildDelivery(r: RecipientConfig, text: string): SendToCall | Se
 			return { kind: "setState", id: r.stateId, val: text };
 		case "telegram":
 			m.text = text;
-			if (r.telegramTarget === "user") {
-				put(m, "user", r.target);
-			} else if (r.telegramTarget === "chatId") {
-				put(m, "chatId", r.target);
+			if (r.telegramTarget === "user" || r.telegramTarget === "chatId") {
+				// an empty target would make the telegram adapter broadcast to every user
+				if (!r.target) {
+					return null;
+				}
+				m[r.telegramTarget] = r.target;
 			}
 			return send(m);
 		case "pushover":
@@ -104,12 +119,15 @@ export function buildDelivery(r: RecipientConfig, text: string): SendToCall | Se
 		case "email":
 			m.text = text;
 			put(m, "to", r.emailTo);
-			m.subject = text;
+			m.subject = mailSubject(text);
 			put(m, "from", r.emailFrom);
 			return send(m);
 		case "matrix":
 			return send(text);
 		case "discord":
+			if (!r.userId && !r.userTag && !r.userName && !r.channelId) {
+				return null;
+			}
 			m.content = text;
 			put(m, "userId", r.userId);
 			put(m, "userTag", r.userTag);
@@ -118,6 +136,9 @@ export function buildDelivery(r: RecipientConfig, text: string): SendToCall | Se
 			put(m, "channelId", r.channelId);
 			return send(m);
 		case "ntfy":
+			if (!r.topic) {
+				return null;
+			}
 			m.message = text;
 			put(m, "title", r.title);
 			put(m, "topic", r.topic);

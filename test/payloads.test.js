@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { buildDelivery } from "../build/lib/messenger/payloads.js";
+import { buildDelivery, mailSubject } from "../build/lib/messenger/payloads.js";
 
 const base = { id: "r1", name: "R", enabled: true };
 
@@ -127,5 +127,19 @@ describe("buildDelivery payloads", () => {
 
 	it("falls back to the default instance", () => {
 		assert.strictEqual(msg({ kind: "telegram" }).instance, "telegram.0");
+	});
+	it("skips recipients whose required target is empty instead of broadcasting", () => {
+		assert.strictEqual(buildDelivery({ ...base, kind: "telegram", telegramTarget: "user", target: "" }, "x"), null);
+		assert.strictEqual(buildDelivery({ ...base, kind: "telegram", telegramTarget: "chatId" }, "x"), null);
+		assert.strictEqual(buildDelivery({ ...base, kind: "discord", serverId: "s" }, "x"), null);
+		assert.strictEqual(buildDelivery({ ...base, kind: "ntfy", title: "t" }, "x"), null);
+	});
+
+	it("email subject is a single line of at most 200 characters", () => {
+		assert.strictEqual(mailSubject("Done\r\nBcc: evil@example.com"), "Done Bcc: evil@example.com");
+		assert.strictEqual(mailSubject("x".repeat(300)).length, 200);
+		const m = msg({ kind: "email", emailTo: "a@b.c" }, "Line1\nLine2").message;
+		assert.strictEqual(m.subject, "Line1 Line2");
+		assert.strictEqual(m.text, "Line1\nLine2");
 	});
 });
