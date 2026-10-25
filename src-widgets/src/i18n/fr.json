@@ -1,1 +1,5 @@
-{}
+{
+	"oid": "ID de l'objet",
+	"private": "Privé",
+	"type": "Type"
+}
