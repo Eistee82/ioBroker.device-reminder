@@ -148,7 +148,8 @@
         "name": "vis2deviceReminder",
         "url": "device-reminder/customWidgets.js",
         "components": [
-          "DeviceCard"
+          "DeviceCard",
+          "DeviceOverview"
         ],
         "i18n": true
       }

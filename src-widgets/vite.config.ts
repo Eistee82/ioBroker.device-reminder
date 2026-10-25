@@ -12,6 +12,8 @@ const config = {
 			name: "deviceReminder",
 			filename: "customWidgets.js",
 			exposes: {
+				"./DeviceCard": "./src/DeviceCard",
+				"./DeviceOverview": "./src/DeviceOverview",
 				"./translations": "./src/translations",
 			},
 			remotes: {},

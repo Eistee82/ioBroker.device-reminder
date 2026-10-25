@@ -1,5 +1,22 @@
 {
 	"oid": "Objekt-ID",
 	"private": "Privat",
-	"type": "Typ"
+	"type": "Typ",
+	"device_card": "Gerätekarte",
+	"device_overview": "Geräteübersicht",
+	"compact": "Kompakt",
+	"color_running": "Farbe läuft",
+	"color_finished": "Farbe fertig",
+	"color_alert": "Farbe Laufzeitalarm",
+	"instance": "Instanz",
+	"select_device": "Gerät auswählen",
+	"no_devices": "Keine Geräte",
+	"no_history": "Noch keine Läufe",
+	"running": "Läuft",
+	"finished": "Fertig",
+	"runtime_alert": "Laufzeitalarm",
+	"remaining": "noch",
+	"acknowledge": "Quittieren",
+	"do_not_disturb": "Nicht stören",
+	"history": "Verlauf"
 }

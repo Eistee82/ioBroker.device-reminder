@@ -1,5 +1,22 @@
 {
 	"oid": "Object ID",
 	"private": "Private",
-	"type": "Type"
+	"type": "Type",
+	"device_card": "Device card",
+	"device_overview": "Device overview",
+	"compact": "Compact",
+	"color_running": "Color running",
+	"color_finished": "Color finished",
+	"color_alert": "Color runtime alert",
+	"instance": "Instance",
+	"select_device": "Select a device",
+	"no_devices": "No devices",
+	"no_history": "No runs yet",
+	"running": "Running",
+	"finished": "Finished",
+	"runtime_alert": "Runtime alert",
+	"remaining": "remaining",
+	"acknowledge": "Acknowledge",
+	"do_not_disturb": "Do not disturb",
+	"history": "History"
 }
