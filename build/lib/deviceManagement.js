@@ -365,7 +365,8 @@ export class ReminderDeviceManagement extends DeviceManagement {
     async loadEnums() {
         const members = {};
         const options = { rooms: [], functions: [] };
-        const lang = this.adapter.language ?? "en";
+        const sysLang = (await this.adapter.getForeignObjectAsync("system.config"))?.common?.language;
+        const lang = (typeof sysLang === "string" && sysLang) || this.adapter.language || "en";
         for (const kind of ["rooms", "functions"]) {
             const objs = (await this.adapter.getForeignObjectsAsync(`enum.${kind}.*`, "enum")) ?? {};
             for (const [id, obj] of Object.entries(objs)) {

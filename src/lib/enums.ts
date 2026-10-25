@@ -30,7 +30,8 @@ export function enumLabel(id: string, name: ioBroker.StringOrTranslated | undefi
 	}
 	if (name && typeof name === "object") {
 		const n = name as Record<string, string | undefined>;
-		return n[lang] || n.en || id.split(".").pop() || id;
+		const any = Object.values(n).find(v => typeof v === "string" && v !== "");
+		return n[lang] || n.en || n.de || any || id.split(".").pop() || id;
 	}
 	return id.split(".").pop() || id;
 }

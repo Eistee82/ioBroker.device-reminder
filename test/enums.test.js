@@ -32,5 +32,7 @@ describe("enums", () => {
 		assert.strictEqual(enumLabel("enum.rooms.k", { en: "Kitchen", de: "Küche" }, "de"), "Küche");
 		assert.strictEqual(enumLabel("enum.rooms.k", { en: "Kitchen" }, "fr"), "Kitchen");
 		assert.strictEqual(enumLabel("enum.rooms.k", undefined, "de"), "k");
+		// a name that only exists in one language is still shown instead of the id
+		assert.strictEqual(enumLabel("enum.rooms.k", { de: "Waschküche" }, "en"), "Waschküche");
 	});
 });

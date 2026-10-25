@@ -4,7 +4,8 @@ export function enumLabel(id, name, lang) {
     }
     if (name && typeof name === "object") {
         const n = name;
-        return n[lang] || n.en || id.split(".").pop() || id;
+        const any = Object.values(n).find(v => typeof v === "string" && v !== "");
+        return n[lang] || n.en || n.de || any || id.split(".").pop() || id;
     }
     return id.split(".").pop() || id;
 }

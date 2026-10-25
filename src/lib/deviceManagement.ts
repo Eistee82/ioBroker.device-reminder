@@ -470,7 +470,9 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	}> {
 		const members: EnumMembers = {};
 		const options: { rooms: EnumOption[]; functions: EnumOption[] } = { rooms: [], functions: [] };
-		const lang = this.adapter.language ?? "en";
+		// language of the installation (system.config), the adapter property is not set in every js-controller
+		const sysLang = (await this.adapter.getForeignObjectAsync("system.config"))?.common?.language;
+		const lang = (typeof sysLang === "string" && sysLang) || this.adapter.language || "en";
 		for (const kind of ["rooms", "functions"] as const) {
 			const objs = (await this.adapter.getForeignObjectsAsync(`enum.${kind}.*`, "enum")) ?? {};
 			for (const [id, obj] of Object.entries(objs)) {
