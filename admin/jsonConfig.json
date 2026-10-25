@@ -14,6 +14,74 @@
 					"md": 12,
 					"lg": 12,
 					"xl": 12
+				},
+				"_statusTexts": {
+					"type": "header",
+					"text": "statusTextsHeader",
+					"size": 3,
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
+				},
+				"statusTexts.running": {
+					"type": "text",
+					"label": "statusRunning",
+					"xs": 12,
+					"sm": 4,
+					"md": 4,
+					"lg": 4,
+					"xl": 4
+				},
+				"statusTexts.standby": {
+					"type": "text",
+					"label": "statusStandby",
+					"xs": 12,
+					"sm": 4,
+					"md": 4,
+					"lg": 4,
+					"xl": 4
+				},
+				"statusTexts.off": {
+					"type": "text",
+					"label": "statusOff",
+					"xs": 12,
+					"sm": 4,
+					"md": 4,
+					"lg": 4,
+					"xl": 4
+				},
+				"_polling": {
+					"type": "header",
+					"text": "pollingHeader",
+					"size": 3,
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
+				},
+				"pollIntervalSec": {
+					"type": "number",
+					"label": "pollIntervalSec",
+					"help": "pollIntervalHelp",
+					"min": 1,
+					"max": 600,
+					"xs": 12,
+					"sm": 6,
+					"md": 4,
+					"lg": 4,
+					"xl": 4
+				},
+				"historyHtml": {
+					"type": "checkbox",
+					"label": "historyHtml",
+					"xs": 12,
+					"sm": 6,
+					"md": 4,
+					"lg": 4,
+					"xl": 4
 				}
 			}
 		},
@@ -21,14 +89,109 @@
 			"type": "panel",
 			"label": "tabTypes",
 			"items": {
-				"_placeholder": {
+				"_help": {
 					"type": "staticText",
-					"text": "placeholderText",
+					"text": "typesHelp",
 					"xs": 12,
 					"sm": 12,
 					"md": 12,
 					"lg": 12,
 					"xl": 12
+				},
+				"types": {
+					"type": "table",
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12,
+					"noDelete": false,
+					"items": [
+						{
+							"type": "text",
+							"attr": "name",
+							"title": "typeName",
+							"width": "18%",
+							"readOnly": false,
+							"disabled": "data.builtin === true"
+						},
+						{
+							"type": "number",
+							"attr": "startVal",
+							"title": "typeStartVal",
+							"width": "9%",
+							"min": 0,
+							"step": 0.05
+						},
+						{
+							"type": "number",
+							"attr": "endVal",
+							"title": "typeEndVal",
+							"width": "9%",
+							"min": 0,
+							"step": 0.05
+						},
+						{
+							"type": "number",
+							"attr": "standby",
+							"title": "typeStandby",
+							"width": "9%",
+							"min": 0,
+							"step": 0.05
+						},
+						{
+							"type": "number",
+							"attr": "startCount",
+							"title": "typeStartCount",
+							"width": "9%",
+							"min": 1,
+							"step": 0.5
+						},
+						{
+							"type": "number",
+							"attr": "endCount",
+							"title": "typeEndCount",
+							"width": "9%",
+							"min": 2,
+							"step": 1
+						},
+						{
+							"type": "select",
+							"attr": "mode",
+							"title": "typeMode",
+							"width": "12%",
+							"options": [
+								{
+									"label": "modeCount",
+									"value": "count"
+								},
+								{
+									"label": "modeTimed",
+									"value": "timed"
+								},
+								{
+									"label": "modeCombined",
+									"value": "combined"
+								}
+							]
+						},
+						{
+							"type": "number",
+							"attr": "startDurationSec",
+							"title": "typeStartDuration",
+							"width": "10%",
+							"min": 0,
+							"hidden": "data.mode === 'count'"
+						},
+						{
+							"type": "number",
+							"attr": "endDurationSec",
+							"title": "typeEndDuration",
+							"width": "10%",
+							"min": 0,
+							"hidden": "data.mode === 'count'"
+						}
+					]
 				}
 			}
 		},
@@ -36,14 +199,527 @@
 			"type": "panel",
 			"label": "tabRecipients",
 			"items": {
-				"_placeholder": {
+				"_help": {
 					"type": "staticText",
-					"text": "placeholderText",
+					"text": "recipientsHelp",
 					"xs": 12,
 					"sm": 12,
 					"md": 12,
 					"lg": 12,
 					"xl": 12
+				},
+				"recipients": {
+					"type": "accordion",
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12,
+					"titleAttr": "name",
+					"noDelete": false,
+					"clone": true,
+					"items": [
+						{
+							"type": "checkbox",
+							"attr": "enabled",
+							"label": "rcp_enabled",
+							"xs": 12,
+							"sm": 4,
+							"md": 2,
+							"lg": 2,
+							"xl": 2,
+							"default": true
+						},
+						{
+							"type": "text",
+							"attr": "name",
+							"label": "rcp_name",
+							"xs": 12,
+							"sm": 8,
+							"md": 4,
+							"lg": 4,
+							"xl": 4
+						},
+						{
+							"type": "select",
+							"attr": "kind",
+							"label": "rcp_kind",
+							"xs": 12,
+							"sm": 6,
+							"md": 3,
+							"lg": 3,
+							"xl": 3,
+							"options": [
+								{
+									"label": "Alexa",
+									"value": "alexa"
+								},
+								{
+									"label": "SayIt",
+									"value": "sayit"
+								},
+								{
+									"label": "WhatsApp",
+									"value": "whatsapp"
+								},
+								{
+									"label": "Telegram",
+									"value": "telegram"
+								},
+								{
+									"label": "Pushover",
+									"value": "pushover"
+								},
+								{
+									"label": "Signal",
+									"value": "signal"
+								},
+								{
+									"label": "E-Mail",
+									"value": "email"
+								},
+								{
+									"label": "Matrix",
+									"value": "matrix"
+								},
+								{
+									"label": "Discord",
+									"value": "discord"
+								},
+								{
+									"label": "ntfy",
+									"value": "ntfy"
+								},
+								{
+									"label": "Pushsafer",
+									"value": "pushsafer"
+								},
+								{
+									"label": "Gotify",
+									"value": "gotify"
+								}
+							]
+						},
+						{
+							"type": "text",
+							"attr": "id",
+							"label": "rcp_id",
+							"xs": 12,
+							"sm": 6,
+							"md": 3,
+							"lg": 3,
+							"xl": 3,
+							"readOnly": true,
+							"hidden": "true"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "alexa2",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "sayit",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'sayit'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "whatsapp-cmb",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'whatsapp'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "telegram",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'telegram'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "pushover",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'pushover'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "signal-cma",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'signal'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "email",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'email'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "matrix",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'matrix'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "discord",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'discord'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "ntfy",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'ntfy'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "pushsafer",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'pushsafer'"
+						},
+						{
+							"type": "instance",
+							"attr": "instance",
+							"label": "rcp_instance",
+							"adapter": "gotify",
+							"allowDeactivate": true,
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'gotify'"
+						},
+						{
+							"type": "objectId",
+							"attr": "stateId",
+							"label": "rcp_stateId",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "number",
+							"attr": "volume",
+							"label": "rcp_volume",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'",
+							"min": 0,
+							"max": 100
+						},
+						{
+							"type": "objectId",
+							"attr": "volumeStateId",
+							"label": "rcp_volumeStateId",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "select",
+							"attr": "telegramTarget",
+							"label": "rcp_telegramTarget",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'telegram'",
+							"options": [
+								{
+									"label": "rcp_tgNone",
+									"value": "none"
+								},
+								{
+									"label": "rcp_tgUser",
+									"value": "user"
+								},
+								{
+									"label": "rcp_tgChat",
+									"value": "chatId"
+								}
+							]
+						},
+						{
+							"type": "text",
+							"attr": "target",
+							"label": "rcp_target",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "!['telegram','signal','whatsapp','matrix'].includes(data.kind) || (data.kind === 'telegram' && (data.telegramTarget || 'none') === 'none')"
+						},
+						{
+							"type": "text",
+							"attr": "title",
+							"label": "rcp_title",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord'"
+						},
+						{
+							"type": "text",
+							"attr": "device",
+							"label": "rcp_device",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "number",
+							"attr": "priority",
+							"label": "rcp_priority",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord'",
+							"min": -2,
+							"max": 10
+						},
+						{
+							"type": "text",
+							"attr": "sound",
+							"label": "rcp_sound",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "number",
+							"attr": "ttl",
+							"label": "rcp_ttl",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'gotify'",
+							"min": 0
+						},
+						{
+							"type": "text",
+							"attr": "topic",
+							"label": "rcp_topic",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "text",
+							"attr": "emailFrom",
+							"label": "rcp_emailFrom",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "text",
+							"attr": "emailTo",
+							"label": "rcp_emailTo",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'matrix' && data.kind !== 'discord' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "text",
+							"attr": "userId",
+							"label": "rcp_userId",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "text",
+							"attr": "userTag",
+							"label": "rcp_userTag",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "text",
+							"attr": "userName",
+							"label": "rcp_userName",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "text",
+							"attr": "serverId",
+							"label": "rcp_serverId",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "text",
+							"attr": "channelId",
+							"label": "rcp_channelId",
+							"xs": 12,
+							"sm": 6,
+							"md": 4,
+							"lg": 4,
+							"xl": 4,
+							"hidden": "data.kind !== 'alexa' && data.kind !== 'sayit' && data.kind !== 'whatsapp' && data.kind !== 'telegram' && data.kind !== 'pushover' && data.kind !== 'signal' && data.kind !== 'email' && data.kind !== 'matrix' && data.kind !== 'ntfy' && data.kind !== 'pushsafer' && data.kind !== 'gotify'"
+						},
+						{
+							"type": "timePicker",
+							"attr": "activeFrom",
+							"label": "rcp_activeFrom",
+							"xs": 12,
+							"sm": 6,
+							"md": 3,
+							"lg": 3,
+							"xl": 3,
+							"format": "HH:mm"
+						},
+						{
+							"type": "timePicker",
+							"attr": "activeUntil",
+							"label": "rcp_activeUntil",
+							"xs": 12,
+							"sm": 6,
+							"md": 3,
+							"lg": 3,
+							"xl": 3,
+							"format": "HH:mm"
+						},
+						{
+							"type": "sendTo",
+							"command": "testRecipient",
+							"jsonData": "{\"id\": \"${data.id}\"}",
+							"label": "rcp_test",
+							"variant": "outlined",
+							"xs": 12,
+							"sm": 6,
+							"md": 3,
+							"lg": 3,
+							"xl": 3
+						}
+					]
 				}
 			}
 		},
