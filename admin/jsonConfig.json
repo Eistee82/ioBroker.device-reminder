@@ -246,7 +246,6 @@
 							"label": "rcp_messenger",
 							"command": "getMessengerInstances",
 							"jsonData": "{\"current\": \"${data.instance}\"}",
-							"noTranslation": true,
 							"help": "rcp_messengerHelp",
 							"xs": 12,
 							"sm": 6,
@@ -263,7 +262,6 @@
 							"alsoDependsOn": [
 								"instance"
 							],
-							"noTranslation": true,
 							"help": "rcp_echoHelp",
 							"hidden": "!['alexa2'].includes((data.instance || '').split('.')[0])",
 							"newLine": true,
@@ -336,7 +334,6 @@
 								"instance",
 								"telegramTarget"
 							],
-							"noTranslation": true,
 							"help": "rcp_targetHelp",
 							"hidden": "!['telegram'].includes((data.instance || '').split('.')[0]) || (data.telegramTarget || 'none') === 'none'",
 							"xs": 12,
@@ -505,7 +502,6 @@
 							"lg": 3,
 							"xl": 3,
 							"format": "HH:mm",
-							"help": "rcp_windowHelp",
 							"newLine": true
 						},
 						{
@@ -518,6 +514,15 @@
 							"lg": 3,
 							"xl": 3,
 							"format": "HH:mm"
+						},
+						{
+							"type": "staticText",
+							"text": "rcp_windowHelp",
+							"xs": 12,
+							"sm": 12,
+							"md": 6,
+							"lg": 6,
+							"xl": 6
 						},
 						{
 							"type": "sendTo",

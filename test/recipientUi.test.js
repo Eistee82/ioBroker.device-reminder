@@ -19,7 +19,7 @@ function visible(data) {
 		.map(it => it.attr || it.type);
 }
 
-const COMMON = ["enabled", "name", "instance", "activeFrom", "activeUntil", "sendTo"];
+const COMMON = ["enabled", "name", "instance", "activeFrom", "activeUntil", "staticText", "sendTo"];
 
 /**
  * Fake installation.
