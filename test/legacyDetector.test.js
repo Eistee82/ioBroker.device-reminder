@@ -1,0 +1,221 @@
+import assert from "node:assert";
+import { LegacyDetector } from "../build/lib/detector/legacy.js";
+import oracleModule from "./fixtures/legacyOracle.cjs";
+import { curves, abortedRun, dishwasher, washingMachine, withTimes } from "./helpers/curves.js";
+
+const { createOracle } = oracleModule;
+
+/** Default types (Spec 4.4) and the custom type default. */
+const TYPES = {
+	"washing-machine": { startVal: 30, endVal: 15, standby: 1, startCount: 2, endCount: 50 },
+	dryer: { startVal: 120, endVal: 15, standby: 1, startCount: 2, endCount: 20 },
+	dishwasher: { startVal: 15, endVal: 0.25, standby: 0.5, startCount: 2, endCount: 120 },
+	custom: { startVal: 30, endVal: 5, standby: 1, startCount: 1, endCount: 20 },
+};
+
+/** Parity matrix: the types above plus a custom type whose abort detection can fire (standbyCount 10 >= valCancel 10). */
+const MATRIX_TYPES = { ...TYPES, "custom-endVal10": { ...TYPES.custom, endVal: 10 } };
+
+/**
+ * Run a curve through detector and oracle and return both result lists.
+ *
+ * @param {object} thresholds type thresholds
+ * @param {{abort: boolean}} options detector options
+ * @param {number[]} curve power values
+ */
+function runBoth(thresholds, options, curve) {
+	const detector = new LegacyDetector(thresholds, options);
+	const oracle = createOracle(thresholds, options);
+	const actual = [];
+	const expected = [];
+	for (const { power, now } of withTimes(curve)) {
+		actual.push(detector.tick(power, now));
+		expected.push(oracle.tick(power));
+	}
+	return { actual, expected, detector };
+}
+
+/**
+ * @param {object} thresholds type thresholds
+ * @param {{abort: boolean}} options detector options
+ * @param {number[]} curve power values
+ * @returns {string[]} all events in order
+ */
+function eventsOf(thresholds, options, curve) {
+	const detector = new LegacyDetector(thresholds, options);
+	return withTimes(curve).flatMap(({ power, now }) => detector.tick(power, now).events);
+}
+
+describe("LegacyDetector", () => {
+	describe("parity with 3.1.2", () => {
+		const allCurves = { ...curves, allConcatenated: Object.values(curves).flat() };
+		for (const [curveName, curve] of Object.entries(allCurves)) {
+			for (const [typeName, thresholds] of Object.entries(MATRIX_TYPES)) {
+				for (const abort of [true, false]) {
+					it(`${curveName} x ${typeName} x abort=${abort}`, () => {
+						const { actual, expected } = runBoth(thresholds, { abort }, curve);
+						assert.deepStrictEqual(actual, expected);
+					});
+				}
+			}
+		}
+
+		it("the matrix exercises every event and status", () => {
+			const events = new Set();
+			const statuses = new Set();
+			for (const curve of Object.values(curves)) {
+				for (const thresholds of Object.values(MATRIX_TYPES)) {
+					for (const abort of [true, false]) {
+						for (const result of runBoth(thresholds, { abort }, curve).actual) {
+							result.events.forEach(e => events.add(e));
+							statuses.add(result.status);
+						}
+					}
+				}
+			}
+			assert.deepStrictEqual([...events].sort(), ["aborted", "finished", "running", "started"]);
+			assert.deepStrictEqual([...statuses].sort(), [null, "off", "running", "standby"].sort());
+		});
+	});
+
+	describe("derived values", () => {
+		it("standbyCount of the washing machine is 10", () => {
+			const detector = new LegacyDetector(TYPES["washing-machine"], { abort: false });
+			assert.strictEqual(detector.standbyCount, 10);
+			assert.strictEqual(detector.valCancel, 25);
+		});
+
+		it("standbyCount follows endVal when endVal <= 10", () => {
+			assert.strictEqual(new LegacyDetector(TYPES.custom, { abort: false }).standbyCount, 5);
+			assert.strictEqual(new LegacyDetector({ ...TYPES.custom, endVal: 0 }, { abort: false }).standbyCount, 10);
+		});
+
+		it("dishwasher keeps the standby buffer empty after every tick", () => {
+			const detector = new LegacyDetector(TYPES.dishwasher, { abort: false });
+			for (const { power, now } of withTimes(dishwasher)) {
+				detector.tick(power, now);
+				assert.strictEqual(detector.bufferLengths.standby, 0);
+			}
+		});
+
+		it("standby: 0 behaves like standby: 1", () => {
+			for (const curve of Object.values(curves)) {
+				const zero = new LegacyDetector({ ...TYPES.custom, standby: 0 }, { abort: true });
+				const one = new LegacyDetector({ ...TYPES.custom, standby: 1 }, { abort: true });
+				assert.strictEqual(zero.standbyValue, 1);
+				for (const { power, now } of withTimes(curve)) {
+					assert.deepStrictEqual(zero.tick(power, now), one.tick(power, now));
+				}
+			}
+		});
+	});
+
+	describe("abort detection", () => {
+		it("washing machine + abort + abortedRun: no aborted event", () => {
+			const events = eventsOf(TYPES["washing-machine"], { abort: true }, abortedRun);
+			assert.ok(events.includes("started"));
+			assert.ok(!events.includes("aborted"));
+		});
+
+		it("custom 30/5/1/1/20 + abort + abortedRun: no aborted event (3.1.2: standbyCount 5 < valCancel 10)", () => {
+			const events = eventsOf(TYPES.custom, { abort: true }, abortedRun);
+			assert.ok(events.includes("started"));
+			assert.ok(!events.includes("aborted"));
+		});
+
+		it("custom type with standbyCount >= valCancel + abort + abortedRun: aborted, no finished", () => {
+			const thresholds = { ...TYPES.custom, endVal: 10 }; // standbyCount 10, valCancel 10
+			const events = eventsOf(thresholds, { abort: true }, abortedRun);
+			assert.deepStrictEqual(
+				events.filter(e => e !== "running"),
+				["started", "aborted"],
+			);
+		});
+
+		it("aborted resets the detector and reports status off", () => {
+			const thresholds = { ...TYPES.custom, endVal: 10 };
+			const detector = new LegacyDetector(thresholds, { abort: true });
+			let aborted;
+			for (const { power, now } of withTimes(abortedRun)) {
+				const result = detector.tick(power, now);
+				if (result.events.includes("aborted")) {
+					aborted = result;
+					break;
+				}
+			}
+			assert.ok(aborted);
+			assert.strictEqual(aborted.started, false);
+			assert.strictEqual(aborted.status, "off");
+			assert.deepStrictEqual(detector.bufferLengths, { start: 0, end: 0, standby: 0 });
+		});
+
+		it("without abort the same run ends with finished", () => {
+			const thresholds = { ...TYPES.custom, endVal: 10 };
+			const events = eventsOf(thresholds, { abort: false }, abortedRun);
+			assert.ok(events.includes("finished"));
+			assert.ok(!events.includes("aborted"));
+		});
+	});
+
+	describe("end detection", () => {
+		it('"finished" only once len(end) >= endCount * 2/3', () => {
+			const thresholds = { startVal: 30, endVal: 15, standby: 1, startCount: 1, endCount: 30 };
+			const detector = new LegacyDetector(thresholds, { abort: false });
+			const curve = [100, ...Array(40).fill(0)];
+			let finishedAt = -1;
+			curve.forEach((power, i) => {
+				if (detector.tick(power, i * 10_000).events.includes("finished")) {
+					finishedAt = i;
+				}
+				if (finishedAt < 0 && detector.started) {
+					// while running the end buffer has fewer than 20 values
+					assert.ok(detector.bufferLengths.end < 20);
+				}
+			});
+			// tick 0 starts (end buffer empty), ticks 1..20 fill the end buffer to 20 = 30 * 2/3
+			assert.strictEqual(finishedAt, 20);
+		});
+
+		it("average is computed over count + 1 values before trimming and rounded to 2 decimals", () => {
+			const thresholds = { startVal: 30, endVal: 15, standby: 1, startCount: 2, endCount: 50 };
+			const detector = new LegacyDetector(thresholds, { abort: false });
+			assert.strictEqual(detector.tick(30, 0).average, 30);
+			assert.strictEqual(detector.tick(30, 1).average, 30); // not > startVal
+			// third value: buffer [30, 30, 30.1] averaged before trimming to 2
+			const third = detector.tick(30.1, 2);
+			assert.strictEqual(third.average, 30.03);
+			assert.deepStrictEqual(third.events, ["started"]);
+			assert.strictEqual(detector.bufferLengths.start, 2);
+		});
+
+		it("standbyAfterRun ends in standby", () => {
+			const detector = new LegacyDetector(TYPES["washing-machine"], { abort: false });
+			let last;
+			for (const { power, now } of withTimes(curves.standbyAfterRun)) {
+				const result = detector.tick(power, now);
+				if (result.events.includes("finished")) {
+					last = result;
+				}
+			}
+			assert.ok(last);
+			assert.strictEqual(last.status, "standby");
+		});
+	});
+
+	describe("reset", () => {
+		it("returns to the initial state", () => {
+			const detector = new LegacyDetector(TYPES["washing-machine"], { abort: false });
+			for (const { power, now } of withTimes(washingMachine.slice(0, 50))) {
+				detector.tick(power, now);
+			}
+			assert.strictEqual(detector.started, true);
+			detector.reset();
+			assert.strictEqual(detector.started, false);
+			assert.deepStrictEqual(detector.bufferLengths, { start: 0, end: 0, standby: 0 });
+			const oracle = createOracle(TYPES["washing-machine"], { abort: false });
+			for (const { power, now } of withTimes(washingMachine)) {
+				assert.deepStrictEqual(detector.tick(power, now), oracle.tick(power));
+			}
+		});
+	});
+});
