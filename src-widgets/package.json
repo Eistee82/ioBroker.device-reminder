@@ -1,0 +1,25 @@
+{
+	"name": "iobroker.device-reminder-widgets",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"dependencies": {
+		"@iobroker/gui-components": "^10.3.11",
+		"@iobroker/types-vis-2": "~2.20.1",
+		"@mui/icons-material": "^9.5.0",
+		"@mui/material": "^9.5.0",
+		"@module-federation/vite": "^1.23.5",
+		"@vitejs/plugin-react": "^6.1.2",
+		"react": "^19.3.1",
+		"react-dom": "^19.3.1",
+		"typescript": "~7.0.2",
+		"vite": "8.3.4",
+		"vite-plugin-commonjs": "^0.10.4"
+	},
+	"scripts": {
+		"start": "vite --port 4173 --strictPort",
+		"build": "tsc && vite build",
+		"preview": "vite preview",
+		"lint": "eslint -c eslint.config.mjs"
+	}
+}

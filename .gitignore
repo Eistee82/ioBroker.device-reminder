@@ -25,6 +25,7 @@ coverage-tmp/
 # Widgets (sub-project)
 src-widgets/node_modules/
 src-widgets/build/
+src-widgets/build-test/
 
 # Package artifacts
 iobroker.*.tgz
