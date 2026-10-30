@@ -68,7 +68,7 @@
 	"dm_learnEndCount": "Conteo final",
 	"dm_learnEndDuration": "Duración final",
 	"dm_learnEndVal": "Umbral final",
-	"dm_learnInfo": "Se analizó la carrera registrada. Verifique los valores y asigne un nombre al nuevo tipo de dispositivo. Al guardar se reinicia la instancia del adaptador.",
+	"dm_learnInfo": "Se analizó la curva de potencia. Compruebe los valores y asigne un nombre al nuevo tipo de dispositivo. Al guardar se reinicia la instancia del adaptador.",
 	"dm_learnName": "Nombre del tipo de dispositivo",
 	"dm_learnSamples": "Muestras grabadas",
 	"dm_learnStandby": "Umbral de espera",
@@ -139,5 +139,13 @@
 	"typeStartCount": "Iniciar recuento",
 	"typeStartDuration": "Duración de inicio (s)",
 	"typeStartVal": "Inicio (W)",
-	"typesHelp": "Umbrales por tipo de dispositivo. Los tipos integrados no se pueden cambiar de nombre ni eliminar. En el modo de conteo, los valores cuentan los ticks de sondeo (consulte General)."
+	"typesHelp": "Umbrales por tipo de dispositivo. Los tipos integrados no se pueden cambiar de nombre ni eliminar. En el modo de conteo, los valores cuentan los ticks de sondeo (consulte General).",
+	"dm_learnSourceInfo": "El estado de potencia de este dispositivo lo guarda un adaptador de historial. El adaptador puede derivar el tipo de dispositivo de todos los ciclos de los últimos 30 días en lugar de grabar un ciclo nuevo.",
+	"dm_learnSource": "Aprender de",
+	"dm_learnSourceHistory": "Historial de los últimos 30 días",
+	"dm_learnSourceRecord": "Grabar un ciclo nuevo",
+	"dm_learnHistoryInstance": "Instancia de historial",
+	"dm_learnHistorySamples": "Valores guardados",
+	"dm_learnRuns": "Ciclos encontrados",
+	"dm_learnEvalInfo": "Cada ciclo se reprodujo con cada modo de detección: ciclos detectados correctamente / ciclos encontrados · tiempo medio hasta que se informa del final. El modo recomendado está preseleccionado."
 }

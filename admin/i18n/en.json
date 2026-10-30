@@ -114,7 +114,7 @@
 	"dm_detailsReminderInterval": "Interval",
 	"dm_detailsReminderMax": "Maximum number of reminders",
 	"dm_detailsReminderPending": "Finished and not acknowledged",
-	"dm_learnInfo": "The recorded run was analysed. Check the values and give the new device type a name. Saving restarts the adapter instance.",
+	"dm_learnInfo": "The power curve was analysed. Check the values and give the new device type a name. Saving restarts the adapter instance.",
 	"dm_learnName": "Name of the device type",
 	"dm_learnStartVal": "Start threshold",
 	"dm_learnEndVal": "End threshold",
@@ -139,5 +139,13 @@
 	"rcp_testHelp": "Sends a test message with the settings shown here (also before saving).",
 	"dev_rooms": "Rooms",
 	"dev_functions": "Functions",
-	"dev_enumsHelp": "Assigns the device to rooms and functions (categories). Needed, for example, to show it in the Devices tab."
+	"dev_enumsHelp": "Assigns the device to rooms and functions (categories). Needed, for example, to show it in the Devices tab.",
+	"dm_learnSourceInfo": "The power state of this device is stored by a history adapter. The adapter can derive the device type from all runs of the last 30 days instead of recording a new run.",
+	"dm_learnSource": "Learn from",
+	"dm_learnSourceHistory": "History of the last 30 days",
+	"dm_learnSourceRecord": "Record a new run",
+	"dm_learnHistoryInstance": "History instance",
+	"dm_learnHistorySamples": "Stored values",
+	"dm_learnRuns": "Runs found",
+	"dm_learnEvalInfo": "Every run was replayed with each detection mode: runs detected correctly / runs found · mean time until the end is reported. The recommended mode is preselected."
 }

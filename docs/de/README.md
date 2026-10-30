@@ -189,7 +189,18 @@ Eine Aktion auf einen fehlenden State wird mit Warnung übersprungen und stoppt 
 
 ## 8. Anlernen
 
-Beim Anlernen werden Schwellwerte aus einem echten Lauf abgeleitet.
+Beim Anlernen werden Schwellwerte aus echten Läufen abgeleitet: aus der History des Leistungs-States oder aus einem aufgezeichneten Lauf.
+
+### Aus der History
+
+Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, InfluxDB oder jeder andere Adapter, der `getHistory` beantwortet), bietet **Anlernen** auf der Gerätekarte zuerst die History an. Die Standard-History aus den Systemeinstellungen wird bevorzugt.
+
+- Aus der History werden alle Läufe der letzten 30 Tage herausgeschnitten. Ein Lauf darf bis zu 30 Minuten pausieren; Aktivität von insgesamt unter 5 Minuten (z. B. ein Display, das angeht) ist kein Lauf. Es braucht mindestens 2 Läufe, sonst wird ein neuer Lauf aufgezeichnet.
+- Der Adapter kann Programme nicht unterscheiden, deshalb muss der Gerätetyp **jeden** Lauf erkennen: Die Schwellwerte decken den Lauf mit der längsten Pause ab.
+- Jeder Lauf wird mit allen drei Erkennungsmodi (Anzahl, Dauer, Kombiniert) nachgespielt, mit demselben Code wie die Live-Erkennung. Der Dialog zeigt je Modus, wie viele Läufe richtig erkannt wurden und wie lange es im Mittel dauert, bis das Ende gemeldet wird. Vorausgewählt ist der Modus, der die meisten Läufe mit den wenigsten Fehlstarts erkennt; sind mehrere gleich zuverlässig und melden das Ende innerhalb einer Minute, gewinnt Anzahl (Verhalten von 3.1.2).
+- Vor dem Speichern als neuer eigener Gerätetyp kannst du jeden Wert und den Modus ändern.
+
+### Einen Lauf aufzeichnen
 
 1. Anlernen auf der Gerätekarte starten (**Anlernen**) oder `learning.start` des Geräts schreiben.
 2. Einen kompletten Zyklus der Maschine laufen lassen. Die Aufnahme endet automatisch nach 12 Stunden oder 10 000 Messwerten.
@@ -302,7 +313,7 @@ Gerätezustände sind relativ zum Geräteobjekt `<deviceId>` angegeben. Info-Zus
 | `learning.start` | boolean | button.start | w | - | Anlernen starten | true schreiben startet die Aufnahme eines Laufs |
 | `learning.stop` | boolean | button.stop | w | - | Anlernen beenden | true schreiben beendet die Aufnahme und berechnet den Vorschlag |
 | `learning.active` | boolean | indicator | r | - | Anlernen aktiv | True, solange ein Lauf aufgenommen wird |
-| `learning.result` | string | json | r | - | Anlern-Ergebnis | JSON: Schwellwerte, startDurationSec, endDurationSec, durationSec, samples oder ein Fehler (tooFewSamples, noRun) |
+| `learning.result` | string | json | r | - | Anlern-Ergebnis | JSON: Schwellwerte, startDurationSec, endDurationSec, durationSec, samples (aus der History zusätzlich mode, runs, evaluation) oder ein Fehler (tooFewSamples, noRun) |
 | `lastOperationsHtml` | string | html | r | - | Letzte Vorgänge (HTML) | HTML-Tabelle der letzten Läufe (nur wenn in den allgemeinen Einstellungen aktiviert) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter verbunden | True, wenn der Adapter läuft |
 <!-- END STATES -->

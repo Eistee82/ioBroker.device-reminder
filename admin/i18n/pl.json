@@ -68,7 +68,7 @@
 	"dm_learnEndCount": "Koniec liczenia",
 	"dm_learnEndDuration": "Zakończ czas trwania",
 	"dm_learnEndVal": "Próg końcowy",
-	"dm_learnInfo": "Analizie poddano zarejestrowany przebieg. Sprawdź wartości i nadaj nazwę nowemu typowi urządzenia. Zapisanie powoduje ponowne uruchomienie instancji adaptera.",
+	"dm_learnInfo": "Krzywa mocy została przeanalizowana. Sprawdź wartości i nadaj nazwę nowemu typowi urządzenia. Zapisanie restartuje instancję adaptera.",
 	"dm_learnName": "Nazwa typu urządzenia",
 	"dm_learnSamples": "Nagrane próbki",
 	"dm_learnStandby": "Próg gotowości",
@@ -139,5 +139,13 @@
 	"typeStartCount": "Rozpocznij liczenie",
 	"typeStartDuration": "Czas rozpoczęcia (y)",
 	"typeStartVal": "Początek (W)",
-	"typesHelp": "Progi według typu urządzenia. Nie można zmienić nazwy ani usunąć typów wbudowanych. W trybie zliczania wartości zliczają znaczniki odpytywania (patrz Ogólne)."
+	"typesHelp": "Progi według typu urządzenia. Nie można zmienić nazwy ani usunąć typów wbudowanych. W trybie zliczania wartości zliczają znaczniki odpytywania (patrz Ogólne).",
+	"dm_learnSourceInfo": "Stan mocy tego urządzenia jest zapisywany przez adapter historii. Adapter może wyznaczyć typ urządzenia ze wszystkich cykli z ostatnich 30 dni zamiast nagrywać nowy cykl.",
+	"dm_learnSource": "Ucz na podstawie",
+	"dm_learnSourceHistory": "Historia z ostatnich 30 dni",
+	"dm_learnSourceRecord": "Nagraj nowy cykl",
+	"dm_learnHistoryInstance": "Instancja historii",
+	"dm_learnHistorySamples": "Zapisane wartości",
+	"dm_learnRuns": "Znalezione cykle",
+	"dm_learnEvalInfo": "Każdy cykl odtworzono w każdym trybie wykrywania: poprawnie wykryte / znalezione cykle · średni czas do zgłoszenia końca. Zalecany tryb jest wybrany."
 }

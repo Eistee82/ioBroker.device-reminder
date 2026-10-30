@@ -1,4 +1,5 @@
-import type { TypeThresholds } from "./detector/types.js";
+import type { DetectionMode, TypeThresholds } from "./detector/types.js";
+import type { ModeEvaluation } from "./historyLearning.js";
 
 /** One recorded power sample. */
 export interface LearningSample {
@@ -20,6 +21,12 @@ export interface LearningSuggestion {
 	durationSec: number;
 	/** Number of samples used. */
 	samples: number;
+	/** Recommended detection mode (history analysis; a recording suggests the count mode). */
+	mode?: DetectionMode;
+	/** Number of runs found in the history. */
+	runs?: number;
+	/** Result of every detection mode over the runs of the history. */
+	evaluation?: ModeEvaluation[];
 }
 
 const MAX_DURATION_MS = 12 * 60 * 60 * 1000;

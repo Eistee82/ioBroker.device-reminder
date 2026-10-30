@@ -82,7 +82,7 @@ The README changelog stays short; the details and issue numbers of 4.0.0 are lis
 - Reminders: repeat the finished message at a configurable interval until acknowledged (own acknowledge state or a foreign state), limited by a maximum count and respecting recipient time windows (#504, #36)
 - Acknowledging (state, external acknowledge state, sendTo or restart of the device) stops the reminders and runs the 'acknowledged' actions
 - Actions: set foreign states automatically on start, end, reminder and acknowledgement of a device (#446, #442)
-- Learning: thresholds, start and end duration are suggested from a recorded run (recording max. 12 h or 10,000 samples); it is started and stopped through the device manager or the `learning.start`/`learning.stop` states, the result is written to `learning.result`, and the suggestion can be stored as a new custom device type (#494)
+- Learning: thresholds, start and end duration are suggested from a recorded run (recording max. 12 h or 10,000 samples); it is started and stopped through the device manager or the `learning.start`/`learning.stop` states, the result is written to `learning.result`, and the suggestion can be stored as a new custom device type (#494); if the power state is logged by a history adapter (history, SQL, InfluxDB), the runs of the last 30 days are analysed instead, every run is replayed with all three detection modes and the most reliable mode is suggested
 - Time windows now apply to every recipient; do-not-disturb only suppresses voice outputs (#495)
 - Messenger payloads fixed: Telegram uses user/chatId, Pushover sends priority/retry/expire/device correctly, empty Discord and TTL fields are omitted (#409, #483, #410, #417)
 - New messengers: ntfy (#457), Pushsafer (#465) and Gotify (#367)

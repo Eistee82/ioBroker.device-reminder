@@ -68,7 +68,7 @@
 	"dm_learnEndCount": "Fin du décompte",
 	"dm_learnEndDuration": "Durée de fin",
 	"dm_learnEndVal": "Seuil de fin",
-	"dm_learnInfo": "L'exécution enregistrée a été analysée. Vérifiez les valeurs et donnez un nom au nouveau type de périphérique. L’enregistrement redémarre l’instance d’adaptateur.",
+	"dm_learnInfo": "La courbe de puissance a été analysée. Vérifiez les valeurs et donnez un nom au nouveau type d'appareil. L'enregistrement redémarre l'instance de l'adaptateur.",
 	"dm_learnName": "Nom du type d'appareil",
 	"dm_learnSamples": "Échantillons enregistrés",
 	"dm_learnStandby": "Seuil de veille",
@@ -139,5 +139,13 @@
 	"typeStartCount": "Décompte de départ",
 	"typeStartDuration": "Durée(s) de début",
 	"typeStartVal": "Début (W)",
-	"typesHelp": "Seuils par type d'appareil. Les types intégrés ne peuvent pas être renommés ou supprimés. En mode comptage, les valeurs comptent les ticks d'interrogation (voir Général)."
+	"typesHelp": "Seuils par type d'appareil. Les types intégrés ne peuvent pas être renommés ou supprimés. En mode comptage, les valeurs comptent les ticks d'interrogation (voir Général).",
+	"dm_learnSourceInfo": "L'état de puissance de cet appareil est enregistré par un adaptateur d'historique. L'adaptateur peut déduire le type d'appareil de tous les cycles des 30 derniers jours au lieu d'enregistrer un nouveau cycle.",
+	"dm_learnSource": "Apprendre à partir de",
+	"dm_learnSourceHistory": "Historique des 30 derniers jours",
+	"dm_learnSourceRecord": "Enregistrer un nouveau cycle",
+	"dm_learnHistoryInstance": "Instance d'historique",
+	"dm_learnHistorySamples": "Valeurs enregistrées",
+	"dm_learnRuns": "Cycles trouvés",
+	"dm_learnEvalInfo": "Chaque cycle a été rejoué avec chaque mode de détection : cycles correctement détectés / cycles trouvés · délai moyen avant le signalement de la fin. Le mode recommandé est présélectionné."
 }

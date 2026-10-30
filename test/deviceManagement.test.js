@@ -5,6 +5,8 @@ import { ReminderDeviceManagement } from "../build/lib/deviceManagement.js";
 import { ensureDeviceObjects } from "../build/lib/deviceObjects.js";
 import { Notifier } from "../build/lib/notifier.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
+import { washingMachine } from "./helpers/curves.js";
+import { historyOf, longPause } from "./helpers/history.js";
 
 const NS = "device-reminder.0";
 const POWER = "plug.0.power";
@@ -201,8 +203,11 @@ function fakeAction(over = {}) {
 			forms.push({ schema, options });
 			return answers.shift();
 		},
-		openProgress: async () => {
-			throw new Error("not used");
+		progress: [],
+		openProgress: async title => {
+			const dialog = { title, closed: false, update: async () => {}, close: async () => (dialog.closed = true) };
+			forms.progress = dialog;
+			return dialog;
 		},
 	};
 }
@@ -643,6 +648,93 @@ describe("deviceManagement", () => {
 			await actionOf(info, "learn").handler("trockner", action);
 			assert.strictEqual(action.forms.length, 0);
 			assert.ok(action.messages[0].en.includes("too short"));
+			assert.strictEqual(ctx.adapter.extendedForeign.length, 0);
+		});
+
+		/**
+		 * Let history.0 log the power state with the given stored values.
+		 *
+		 * @param {object} ctx test context
+		 * @param {{ ts: number, val: number }[]} points stored values
+		 */
+		function withHistory(ctx, points) {
+			ctx.adapter.foreign.set(POWER, {
+				type: "state",
+				common: { type: "number", role: "value.power", custom: { "history.0": { enabled: true } } },
+				native: {},
+			});
+			ctx.adapter.foreign.set("system.adapter.history.0", { common: { getHistory: true } });
+			ctx.adapter.getForeignStateAsync = async id => ({ val: id === "system.adapter.history.0.alive" });
+			ctx.adapter.getHistoryAsync = async (id, options) => {
+				ctx.historyQuery = { id, options };
+				return { result: points };
+			};
+			ctx.adapter.setStateAsync = async (id, val) => ctx.adapter.states.set(id, val);
+		}
+
+		const learned = {
+			name: "Waschmaschine",
+			startVal: 70,
+			endVal: 1.5,
+			standby: 0.7,
+			startCount: 2,
+			endCount: 200,
+			startDurationSec: 20,
+			endDurationSec: 2000,
+			mode: "timed",
+		};
+
+		it("learns from the history when the power state is logged", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner");
+			withHistory(ctx, historyOf([washingMachine, longPause, washingMachine]));
+			const [info] = await load(ctx);
+			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, learned] });
+			await actionOf(info, "learn").handler("trockner", action);
+			assert.strictEqual(action.forms[0].options.data.instance, "history.0");
+			assert.strictEqual(ctx.historyQuery.options.instance, "history.0");
+			assert.strictEqual(action.forms.progress.closed, true);
+			const dialog = action.forms[1];
+			assert.strictEqual(dialog.options.data.runs, 3);
+			assert.strictEqual(dialog.options.data.mode, "count");
+			assert.match(dialog.options.data.eval_count, /^3\/3 · \d+ min$/);
+			assert.ok(dialog.schema.items.mode, "the detection mode can be chosen");
+			const added = ctx.adapter.extendedForeign[0].obj.native.types.at(-1);
+			assert.strictEqual(added.mode, "timed", "the chosen mode is stored");
+			assert.strictEqual(added.endCount, 200);
+			assert.notStrictEqual(ctx.host.own("trockner.learning.active"), true, "nothing was recorded");
+			assert.ok(JSON.parse(ctx.adapter.states.get("trockner.learning.result")).runs === 3);
+		});
+
+		it("records a new run when chosen instead of the history", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner");
+			withHistory(ctx, historyOf([washingMachine, washingMachine]));
+			const [info] = await load(ctx);
+			const action = fakeAction({ forms: [{ source: "record" }] });
+			await actionOf(info, "learn").handler("trockner", action);
+			assert.strictEqual(ctx.host.own("trockner.learning.active"), true);
+		});
+
+		it("records a new run when the history holds fewer than two runs", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner");
+			withHistory(ctx, historyOf([washingMachine]));
+			const [info] = await load(ctx);
+			const action = fakeAction({ forms: [{ source: "history" }] });
+			await actionOf(info, "learn").handler("trockner", action);
+			assert.ok(action.messages[0].en.includes("Fewer than 2"));
+			assert.strictEqual(ctx.host.own("trockner.learning.active"), true);
+		});
+
+		it("cancelling the source dialog changes nothing", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner");
+			withHistory(ctx, historyOf([washingMachine, washingMachine]));
+			const [info] = await load(ctx);
+			const action = fakeAction({ forms: [undefined] });
+			await actionOf(info, "learn").handler("trockner", action);
+			assert.notStrictEqual(ctx.host.own("trockner.learning.active"), true);
 			assert.strictEqual(ctx.adapter.extendedForeign.length, 0);
 		});
 

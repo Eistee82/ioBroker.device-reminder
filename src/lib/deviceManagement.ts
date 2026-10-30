@@ -23,6 +23,11 @@ import { type EnumMembers, type EnumOption, enumLabel, membershipOf, planEnumUpd
 import type { DeviceRegistry } from "./deviceRegistry.js";
 import { plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
+import type { DetectionMode } from "./detector/types.js";
+import { analyzeHistory } from "./historyLearning.js";
+import type { ModeEvaluation } from "./historyLearning.js";
+import { findHistoryInstance, loadHistory } from "./historySource.js";
+import type { HistoryEnv } from "./historySource.js";
 import type { LearningSuggestion } from "./learning.js";
 import type { Notifier } from "./notifier.js";
 import { detectFromHost } from "./typeDetection.js";
@@ -693,6 +698,9 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		}
 		const active = (await this.adapter.getStateAsync(`${id}.learning.active`))?.val === true;
 		if (!active) {
+			if (await this.learnFromHistory(id, ctx)) {
+				return this.updateOf(id);
+			}
 			await registry.startLearning(id);
 			await ctx.showMessage(TEXT.learnStarted);
 			return this.updateOf(id);
@@ -705,6 +713,65 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		}
 		await this.saveLearnedType(id, result, ctx);
 		return this.updateOf(id);
+	}
+
+	/**
+	 * Offer to learn from the stored history of the power state instead of recording a run.
+	 *
+	 * @param id - Device id
+	 * @param ctx - Action context
+	 * @returns true if the learning was handled (or cancelled), false to record a run instead
+	 */
+	private async learnFromHistory(id: Id, ctx: ActionContext): Promise<boolean> {
+		const powerId = this.adapter.registry.get(id)?.config.powerId;
+		const env = this.historyEnv();
+		let instance: string | undefined;
+		try {
+			instance = powerId ? await findHistoryInstance(env, powerId) : undefined;
+		} catch (err) {
+			this.adapter.log.debug(`No history for ${powerId}: ${errorMessage(err)}`);
+		}
+		if (!powerId || !instance) {
+			return false;
+		}
+		const choice = await ctx.showForm(buildLearnSourceSchema(), {
+			data: { source: "history", instance },
+			title: TEXT.learnTitle,
+		});
+		if (!choice) {
+			return true;
+		}
+		if (choice.source !== "history") {
+			return false;
+		}
+		const progress = await ctx.openProgress(TEXT.learnAnalysing, { indeterminate: true });
+		let result: ReturnType<typeof analyzeHistory>;
+		try {
+			const points = await loadHistory(env, instance, powerId, Date.now());
+			result = analyzeHistory(points, this.adapter.instanceConfig.pollIntervalSec);
+		} catch (err) {
+			this.adapter.log.warn(`Reading the history of ${powerId} from ${instance} failed: ${errorMessage(err)}`);
+			result = { error: "noHistory" };
+		} finally {
+			await progress.close();
+		}
+		if ("error" in result) {
+			await ctx.showMessage(TEXT.learnHistoryTooFewRuns);
+			return false;
+		}
+		await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);
+		await this.saveLearnedType(id, result, ctx);
+		return true;
+	}
+
+	/** Installation access for the history analysis. */
+	private historyEnv(): HistoryEnv {
+		return {
+			object: id => this.adapter.getForeignObjectAsync(id),
+			alive: async instance =>
+				(await this.adapter.getForeignStateAsync(`system.adapter.${instance}.alive`))?.val === true,
+			getHistory: (id, options) => this.adapter.getHistoryAsync(id, options),
+		};
 	}
 
 	/**
@@ -728,11 +795,14 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			endDurationSec: suggestion.endDurationSec,
 			durationSec: suggestion.durationSec,
 			samples: suggestion.samples,
+			mode: suggestion.mode ?? "count",
+			...(suggestion.evaluation ? { runs: suggestion.runs, ...evaluationTexts(suggestion.evaluation) } : {}),
 		};
+		const fromHistory = suggestion.evaluation !== undefined;
 		let type: DeviceTypeConfig | null = null;
 		const inst = this.adapter.instanceConfig;
 		while (!type) {
-			const result = await ctx.showForm(buildLearnSchema(), { data, title: TEXT.learnTitle });
+			const result = await ctx.showForm(buildLearnSchema(fromHistory), { data, title: TEXT.learnTitle });
 			if (!result) {
 				return;
 			}
@@ -743,7 +813,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 				continue;
 			}
 			const typeId = allocateDeviceId(parsed.type.name, new Set(inst.types.map(t => t.id)));
-			type = { ...parsed.type, id: typeId, builtin: false, mode: "count" };
+			type = { ...parsed.type, id: typeId, builtin: false };
 		}
 		if (!(await ctx.showConfirmation(TEXT.learnConfirm))) {
 			return;
@@ -757,8 +827,53 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	}
 }
 
-/** Schema of the dialog that shows the learned thresholds. */
-export function buildLearnSchema(): JsonFormSchema {
+const DETECTION_MODES: readonly DetectionMode[] = ["count", "timed", "combined"];
+const MODE_LABELS: Record<DetectionMode, string> = { count: "modeCount", timed: "modeTimed", combined: "modeCombined" };
+
+/**
+ * Result of each detection mode over the runs of the history, e.g. `5/5 · 4 min`.
+ *
+ * @param evaluation - Result per mode
+ */
+export function evaluationTexts(evaluation: readonly ModeEvaluation[]): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const e of evaluation) {
+		const delay = e.detected > 0 ? ` · ${Math.round(e.endDelaySec / 60)} min` : "";
+		const spikes = e.falseStarts > 0 ? ` · ${e.falseStarts}×!` : "";
+		out[`eval_${e.mode}`] = `${e.detected}/${e.runs}${delay}${spikes}`;
+	}
+	return out;
+}
+
+/** Schema of the dialog that asks whether to learn from the history or to record a run. */
+export function buildLearnSourceSchema(): JsonFormSchema {
+	return {
+		type: "panel",
+		i18n: true,
+		items: {
+			info: { type: "infoBox", boxType: "info", text: "dm_learnSourceInfo", xs: 12 },
+			source: {
+				type: "select",
+				label: "dm_learnSource",
+				options: [
+					{ label: "dm_learnSourceHistory", value: "history" },
+					{ label: "dm_learnSourceRecord", value: "record" },
+				],
+				newLine: true,
+				xs: 12,
+				sm: 8,
+			},
+			instance: { type: "text", label: "dm_learnHistoryInstance", disabled: true, xs: 12, sm: 4 },
+		},
+	};
+}
+
+/**
+ * Schema of the dialog that shows the learned thresholds.
+ *
+ * @param fromHistory - Show the detection mode and the result of each mode over the history runs
+ */
+export function buildLearnSchema(fromHistory = false): JsonFormSchema {
 	const num = (label: string, step: number, min: number, unit?: string): PanelItem => ({
 		type: "number",
 		label,
@@ -797,14 +912,49 @@ export function buildLearnSchema(): JsonFormSchema {
 				xs: 12,
 				sm: 4,
 			},
-			samples: { type: "number", label: "dm_learnSamples", disabled: true, xs: 12, sm: 4 },
+			samples: {
+				type: "number",
+				label: fromHistory ? "dm_learnHistorySamples" : "dm_learnSamples",
+				disabled: true,
+				xs: 12,
+				sm: 4,
+			},
+			...(fromHistory ? historyItems() : {}),
 		},
 	};
 }
 
+/** Detection mode and result per mode of the learn dialog (history analysis only). */
+function historyItems(): PanelItems {
+	const items: PanelItems = {
+		runs: { type: "number", label: "dm_learnRuns", disabled: true, xs: 12, sm: 4 },
+		mode: {
+			type: "select",
+			label: "dm_detailsMode",
+			options: DETECTION_MODES.map(m => ({ label: MODE_LABELS[m], value: m })),
+			newLine: true,
+			xs: 12,
+			sm: 4,
+		},
+		evalInfo: { type: "staticText", text: "dm_learnEvalInfo", newLine: true, xs: 12 },
+	};
+	for (const m of DETECTION_MODES) {
+		items[`eval_${m}`] = { type: "text", label: MODE_LABELS[m], disabled: true, xs: 12, sm: 4 };
+	}
+	return items;
+}
+
 type LearnedType = Pick<
 	DeviceTypeConfig,
-	"name" | "startVal" | "endVal" | "standby" | "startCount" | "endCount" | "startDurationSec" | "endDurationSec"
+	| "name"
+	| "mode"
+	| "startVal"
+	| "endVal"
+	| "standby"
+	| "startCount"
+	| "endCount"
+	| "startDurationSec"
+	| "endDurationSec"
 >;
 
 /**
@@ -835,5 +985,6 @@ function parseLearnForm(
 			error: TEXT.typeValuesInvalid,
 		};
 	}
-	return { type: { name, ...parsed } };
+	const mode = DETECTION_MODES.find(m => m === data.mode) ?? "count";
+	return { type: { name, mode, ...parsed } };
 }

@@ -68,7 +68,7 @@
 	"dm_learnEndCount": "Ende-Anzahl",
 	"dm_learnEndDuration": "Endedauer",
 	"dm_learnEndVal": "Ende-Schwelle",
-	"dm_learnInfo": "Der aufgezeichnete Lauf wurde ausgewertet. Prüfe die Werte und gib dem neuen Gerätetyp einen Namen. Das Speichern startet die Adapter-Instanz neu.",
+	"dm_learnInfo": "Die Leistungskurve wurde ausgewertet. Prüfe die Werte und gib dem neuen Gerätetyp einen Namen. Das Speichern startet die Adapter-Instanz neu.",
 	"dm_learnName": "Name des Gerätetyps",
 	"dm_learnSamples": "Aufgezeichnete Messwerte",
 	"dm_learnStandby": "Standby-Schwelle",
@@ -139,5 +139,13 @@
 	"typeStartCount": "Start-Anzahl",
 	"typeStartDuration": "Startdauer (s)",
 	"typeStartVal": "Start (W)",
-	"typesHelp": "Schwellwerte je Gerätetyp. Eingebaute Typen können nicht umbenannt oder entfernt werden. Im Modus Anzahl zählen die Werte Abfrage-Ticks (siehe Allgemein)."
+	"typesHelp": "Schwellwerte je Gerätetyp. Eingebaute Typen können nicht umbenannt oder entfernt werden. Im Modus Anzahl zählen die Werte Abfrage-Ticks (siehe Allgemein).",
+	"dm_learnSourceInfo": "Der Leistungs-Datenpunkt dieses Geräts wird von einem History-Adapter gespeichert. Der Adapter kann den Gerätetyp aus allen Läufen der letzten 30 Tage ableiten, statt einen neuen Lauf aufzuzeichnen.",
+	"dm_learnSource": "Anlernen aus",
+	"dm_learnSourceHistory": "History der letzten 30 Tage",
+	"dm_learnSourceRecord": "Neuen Lauf aufzeichnen",
+	"dm_learnHistoryInstance": "History-Instanz",
+	"dm_learnHistorySamples": "Gespeicherte Werte",
+	"dm_learnRuns": "Gefundene Läufe",
+	"dm_learnEvalInfo": "Jeder Lauf wurde mit jedem Erkennungsmodus nachgespielt: korrekt erkannte / gefundene Läufe · mittlere Zeit bis das Ende gemeldet wird. Der empfohlene Modus ist vorausgewählt."
 }

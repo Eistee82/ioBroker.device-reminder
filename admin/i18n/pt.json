@@ -68,7 +68,7 @@
 	"dm_learnEndCount": "Contagem final",
 	"dm_learnEndDuration": "Duração final",
 	"dm_learnEndVal": "Limite final",
-	"dm_learnInfo": "A corrida gravada foi analisada. Verifique os valores e dê um nome ao novo tipo de dispositivo. Salvar reinicia a instância do adaptador.",
+	"dm_learnInfo": "A curva de potência foi analisada. Verifique os valores e dê um nome ao novo tipo de dispositivo. Guardar reinicia a instância do adaptador.",
 	"dm_learnName": "Nome do tipo de dispositivo",
 	"dm_learnSamples": "Amostras gravadas",
 	"dm_learnStandby": "Limite de espera",
@@ -139,5 +139,13 @@
 	"typeStartCount": "Iniciar contagem",
 	"typeStartDuration": "Duração(ões) inicial(is)",
 	"typeStartVal": "Iniciar (W)",
-	"typesHelp": "Limites por tipo de dispositivo. Os tipos integrados não podem ser renomeados ou removidos. No modo de contagem, os valores contam os ticks de votação (consulte Geral)."
+	"typesHelp": "Limites por tipo de dispositivo. Os tipos integrados não podem ser renomeados ou removidos. No modo de contagem, os valores contam os ticks de votação (consulte Geral).",
+	"dm_learnSourceInfo": "O estado de potência deste dispositivo é guardado por um adaptador de histórico. O adaptador pode derivar o tipo de dispositivo de todos os ciclos dos últimos 30 dias em vez de gravar um novo ciclo.",
+	"dm_learnSource": "Aprender a partir de",
+	"dm_learnSourceHistory": "Histórico dos últimos 30 dias",
+	"dm_learnSourceRecord": "Gravar um novo ciclo",
+	"dm_learnHistoryInstance": "Instância de histórico",
+	"dm_learnHistorySamples": "Valores guardados",
+	"dm_learnRuns": "Ciclos encontrados",
+	"dm_learnEvalInfo": "Cada ciclo foi reproduzido com cada modo de deteção: ciclos detetados corretamente / ciclos encontrados · tempo médio até o fim ser comunicado. O modo recomendado está pré-selecionado."
 }

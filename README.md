@@ -32,7 +32,7 @@ Detects when household devices such as washing machines, dryers and dishwashers 
 - (Eistee82) BREAKING: complete rewrite with new state IDs, requires Node.js 22, js-controller 6 and admin 7.8 - settings from 3.1.2 are migrated automatically
 - (Eistee82) Device manager to add, edit and operate devices, with automatic detection of sockets and power meters
 - (Eistee82) New detection modes (time-based, combined) and corrected abort detection (default off)
-- (Eistee82) Reminders until acknowledged, actions on start, end, reminder and acknowledgement, and a learning mode for thresholds
+- (Eistee82) Reminders until acknowledged, actions, and learning of thresholds and detection mode from the history (history, SQL, InfluxDB) or a recorded run
 - (Eistee82) New messengers ntfy, Pushsafer and Gotify, fixed messenger payloads and time windows for every recipient
 - (Eistee82) Blockly blocks and vis-2 widgets (device card and overview)
 

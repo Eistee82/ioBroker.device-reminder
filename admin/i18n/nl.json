@@ -68,9 +68,9 @@
 	"dm_learnEndCount": "Einde telling",
 	"dm_learnEndDuration": "Einde duur",
 	"dm_learnEndVal": "Einddrempel",
-	"dm_learnInfo": "De geregistreerde run werd geanalyseerd. Controleer de waarden en geef het nieuwe apparaattype een naam. Bij het opslaan wordt de adapterinstantie opnieuw gestart.",
+	"dm_learnInfo": "De vermogenscurve is geanalyseerd. Controleer de waarden en geef het nieuwe apparaattype een naam. Opslaan herstart de adapterinstantie.",
 	"dm_learnName": "Naam van het apparaattype",
-	"dm_learnSamples": "Opgenomen monsters",
+	"dm_learnSamples": "Opgenomen meetwaarden",
 	"dm_learnStandby": "Stand-bydrempel",
 	"dm_learnStartCount": "Begin met tellen",
 	"dm_learnStartDuration": "Startduur",
@@ -139,5 +139,13 @@
 	"typeStartCount": "Begin met tellen",
 	"typeStartDuration": "Startduur(en)",
 	"typeStartVal": "Begin (W)",
-	"typesHelp": "Drempels per apparaattype. Ingebouwde typen kunnen niet worden hernoemd of verwijderd. In de telmodus tellen de waarden polling ticks (zie Algemeen)."
+	"typesHelp": "Drempels per apparaattype. Ingebouwde typen kunnen niet worden hernoemd of verwijderd. In de telmodus tellen de waarden polling ticks (zie Algemeen).",
+	"dm_learnSourceInfo": "Het vermogensdatapunt van dit apparaat wordt door een history-adapter opgeslagen. De adapter kan het apparaattype afleiden uit alle runs van de laatste 30 dagen in plaats van een nieuwe run op te nemen.",
+	"dm_learnSource": "Leren uit",
+	"dm_learnSourceHistory": "Geschiedenis van de laatste 30 dagen",
+	"dm_learnSourceRecord": "Een nieuwe run opnemen",
+	"dm_learnHistoryInstance": "History-instantie",
+	"dm_learnHistorySamples": "Opgeslagen waarden",
+	"dm_learnRuns": "Gevonden runs",
+	"dm_learnEvalInfo": "Elke run is met elke detectiemodus opnieuw afgespeeld: correct herkende / gevonden runs · gemiddelde tijd tot het einde gemeld wordt. De aanbevolen modus is voorgeselecteerd."
 }

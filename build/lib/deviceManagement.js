@@ -5,6 +5,8 @@ import { ensureDeviceObjects } from "./deviceObjects.js";
 import { enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
 import { plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
+import { analyzeHistory } from "./historyLearning.js";
+import { findHistoryInstance, loadHistory } from "./historySource.js";
 import { detectFromHost } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
 const RESERVED_IDS = ["info"];
@@ -546,6 +548,9 @@ export class ReminderDeviceManagement extends DeviceManagement {
         }
         const active = (await this.adapter.getStateAsync(`${id}.learning.active`))?.val === true;
         if (!active) {
+            if (await this.learnFromHistory(id, ctx)) {
+                return this.updateOf(id);
+            }
             await registry.startLearning(id);
             await ctx.showMessage(TEXT.learnStarted);
             return this.updateOf(id);
@@ -557,6 +562,57 @@ export class ReminderDeviceManagement extends DeviceManagement {
         }
         await this.saveLearnedType(id, result, ctx);
         return this.updateOf(id);
+    }
+    async learnFromHistory(id, ctx) {
+        const powerId = this.adapter.registry.get(id)?.config.powerId;
+        const env = this.historyEnv();
+        let instance;
+        try {
+            instance = powerId ? await findHistoryInstance(env, powerId) : undefined;
+        }
+        catch (err) {
+            this.adapter.log.debug(`No history for ${powerId}: ${errorMessage(err)}`);
+        }
+        if (!powerId || !instance) {
+            return false;
+        }
+        const choice = await ctx.showForm(buildLearnSourceSchema(), {
+            data: { source: "history", instance },
+            title: TEXT.learnTitle,
+        });
+        if (!choice) {
+            return true;
+        }
+        if (choice.source !== "history") {
+            return false;
+        }
+        const progress = await ctx.openProgress(TEXT.learnAnalysing, { indeterminate: true });
+        let result;
+        try {
+            const points = await loadHistory(env, instance, powerId, Date.now());
+            result = analyzeHistory(points, this.adapter.instanceConfig.pollIntervalSec);
+        }
+        catch (err) {
+            this.adapter.log.warn(`Reading the history of ${powerId} from ${instance} failed: ${errorMessage(err)}`);
+            result = { error: "noHistory" };
+        }
+        finally {
+            await progress.close();
+        }
+        if ("error" in result) {
+            await ctx.showMessage(TEXT.learnHistoryTooFewRuns);
+            return false;
+        }
+        await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);
+        await this.saveLearnedType(id, result, ctx);
+        return true;
+    }
+    historyEnv() {
+        return {
+            object: id => this.adapter.getForeignObjectAsync(id),
+            alive: async (instance) => (await this.adapter.getForeignStateAsync(`system.adapter.${instance}.alive`))?.val === true,
+            getHistory: (id, options) => this.adapter.getHistoryAsync(id, options),
+        };
     }
     async saveLearnedType(id, suggestion, ctx) {
         const deviceName = this.adapter.registry.get(id)?.config.name ?? id;
@@ -571,11 +627,14 @@ export class ReminderDeviceManagement extends DeviceManagement {
             endDurationSec: suggestion.endDurationSec,
             durationSec: suggestion.durationSec,
             samples: suggestion.samples,
+            mode: suggestion.mode ?? "count",
+            ...(suggestion.evaluation ? { runs: suggestion.runs, ...evaluationTexts(suggestion.evaluation) } : {}),
         };
+        const fromHistory = suggestion.evaluation !== undefined;
         let type = null;
         const inst = this.adapter.instanceConfig;
         while (!type) {
-            const result = await ctx.showForm(buildLearnSchema(), { data, title: TEXT.learnTitle });
+            const result = await ctx.showForm(buildLearnSchema(fromHistory), { data, title: TEXT.learnTitle });
             if (!result) {
                 return;
             }
@@ -586,7 +645,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 continue;
             }
             const typeId = allocateDeviceId(parsed.type.name, new Set(inst.types.map(t => t.id)));
-            type = { ...parsed.type, id: typeId, builtin: false, mode: "count" };
+            type = { ...parsed.type, id: typeId, builtin: false };
         }
         if (!(await ctx.showConfirmation(TEXT.learnConfirm))) {
             return;
@@ -599,7 +658,39 @@ export class ReminderDeviceManagement extends DeviceManagement {
         await this.adapter.extendForeignObjectAsync(instanceId, { native: { types: [...types, type] } });
     }
 }
-export function buildLearnSchema() {
+const DETECTION_MODES = ["count", "timed", "combined"];
+const MODE_LABELS = { count: "modeCount", timed: "modeTimed", combined: "modeCombined" };
+export function evaluationTexts(evaluation) {
+    const out = {};
+    for (const e of evaluation) {
+        const delay = e.detected > 0 ? ` · ${Math.round(e.endDelaySec / 60)} min` : "";
+        const spikes = e.falseStarts > 0 ? ` · ${e.falseStarts}×!` : "";
+        out[`eval_${e.mode}`] = `${e.detected}/${e.runs}${delay}${spikes}`;
+    }
+    return out;
+}
+export function buildLearnSourceSchema() {
+    return {
+        type: "panel",
+        i18n: true,
+        items: {
+            info: { type: "infoBox", boxType: "info", text: "dm_learnSourceInfo", xs: 12 },
+            source: {
+                type: "select",
+                label: "dm_learnSource",
+                options: [
+                    { label: "dm_learnSourceHistory", value: "history" },
+                    { label: "dm_learnSourceRecord", value: "record" },
+                ],
+                newLine: true,
+                xs: 12,
+                sm: 8,
+            },
+            instance: { type: "text", label: "dm_learnHistoryInstance", disabled: true, xs: 12, sm: 4 },
+        },
+    };
+}
+export function buildLearnSchema(fromHistory = false) {
     const num = (label, step, min, unit) => ({
         type: "number",
         label,
@@ -638,9 +729,34 @@ export function buildLearnSchema() {
                 xs: 12,
                 sm: 4,
             },
-            samples: { type: "number", label: "dm_learnSamples", disabled: true, xs: 12, sm: 4 },
+            samples: {
+                type: "number",
+                label: fromHistory ? "dm_learnHistorySamples" : "dm_learnSamples",
+                disabled: true,
+                xs: 12,
+                sm: 4,
+            },
+            ...(fromHistory ? historyItems() : {}),
         },
     };
+}
+function historyItems() {
+    const items = {
+        runs: { type: "number", label: "dm_learnRuns", disabled: true, xs: 12, sm: 4 },
+        mode: {
+            type: "select",
+            label: "dm_detailsMode",
+            options: DETECTION_MODES.map(m => ({ label: MODE_LABELS[m], value: m })),
+            newLine: true,
+            xs: 12,
+            sm: 4,
+        },
+        evalInfo: { type: "staticText", text: "dm_learnEvalInfo", newLine: true, xs: 12 },
+    };
+    for (const m of DETECTION_MODES) {
+        items[`eval_${m}`] = { type: "text", label: MODE_LABELS[m], disabled: true, xs: 12, sm: 4 };
+    }
+    return items;
 }
 function parseLearnForm(data) {
     const name = textOf(data.name).trim();
@@ -662,6 +778,7 @@ function parseLearnForm(data) {
             error: TEXT.typeValuesInvalid,
         };
     }
-    return { type: { name, ...parsed } };
+    const mode = DETECTION_MODES.find(m => m === data.mode) ?? "count";
+    return { type: { name, mode, ...parsed } };
 }
 //# sourceMappingURL=deviceManagement.js.map

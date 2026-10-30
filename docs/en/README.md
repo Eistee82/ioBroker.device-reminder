@@ -189,7 +189,18 @@ An action on a missing state is skipped with a warning and never stops the other
 
 ## 8. Learning mode
 
-Learning derives thresholds from a real run.
+Learning derives thresholds from real runs: from the history of the power state or from a recorded run.
+
+### From the history
+
+If the power state is logged by a history adapter (history, SQL, InfluxDB or any other adapter that answers `getHistory`), **Learn** on the device card first offers to use the history. The default history of the system settings is preferred.
+
+- All runs of the last 30 days are cut out of the history. A run may pause for up to 30 minutes; activity of less than 5 minutes in total (e.g. a display switching on) is not a run. At least 2 runs are needed, otherwise a new run is recorded.
+- The adapter cannot tell programmes apart, so the device type has to detect **every** run: the thresholds cover the run with the longest pause.
+- Every run is replayed with all three detection modes (count, duration, combined) using the same code as the live detection. The dialog shows for each mode how many runs were detected correctly and how long it takes on average until the end is reported. The mode that detects the most runs with the fewest false starts is preselected; if several are equally reliable and their end is reported within one minute of each other, count (the 3.1.2 behaviour) wins.
+- You can change every value and the mode before saving the new custom device type.
+
+### Recording a run
 
 1. Start learning from the device card (**Learn**) or write `learning.start` of the device.
 2. Run a complete cycle of the machine. The recording stops automatically after 12 hours or 10,000 samples.
@@ -302,7 +313,7 @@ Device states are relative to the device object `<deviceId>`. Info states are on
 | `learning.start` | boolean | button.start | w | - | Start learning | Write true to start recording a run |
 | `learning.stop` | boolean | button.stop | w | - | Stop learning | Write true to stop recording and compute the suggestion |
 | `learning.active` | boolean | indicator | r | - | Learning active | True while a run is recorded |
-| `learning.result` | string | json | r | - | Learning result | JSON: thresholds, startDurationSec, endDurationSec, durationSec, samples, or an error (tooFewSamples, noRun) |
+| `learning.result` | string | json | r | - | Learning result | JSON: thresholds, startDurationSec, endDurationSec, durationSec, samples (from the history also mode, runs, evaluation), or an error (tooFewSamples, noRun) |
 | `lastOperationsHtml` | string | html | r | - | Last operations (HTML) | HTML table of the last runs (only if enabled in the general settings) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter connected | True when the adapter is running |
 <!-- END STATES -->
