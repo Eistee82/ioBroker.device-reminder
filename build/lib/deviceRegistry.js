@@ -180,9 +180,11 @@ export class DeviceRegistry {
         }
         const samples = entry.recorder.stop(this.host.now());
         const cfg = entry.runtime.config;
-        const result = await suggestType(samples, this.getConfig().pollIntervalSec, {
+        const inst = this.getConfig();
+        const result = await suggestType(samples, inst.pollIntervalSec, {
             abort: cfg.abort,
             abortFixed: cfg.abortFixed,
+            currentType: findType(inst, cfg.typeId),
         });
         await this.host.setOwnState(`${deviceId}.learning.active`, false);
         await this.host.setOwnState(`${deviceId}.learning.result`, JSON.stringify(result));

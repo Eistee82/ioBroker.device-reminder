@@ -72,6 +72,9 @@ export class TimedDetector {
         this.belowEndSince = power < this.endValue ? (this.belowEndSince ?? now) : null;
         this.belowStandbySince = power < this.standbyValue ? (this.belowStandbySince ?? now) : null;
         this.guard.observe(power, this.belowEndSince);
+        if (power >= this.startValue) {
+            this.guard.onActive();
+        }
     }
     elapsed(since, now, durationMs) {
         return since !== null && now - since >= durationMs;

@@ -64,6 +64,24 @@ describe("learning", () => {
 		assert.deepStrictEqual([r.started, r.finished], [1, 1]);
 	});
 
+	it("still checks the end when the recording stopped shortly after the run", async () => {
+		const lastActive = washingMachine.findLastIndex(v => v > 5);
+		for (const after of [2, 12]) {
+			const s = await suggestType(toSamples(washingMachine.slice(0, lastActive + 1 + after)), 10);
+			assert.ok(!("error" in s), JSON.stringify(s));
+			assert.ok(
+				s.evaluation.every(e => e.detected === 1),
+				JSON.stringify(s.evaluation),
+			);
+			assert.strictEqual(s.thresholds.startVal, 72.05);
+		}
+	});
+
+	it("reports noRun when the recording stopped while the device was running", async () => {
+		const result = await suggestType(toSamples([...new Array(30).fill(0.5), ...new Array(100).fill(2000)]), 10);
+		assert.deepStrictEqual(result, { error: "noRun" });
+	});
+
 	it("uses the same analysis as the history", async () => {
 		const rec = await suggestType(toSamples(washingMachine), 10);
 		const hist = await analyzeHistory(historyOf([washingMachine]), 10, { minRuns: 1 });

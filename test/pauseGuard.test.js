@@ -67,6 +67,18 @@ describe("pause protection", () => {
 		});
 	}
 
+	it("count: blips after the end delay the end by at most the hold time", () => {
+		// 0 W after the end with a single 5 W blip every 10 min: every stretch below endVal looks like a pause
+		const tail = Array.from({ length: 1000 }, (_, i) => (i % 60 === 59 ? 5 : 0));
+		const blips = [...washingMachine.slice(0, 203), ...tail];
+		const settings = { endVal: 2, endCount: 20 };
+		const without = run(blips, settings).finishedAt;
+		const guarded = run(blips, { ...settings, pauseHoldSec: 1700, pauseBelowVal: 0.25 }).finishedAt;
+		assert.strictEqual(without.length, 1);
+		assert.strictEqual(guarded.length, 1, "the end is reported");
+		assert.ok(guarded[0] >= without[0] && guarded[0] <= without[0] + 170, `${guarded} / ${without}`);
+	});
+
 	it("timed: the abort detection does not fire in a pause", () => {
 		const timed = { mode: "timed" };
 		const without = run(curve, timed, { abort: true });

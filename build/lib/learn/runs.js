@@ -1,4 +1,4 @@
-import { applyGapRule } from "./ticks.js";
+import { applyGapRule, GAP_MS } from "./ticks.js";
 export const MAX_PAUSE_MS = 30 * 60_000;
 export const MIN_ACTIVE_MS = 5 * 60_000;
 export const PAD_BEFORE_MS = 30 * 60_000;
@@ -45,6 +45,8 @@ function segments(s, limit, maxGap, endIsGap) {
     const out = [];
     let current = null;
     let lastInvalid = Number.NEGATIVE_INFINITY;
+    const lead = s.firstIdx;
+    const leadIdle = lead > 0 && lead < s.length && (lead * s.stepMs >= GAP_MS || s.last[lead] <= limit);
     for (let i = 0; i < s.length; i++) {
         if (s.valid[i] === 0) {
             if (current && i - current.to - 1 <= maxGap) {
@@ -62,7 +64,8 @@ function segments(s, limit, maxGap, endIsGap) {
             current.active++;
         }
         else {
-            current = { from: i, to: i, active: 1, touched: i - lastInvalid - 1 <= maxGap };
+            const afterLead = leadIdle && lastInvalid === lead - 1;
+            current = { from: i, to: i, active: 1, touched: !afterLead && i - lastInvalid - 1 <= maxGap };
             out.push(current);
         }
     }
@@ -141,18 +144,22 @@ function idleOf(s, runs, bounds, fallback) {
             levels.push(quantile(vals, 0.2));
         }
     });
-    return levels.length > 0 ? median(levels) : fallback;
+    return Math.max(0, levels.length > 0 ? median(levels) : fallback);
 }
-function finishRun(s, r, next, idle, runLimit) {
+function finishRun(s, r, next, idle, runLimit, keepAbove) {
     const level = Math.max(idle + LEVEL_SEP_W, idle * 1.3);
     const quietTicks = Math.ceil(PLATEAU_QUIET_MS / s.stepMs);
     let plateauTicks = 0;
     let plateauLast = r.coreEnd;
     let quiet = 0;
+    let interrupted = r.bursts.length > 0;
     const values = [];
-    for (let j = r.coreEnd + 1; j < Math.min(next, s.length) && s.valid[j] === 1; j++) {
+    for (let j = r.coreEnd + 1; !interrupted && j < Math.min(next, s.length) && s.valid[j] === 1; j++) {
         const v = s.last[j];
-        if (v > level && v <= runLimit) {
+        if (v > runLimit) {
+            interrupted = true;
+        }
+        else if (v > level) {
             plateauTicks++;
             plateauLast = j;
             values.push(v);
@@ -162,16 +169,17 @@ function finishRun(s, r, next, idle, runLimit) {
             break;
         }
     }
-    if (plateauTicks * s.stepMs >= PLATEAU_RUN_MS) {
+    const plateau = values.length > 0 ? median(values) : 0;
+    if (!interrupted && keepAbove !== undefined && plateau >= keepAbove && plateauTicks * s.stepMs >= PLATEAU_RUN_MS) {
         r.runEnd = plateauLast;
-        r.plateauLevel = median(values);
+        r.plateauLevel = plateau;
     }
     else {
         r.runEnd = r.coreEnd;
         r.plateauLevel = null;
     }
     const post = valuesOf(s, r.runEnd + 1, Math.min(r.runEnd + Math.ceil(POST_END_MS / s.stepMs), next - 1));
-    r.postEnd = post.length > 0 ? quantile(post, 0.9) : idle;
+    r.postEnd = Math.max(0, post.length > 0 ? quantile(post, 0.9) : idle);
 }
 function gapLevel(s, g) {
     return median(valuesOf(s, g.from, g.to));
@@ -195,7 +203,9 @@ function splitGrown(s, runs, bounds, runLimit) {
     }
     const minBe = Math.min(...be);
     const maxBe = Math.max(...be);
-    if (!(Math.max(...bp) * 1.5 + LEVEL_SEP_W < minBe * 0.8)) {
+    const pausesBelow = quantile(bp, 0.9) * 1.5 + LEVEL_SEP_W < minBe * 0.8;
+    const pausesAbove = quantile(bp, 0.1) > maxBe * 1.5 + LEVEL_SEP_W;
+    if (!pausesBelow && !pausesAbove) {
         return null;
     }
     const lo = 0.8 * minBe;
@@ -219,8 +229,10 @@ function splitGrown(s, runs, bounds, runLimit) {
             if (g.from <= from || (g.to - g.from + 1) * step < SPLIT_GAP_MIN_MS) {
                 continue;
             }
-            const lv = gapLevel(s, g);
-            if (lv < lo || lv > hi) {
+            const inBand = pausesBelow
+                ? gapLevel(s, g) >= lo && gapLevel(s, g) <= hi
+                : quantile(valuesOf(s, g.from, g.to), 0.9) <= hi;
+            if (!inBand) {
                 continue;
             }
             const before = activeIn(from, g.from - 1);
@@ -235,10 +247,10 @@ function splitGrown(s, runs, bounds, runLimit) {
     }
     return changed ? out : null;
 }
-function detailRuns(s, spans, bounds, runLimit, fallbackIdle) {
+function detailRuns(s, spans, bounds, runLimit, fallbackIdle, keepAbove) {
     const runs = spans.map(seg => coreOf(s, seg, runLimit));
     const idle = idleOf(s, runs, bounds, fallbackIdle);
-    runs.forEach((r, i) => finishRun(s, r, bounds[i].next, idle, runLimit));
+    runs.forEach((r, i) => finishRun(s, r, bounds[i].next, idle, runLimit, keepAbove));
     return { runs, idle };
 }
 function boundsOf(spans, all, length) {
@@ -250,9 +262,9 @@ export function buildLayout(s, opts = {}) {
     let tailIdle = null;
     if (opts.recording) {
         const tail = validValues.slice(-Math.max(3, Math.ceil(validValues.length * 0.1)));
-        tailIdle = median(tail);
+        tailIdle = Math.max(0, Math.min(median(tail), tail.at(-1) ?? 0));
     }
-    const runLimit = (tailIdle ?? median(validValues)) * 3 + 2;
+    const runLimit = Math.max(0, tailIdle ?? median(validValues)) * 3 + 2;
     if (!opts.recording) {
         applyGapRule(s, runLimit);
     }
@@ -263,9 +275,9 @@ export function buildLayout(s, opts = {}) {
     const gapsDropped = all.length - usable.length;
     let runSpans = usable.filter(x => x.active >= minActive);
     const spikes = usable.filter(x => x.active < minActive).slice(-MAX_WINDOWS);
-    const fallbackIdle = tailIdle ?? median(validValues);
+    const fallbackIdle = Math.max(0, tailIdle ?? median(validValues));
     let bounds = boundsOf(runSpans, all, s.length);
-    let { runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle);
+    let { runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle, opts.keepAbove);
     if (!opts.recording) {
         const split = splitGrown(s, runs, bounds, runLimit);
         if (split) {
@@ -275,7 +287,7 @@ export function buildLayout(s, opts = {}) {
                 ...runSpans,
             ].sort((a, b) => a.from - b.from);
             bounds = boundsOf(runSpans, starts, s.length);
-            ({ runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle));
+            ({ runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle, opts.keepAbove));
         }
     }
     if (opts.recording && tailIdle !== null) {

@@ -82,7 +82,7 @@ Some programmes pause for a long time, for example while soaking or during a pre
 
 - A phase below the end value counts as a **pause** if it begins early in the run (before "Pause if it starts before" seconds after the start) or if its power stays below "Pause if power below". If both values are set, both have to apply.
 - A pause only counts as the end after the **pause hold** time. Every other phase below the end value is reported as the end after the end count or end duration as usual.
-- Guarantee: pause protection can only delay an end, never prevent or advance it. This applies to the abort detection as well.
+- Guarantee: pause protection can only delay an end, never prevent or advance it. This applies to the abort detection as well. Once the detection would report the end, it is reported after the hold time at the latest, even if short blips (display, electronics) keep interrupting the phase below the end value.
 - An abort by the switch (corrected abort detection) is not delayed, because the switched-off switch is a reliable proof.
 - All three values 0 (default) = off = the 3.1.2 behaviour. A hold time without one of the two conditions has no effect.
 
@@ -215,20 +215,24 @@ If the power state is logged by a history adapter (history, SQL, InfluxDB or any
 - The history is read day by day, so the full 30 days arrive even from plugs that report a value every second. A shorter retention (`retention`) of the history adapter limits the period.
 - Gaps of the logger are ignored: a run during which the logger stored nothing for more than 2 hours does not count. A value that does not change (plug reports only on change) is no gap.
 - The units W and kW are supported. An energy meter (Wh/kWh) is recognised and rejected; choose the state with the current power instead.
+- If the history adapter stores changes only, there is often no value in the period before the first run. The run still counts if the first value is at idle level or comes more than 2 hours after the begin of the period.
+- If the history cannot be read, the reason is in the log (warning) and the dialog says so; then a new run is recorded.
 
 **Runs**
 
 - A run may pause for up to 30 minutes; activity of less than 5 minutes in total (e.g. a display switching on) is not a run. At least 2 runs are needed, otherwise a new run is recorded.
-- Two runs shortly after each other are split if the power between them matches the idle level after an end and clearly differs from the pauses inside runs. Otherwise they stay one run.
+- A run only counts once it has been finished for about 30 minutes (otherwise it might only be pausing). If you learn right after a run, that run is still missing.
+- Two runs shortly after each other are split if the power between them matches the idle level after an end and clearly differs from the pauses inside runs, whether the pauses are below it (pump off, 0 W) or above it (electronics on, e.g. 2–5 W, 0.3 W after the end). Otherwise they stay one run.
 - Anti-crease bursts of a dryer after the end belong to the run. The start duration or start count is chosen so that they do not start a new run.
-- A phase with slightly raised power of at least 20 minutes after the run (drying of a dishwasher) belongs to the run, a shorter one (display, door release) does not.
+- A phase with slightly raised power after the run is either the drying of a dishwasher (belongs to the run) or a display or door lock (does not). The power alone cannot tell them apart, so the current device type decides: the phase belongs to the run if it lasts at least 20 minutes and its power is not below the end value of the current type (the current type still reports "running" there, like the dishwasher type with 0.25 W). Otherwise the finished message comes shortly after the actual run. A learned type keeps this decision when you learn again.
+- Anti-crease bursts with electronics in between are never drying; the end is reported after the cool-down.
 - `changesMinDelta` of the history adapter is taken into account for the end value.
 
 **Optimisation**
 
 - End value and end waiting time are chosen so that every run is detected exactly once and the end is reported as early as possible. Instead of fixed factors, the shortest safe end count is searched with the real detection code.
 - If [pause protection](#pause-protection) saves at least 3 minutes on average, it is suggested. Example: a run with 22 minutes of soaking at 0 W and 0.5 W after the end. Without pause protection every run would wait more than 27 minutes for the finished message. With "Pause if power below 0.25 W" and a hold of 1670 s it comes after about one minute for all runs. If pause and idle level are both 0 W, the time decides ("Pause if it starts before 880 s"): then the end comes after about 4 minutes; only a very short programme that ends as early as a pause begins is delayed up to the hold time, but it is detected.
-- Every suggestion is replayed with the real detection code and the abort options of the device.
+- Every suggestion is replayed with the real detection code and the abort options of the device, in the unit of the state with the values that are saved. In kW the count mode rounds averages to 0.01 kW (10 W); if it misses runs because of that, the dialog shows it and suggests another mode.
 
 **Dialog**
 
@@ -242,7 +246,7 @@ If the power state is logged by a history adapter (history, SQL, InfluxDB or any
 1. Start learning from the device card (**Learn**) or write `learning.start` of the device.
 2. Run a complete cycle of the machine. The recording stops automatically after 12 hours or 10,000 samples.
 3. Stop learning in the Device Manager or write `learning.stop`.
-4. The recording is analysed with the same logic as the history, with one run. The suggested settings are written as JSON to `learning.result` (thresholds, start and end duration, run duration, number of samples, mode, result per mode and pause protection). The Device Manager shows them and can store them as a new custom device type.
+4. The recording is analysed with the same logic as the history, with one run. After the last sample that value is taken to stay (as at runtime), so the recording can also be stopped shortly after the end. If no mode detects the run (e.g. the recording was stopped while the device was still running), there is no suggestion. The suggested settings are written as JSON to `learning.result` (thresholds, start and end duration, run duration, number of samples, mode, result per mode and pause protection). The Device Manager shows them and can store them as a new custom device type.
 
 If fewer than 20 samples were recorded or no run is recognised, `learning.result` contains an error (`tooFewSamples` or `noRun`). `learning.active` is true while recording.
 

@@ -82,7 +82,7 @@ Manche Programme pausieren lange, zum Beispiel beim Einweichen oder bei der Vorw
 
 - Eine Phase unter dem Endwert gilt als **Pause**, wenn sie früh im Lauf beginnt (vor „Pause, wenn sie beginnt vor“ Sekunden nach dem Start) bzw. wenn ihre Leistung unter „Pause, wenn Leistung unter“ bleibt. Sind beide Werte gesetzt, müssen beide zutreffen.
 - Eine Pause zählt erst nach der **Pause-Haltezeit** als Ende. Jede andere Phase unter dem Endwert wird wie gewohnt nach Endanzahl bzw. Enddauer als Ende gemeldet.
-- Garantie: Der Pausenschutz kann ein Ende nur verzögern, nie verhindern oder vorziehen. Das gilt auch für die Abbrucherkennung.
+- Garantie: Der Pausenschutz kann ein Ende nur verzögern, nie verhindern oder vorziehen. Das gilt auch für die Abbrucherkennung. Sobald die Erkennung das Ende melden würde, kommt es spätestens nach der Haltezeit, auch wenn kurze Zacken (Display, Elektronik) die Phase unter dem Endwert immer wieder unterbrechen.
 - Ein Abbruch über den Schalter (korrigierte Abbrucherkennung) wird nicht verzögert, denn der ausgeschaltete Schalter ist ein sicherer Beleg.
 - Alle drei Werte 0 (Standard) = aus = Verhalten von 3.1.2. Eine Haltezeit ohne eine der beiden Bedingungen hat keine Wirkung.
 
@@ -215,20 +215,24 @@ Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, In
 - Die History wird tageweise gelesen, so kommen die vollen 30 Tage auch bei Steckdosen an, die jede Sekunde einen Wert senden. Eine kürzere Aufbewahrung (`retention`) des History-Adapters begrenzt den Zeitraum.
 - Lücken des Loggers werden ignoriert: Ein Lauf, in dem der Logger länger als 2 Stunden nichts gespeichert hat, zählt nicht. Ein Wert, der sich nicht ändert (Steckdose sendet nur bei Änderung), ist keine Lücke.
 - Einheiten W und kW werden unterstützt. Ein Energiezähler (Wh/kWh) wird erkannt und abgelehnt; wähle dann den State mit der aktuellen Leistung.
+- Speichert der History-Adapter nur Änderungen, liegt vor dem ersten Lauf oft kein Wert im Zeitraum. Der Lauf zählt trotzdem, wenn der erste Wert im Ruhepegel liegt oder mehr als 2 Stunden nach dem Beginn des Zeitraums kommt.
+- Kann die History nicht gelesen werden, steht der Grund im Log (Warnung) und der Dialog sagt es; dann wird ein neuer Lauf aufgezeichnet.
 
 **Läufe**
 
 - Ein Lauf darf bis zu 30 Minuten pausieren; Aktivität von insgesamt unter 5 Minuten (z. B. ein Display, das angeht) ist kein Lauf. Es braucht mindestens 2 Läufe, sonst wird ein neuer Lauf aufgezeichnet.
-- Zwei Läufe kurz hintereinander werden getrennt, wenn die Leistung dazwischen dem Ruhepegel nach einem Ende entspricht und sich deutlich von den Pausen im Lauf unterscheidet. Sonst bleibt es ein Lauf.
+- Ein Lauf zählt erst, wenn er seit etwa 30 Minuten beendet ist (er könnte sonst nur pausieren). Lernst du direkt nach einem Lauf an, fehlt dieser Lauf noch.
+- Zwei Läufe kurz hintereinander werden getrennt, wenn die Leistung dazwischen dem Ruhepegel nach einem Ende entspricht und sich deutlich von den Pausen im Lauf unterscheidet, egal ob die Pausen darunter (Pumpe aus, 0 W) oder darüber liegen (Elektronik an, z. B. 2–5 W, nach dem Ende 0,3 W). Sonst bleibt es ein Lauf.
 - Knitterschutz-Stöße eines Trockners nach dem Ende zählen zum Nachlauf. Die Startdauer bzw. Startanzahl wird so gewählt, dass sie keinen neuen Start auslösen.
-- Eine Phase mit leicht erhöhter Leistung von mindestens 20 Minuten nach dem Lauf (Trocknung einer Spülmaschine) gehört zum Lauf, eine kürzere (Display, Türentriegelung) nicht.
+- Eine Phase mit leicht erhöhter Leistung nach dem Lauf ist entweder die Trocknung einer Spülmaschine (gehört zum Lauf) oder ein Display bzw. die Türverriegelung (gehört nicht dazu). An der Leistung allein ist das nicht zu unterscheiden. Darum entscheidet der aktuelle Gerätetyp: Die Phase gehört zum Lauf, wenn sie mindestens 20 Minuten dauert und ihre Leistung nicht unter dem Endwert des aktuellen Typs liegt (der aktuelle Typ meldet dort also noch „läuft“, wie der Typ Spülmaschine mit 0,25 W). Sonst kommt die Fertig-Meldung kurz nach dem eigentlichen Lauf. Ein angelernter Typ behält diese Entscheidung beim nächsten Anlernen.
+- Knitterschutz-Stöße mit Elektronik dazwischen sind nie eine Trocknung; das Ende wird nach dem Abkühlen gemeldet.
 - `changesMinDelta` des History-Adapters wird beim Endwert berücksichtigt.
 
 **Optimierung**
 
 - Endwert und Ende-Wartezeit werden so gewählt, dass jeder Lauf genau einmal erkannt wird und das Ende so früh wie möglich kommt. Statt fester Faktoren wird die kürzeste sichere Endanzahl mit dem echten Erkennungscode gesucht.
 - Bringt der [Pausenschutz](#pausenschutz) im Mittel mindestens 3 Minuten, wird er vorgeschlagen. Beispiel: Ein Lauf mit 22 Minuten Einweichen bei 0 W, Nachlauf bei 0,5 W. Ohne Pausenschutz müsste jeder Lauf über 27 Minuten auf die Fertig-Meldung warten. Mit „Pause, wenn Leistung unter 0,25 W“ und 1670 s Haltezeit kommt sie bei allen Läufen nach etwa einer Minute. Liegen Pause und Nachlauf beide bei 0 W, trennt der Zeitpunkt („Pause, wenn sie beginnt vor 880 s“): Dann kommt das Ende nach etwa 4 Minuten, nur ein sehr kurzes Programm, das so früh endet, wie eine Pause beginnt, wird bis zur Haltezeit verzögert, aber erkannt.
-- Jeder Vorschlag wird mit dem echten Erkennungscode und den Abbruch-Optionen des Geräts nachgespielt.
+- Jeder Vorschlag wird mit dem echten Erkennungscode und den Abbruch-Optionen des Geräts nachgespielt, und zwar in der Einheit des States mit den Werten, die gespeichert werden. Bei kW rundet der Modus Anzahl Mittelwerte auf 0,01 kW (10 W); erkennt er deshalb nicht jeden Lauf, zeigt der Dialog das und schlägt einen anderen Modus vor.
 
 **Dialog**
 
@@ -242,7 +246,7 @@ Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, In
 1. Anlernen auf der Gerätekarte starten (**Anlernen**) oder `learning.start` des Geräts schreiben.
 2. Einen kompletten Zyklus der Maschine laufen lassen. Die Aufnahme endet automatisch nach 12 Stunden oder 10 000 Messwerten.
 3. Anlernen im Device Manager beenden oder `learning.stop` schreiben.
-4. Die Aufnahme wird mit derselben Logik ausgewertet wie die History, mit einem Lauf. Die vorgeschlagenen Einstellungen stehen als JSON in `learning.result` (Schwellwerte, Start- und Enddauer, Laufdauer, Anzahl der Messwerte, Modus, Auswertung je Modus und Pausenschutz). Der Device Manager zeigt sie an und kann sie als neuen eigenen Gerätetyp speichern.
+4. Die Aufnahme wird mit derselben Logik ausgewertet wie die History, mit einem Lauf. Nach dem letzten Messwert gilt dieser Wert als weiter bestehend (wie im Betrieb); so kann die Aufnahme auch kurz nach dem Ende gestoppt werden. Erkennt kein Modus den Lauf (z. B. Aufnahme gestoppt, während das Gerät noch lief), gibt es keinen Vorschlag. Die vorgeschlagenen Einstellungen stehen als JSON in `learning.result` (Schwellwerte, Start- und Enddauer, Laufdauer, Anzahl der Messwerte, Modus, Auswertung je Modus und Pausenschutz). Der Device Manager zeigt sie an und kann sie als neuen eigenen Gerätetyp speichern.
 
 Wurden weniger als 20 Messwerte aufgenommen oder wird kein Lauf erkannt, enthält `learning.result` einen Fehler (`tooFewSamples` oder `noRun`). `learning.active` ist true, solange aufgenommen wird.
 

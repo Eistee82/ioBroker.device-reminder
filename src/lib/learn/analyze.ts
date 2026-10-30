@@ -2,11 +2,12 @@ import type { DetectionMode, DetectionSettings } from "../detector/types.js";
 import type { LearningSuggestion } from "../learning.js";
 import type { GuardSettings, Plan, PlanContext, RunTable } from "./optimize.js";
 import { endCandidates, planFor, runTable } from "./optimize.js";
-import type { ModeEvaluation, ReplayOptions } from "./replay.js";
+import type { ModeEvaluation, ReplayOptions, SimResult } from "./replay.js";
 import { allOk, compare, evaluate, runOk, simulate } from "./replay.js";
-import type { Layout, Span } from "./runs.js";
+import type { Layout, Span, Window } from "./runs.js";
 import { buildLayout, median } from "./runs.js";
 import type { TickSeries } from "./ticks.js";
+import { scaled } from "./ticks.js";
 
 /** Errors of the analysis. */
 export type HistoryLearningError =
@@ -25,7 +26,10 @@ export interface AnalyzeOptions {
 	unitFactor?: number;
 	/** Deadband of the history adapter (`changesMinDelta`) in the unit of the state. */
 	minDelta?: number;
-	/** Current device type (unit of the state), evaluated over the same runs. */
+	/**
+	 * Current device type (unit of the state), evaluated over the same runs. A raised phase after a
+	 * run (drying) belongs to the run if this type keeps running there (level >= its endVal).
+	 */
 	currentType?: DetectionSettings;
 	/** Minimum number of runs (default 2). */
 	minRuns?: number;
@@ -94,19 +98,69 @@ interface Candidate {
 	plan: Plan;
 }
 
-/** Shared state of one analysis. */
+/**
+ * Shared state of one analysis. Every replay runs in the unit of the state with the thresholds as
+ * they are saved, so that the 2-decimal rounding of the count mode and its standby buffer length
+ * (derived from endVal) behave exactly like at runtime (for example with a state in kW).
+ */
 class Analysis {
 	private readonly runWindows;
+	private readonly sim: TickSeries;
 	private done = 0;
 	private total = 1;
 
 	public constructor(
-		private readonly s: TickSeries,
+		s: TickSeries,
 		private readonly layout: Layout,
 		private readonly replay: ReplayOptions,
 		private readonly opts: AnalyzeOptions,
+		private readonly factor: number,
 	) {
 		this.runWindows = layout.windows.filter(w => w.run !== null);
+		this.sim = factor === 1 ? s : scaled(s, 1 / factor);
+	}
+
+	/**
+	 * Value in the unit of the state as it is saved.
+	 *
+	 * @param v - Value in W
+	 */
+	public out(v: number): number {
+		return this.factor === 1 ? round2(v) : Math.round((v / this.factor) * 1e5) / 1e5;
+	}
+
+	/**
+	 * Settings in the unit of the state as they are saved.
+	 *
+	 * @param settings - Settings in W
+	 */
+	public inUnit(settings: DetectionSettings): DetectionSettings {
+		return {
+			...settings,
+			startVal: this.out(settings.startVal),
+			endVal: this.out(settings.endVal),
+			standby: this.out(settings.standby),
+			pauseBelowVal: this.out(settings.pauseBelowVal ?? 0),
+		};
+	}
+
+	/**
+	 * Simulate one window with settings in W.
+	 *
+	 * @param win - Window
+	 * @param settings - Settings in W
+	 */
+	public simulate(win: Window, settings: DetectionSettings): SimResult {
+		return simulate(this.sim, win, this.inUnit(settings), this.replay);
+	}
+
+	/**
+	 * Evaluate settings that are already in the unit of the state (current type).
+	 *
+	 * @param settings - Settings in the unit of the state
+	 */
+	public evaluateUnit(settings: DetectionSettings): Promise<ModeEvaluation> {
+		return evaluate(this.sim, this.layout.windows, settings, this.replay, this.opts.yieldFn);
 	}
 
 	public plan(total: number): void {
@@ -119,11 +173,11 @@ class Analysis {
 	}
 
 	public ok(settings: DetectionSettings): Promise<boolean> {
-		return allOk(this.s, this.runWindows, settings, this.replay, this.opts.yieldFn);
+		return allOk(this.sim, this.runWindows, this.inUnit(settings), this.replay, this.opts.yieldFn);
 	}
 
 	public evaluate(settings: DetectionSettings): Promise<ModeEvaluation> {
-		return evaluate(this.s, this.layout.windows, settings, this.replay, this.opts.yieldFn);
+		return this.evaluateUnit(this.inUnit(settings));
 	}
 
 	/**
@@ -175,14 +229,15 @@ export async function analyzeTicks(
 	const poll = Math.max(pollIntervalSec, 1);
 	const factor = opts.unitFactor && opts.unitFactor > 0 ? opts.unitFactor : 1;
 	const minDeltaW = Math.max(0, opts.minDelta ?? 0) * factor;
-	const layout = buildLayout(series, { recording: opts.recording });
+	const keepAbove = opts.currentType ? opts.currentType.endVal * factor : undefined;
+	const layout = buildLayout(series, { recording: opts.recording, keepAbove });
 	const { runs, idle, runLimit } = layout;
 	const minRuns = Math.max(1, opts.minRuns ?? MIN_RUNS);
 	if (runs.length < minRuns) {
 		return { error: "tooFewRuns", runs: runs.length };
 	}
 	const replay: ReplayOptions = { abort: opts.abort === true, abortFixed: opts.abortFixed === true };
-	const an = new Analysis(series, layout, replay, opts);
+	const an = new Analysis(series, layout, replay, opts, factor);
 
 	// start
 	const runPower = runs.map(r => {
@@ -305,7 +360,7 @@ export async function analyzeTicks(
 				...(plan.guard ?? NO_GUARD),
 				...(mode === "count" ? { endCount, endDurationSec: endCount * poll } : { endDurationSec: plan.Ds }),
 			};
-			const res = simulate(series, win, loo, replay);
+			const res = an.simulate(win, loo);
 			if (runOk(series, win, res) && res.finished.length === 1) {
 				looDetected++;
 			}
@@ -316,18 +371,11 @@ export async function analyzeTicks(
 
 	let current: ModeEvaluation | undefined;
 	if (opts.currentType) {
-		const c = opts.currentType;
-		current = await an.evaluate({
-			...c,
-			startVal: c.startVal * factor,
-			endVal: c.endVal * factor,
-			standby: c.standby * factor,
-			pauseBelowVal: (c.pauseBelowVal ?? 0) * factor,
-		});
+		current = await an.evaluateUnit(opts.currentType);
 	}
 	an.progress();
 
-	const out = (v: number): number => (factor === 1 ? round2(v) : Math.round((v / factor) * 1e5) / 1e5);
+	const out = (v: number): number => an.out(v);
 	const stepSec = series.stepMs / 1000;
 	return {
 		thresholds: {

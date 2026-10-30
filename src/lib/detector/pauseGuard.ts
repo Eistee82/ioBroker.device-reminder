@@ -12,7 +12,8 @@ export interface PauseGuardSettings {
  * Pause protection: a phase below the end threshold that looks like a pause inside a run (early in
  * the run and/or at a lower power than after a real end) only counts as the end after a hold time.
  * It adds a condition before "finished"/"aborted" and therefore can only delay an end, never prevent
- * or advance it.
+ * or advance it: once the detector would report the end, it is reported after the hold time at the
+ * latest, even if short blips keep restarting the phase below endVal.
  */
 export class PauseGuard {
 	/** Whether the protection is active (hold time and at least one condition set). */
@@ -23,6 +24,8 @@ export class PauseGuard {
 	private runStart: number | null = null;
 	private stretchSince: number | null = null;
 	private stretchMax = -Infinity;
+	/** Since when the detector wants to report the end but the protection holds it back. */
+	private blockedSince: number | null = null;
 
 	/**
 	 * @param s - Pause protection settings of the device type
@@ -43,6 +46,12 @@ export class PauseGuard {
 	 */
 	public onStarted(now: number): void {
 		this.runStart = now;
+		this.blockedSince = null;
+	}
+
+	/** The device is clearly running again (the end is no longer pending). */
+	public onActive(): void {
+		this.blockedSince = null;
 	}
 
 	/** Back to the initial state. */
@@ -50,6 +59,7 @@ export class PauseGuard {
 		this.runStart = null;
 		this.stretchSince = null;
 		this.stretchMax = -Infinity;
+		this.blockedSince = null;
 	}
 
 	/**
@@ -71,7 +81,9 @@ export class PauseGuard {
 	}
 
 	/**
-	 * Whether the end (or abort) may be reported now.
+	 * Whether the end (or abort) may be reported now; call only when the detector would report it.
+	 * The hold time counts from the begin of the pause, but at the latest from the first time the
+	 * detector wanted to report the end (bounded delay).
 	 *
 	 * @param now - Timestamp in ms
 	 */
@@ -79,11 +91,15 @@ export class PauseGuard {
 		if (!this.enabled) {
 			return true;
 		}
-		if (this.stretchSince === null) {
-			return false;
+		if (this.stretchSince !== null) {
+			const early =
+				this.untilMs <= 0 || this.runStart === null || this.stretchSince - this.runStart < this.untilMs;
+			const low = this.belowVal <= 0 || this.stretchMax < this.belowVal;
+			if (!(early && low) || now - this.stretchSince >= this.holdMs) {
+				return true;
+			}
 		}
-		const early = this.untilMs <= 0 || this.runStart === null || this.stretchSince - this.runStart < this.untilMs;
-		const low = this.belowVal <= 0 || this.stretchMax < this.belowVal;
-		return !(early && low) || now - this.stretchSince >= this.holdMs;
+		this.blockedSince ??= now;
+		return now - this.blockedSince >= this.holdMs;
 	}
 }

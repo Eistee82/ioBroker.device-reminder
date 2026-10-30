@@ -146,6 +146,7 @@ export class LegacyDetector {
             out.status = "running";
         }
         if (this.isStarted && avg.end > this.endValue) {
+            this.guard.onActive();
             out.events.push("running");
             out.status = "running";
         }

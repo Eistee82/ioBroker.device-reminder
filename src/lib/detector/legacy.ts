@@ -271,6 +271,7 @@ export class LegacyDetector implements Detector {
 
 		if (this.isStarted && avg.end > this.endValue) {
 			// operating branch
+			this.guard.onActive();
 			out.events.push("running");
 			out.status = "running";
 		} else if (

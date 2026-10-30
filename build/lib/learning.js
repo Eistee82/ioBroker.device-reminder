@@ -1,4 +1,5 @@
 import { analyzeTicks } from "./learn/analyze.js";
+import { PAD_AFTER_MS } from "./learn/runs.js";
 import { fromPoints } from "./learn/ticks.js";
 const MAX_DURATION_MS = 12 * 60 * 60 * 1000;
 const MAX_SAMPLES = 10_000;
@@ -41,9 +42,9 @@ export async function suggestType(samples, pollIntervalSec, opts = {}) {
         return { error: "tooFewSamples" };
     }
     const poll = Math.max(pollIntervalSec, 1);
-    const series = fromPoints(samples.map(s => ({ ts: s.t, val: s.p })), poll * 1000);
+    const series = fromPoints(samples.map(s => ({ ts: s.t, val: s.p })), poll * 1000, PAD_AFTER_MS);
     const result = await analyzeTicks(series, poll, { ...opts, minRuns: 1, recording: true });
-    if ("error" in result) {
+    if ("error" in result || !result.evaluation.some(e => e.detected > 0)) {
         return { error: "noRun" };
     }
     return result;

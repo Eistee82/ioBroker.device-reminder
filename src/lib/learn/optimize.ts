@@ -216,10 +216,12 @@ export function planFor(ctx: PlanContext, e: number, tables: RunTable[]): Plan {
 		const options: { cost: number; guard: GuardSettings }[] = [];
 		const a = Math.max(...held.map(p => p.lv));
 		const b = Math.min(...tables.map(t => endLevel(ctx.series, t, e, Ds)));
-		if (Number.isFinite(b) && b - a >= Math.max(LEVEL_SEP_W, 0.5 * b, 2 * ctx.minDeltaW)) {
+		// halfway between the pauses and the end, but above 0 (pauses at slightly negative values)
+		const below = round2(Math.max((a + b) / 2, b / 2));
+		if (Number.isFinite(b) && below > 0 && b - a >= Math.max(LEVEL_SEP_W, 0.5 * b, 2 * ctx.minDeltaW)) {
 			options.push({
 				cost: n * Ds,
-				guard: { pauseHoldSec: hold, pauseUntilSec: 0, pauseBelowVal: round2((a + b) / 2) },
+				guard: { pauseHoldSec: hold, pauseUntilSec: 0, pauseBelowVal: below },
 			});
 		}
 		const oH = Math.max(...held.map(p => p.o));

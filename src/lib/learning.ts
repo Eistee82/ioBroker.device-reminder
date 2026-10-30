@@ -2,6 +2,7 @@ import type { DetectionMode, TypeThresholds } from "./detector/types.js";
 import type { AnalyzeOptions } from "./learn/analyze.js";
 import { analyzeTicks } from "./learn/analyze.js";
 import type { ModeEvaluation } from "./learn/replay.js";
+import { PAD_AFTER_MS } from "./learn/runs.js";
 import { fromPoints } from "./learn/ticks.js";
 
 /** One recorded power sample. */
@@ -109,16 +110,19 @@ export class LearningRecorder {
 }
 
 /**
- * Derive type settings from a recorded run with the same analysis as the history (one run).
+ * Derive type settings from a recorded run with the same analysis as the history (one run). After
+ * the recording the last value is taken to stay (as the runtime does), so that a recording stopped
+ * shortly after the end still shows when the end would be reported. A run that no detection mode
+ * recognises (recording stopped while the device was still running) yields `noRun`.
  *
  * @param samples - Recorded samples
  * @param pollIntervalSec - Poll interval in seconds
- * @param opts - Device options
+ * @param opts - Device options and the current device type
  */
 export async function suggestType(
 	samples: LearningSample[],
 	pollIntervalSec: number,
-	opts: Pick<AnalyzeOptions, "abort" | "abortFixed" | "yieldFn"> = {},
+	opts: Pick<AnalyzeOptions, "abort" | "abortFixed" | "yieldFn" | "currentType"> = {},
 ): Promise<LearningSuggestion | { error: "tooFewSamples" | "noRun" }> {
 	if (samples.length < 20) {
 		return { error: "tooFewSamples" };
@@ -127,9 +131,10 @@ export async function suggestType(
 	const series = fromPoints(
 		samples.map(s => ({ ts: s.t, val: s.p })),
 		poll * 1000,
+		PAD_AFTER_MS,
 	);
 	const result = await analyzeTicks(series, poll, { ...opts, minRuns: 1, recording: true });
-	if ("error" in result) {
+	if ("error" in result || !result.evaluation.some(e => e.detected > 0)) {
 		return { error: "noRun" };
 	}
 	return result;

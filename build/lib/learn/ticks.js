@@ -12,6 +12,7 @@ export function createSeries(t0, stepMs, length) {
         valid: new Uint8Array(n).fill(1),
         lastTs: new Float64Array(n).fill(Number.NEGATIVE_INFINITY),
         points: 0,
+        firstIdx: 0,
     };
     return series;
 }
@@ -54,8 +55,12 @@ export function markInvalid(series, from, to) {
 export function finalize(series) {
     let known = false;
     let value = 0;
+    series.firstIdx = series.length;
     for (let i = 0; i < series.length; i++) {
         if (series.has[i] === 1) {
+            if (!known) {
+                series.firstIdx = i;
+            }
             known = true;
             value = series.last[i];
             continue;
@@ -96,7 +101,11 @@ export function applyGapRule(series, runLimit) {
     }
     return marked;
 }
-export function fromPoints(points, stepMs) {
+export function scaled(series, factor) {
+    const mul = (a) => a.map(v => v * factor);
+    return { ...series, last: mul(series.last), min: mul(series.min), max: mul(series.max) };
+}
+export function fromPoints(points, stepMs, extendMs = 0) {
     const finite = points.filter(p => Number.isFinite(p.ts) && Number.isFinite(p.val));
     if (finite.length === 0) {
         return createSeries(0, stepMs, 0);
@@ -107,7 +116,8 @@ export function fromPoints(points, stepMs) {
         first = Math.min(first, p.ts);
         lastTs = Math.max(lastTs, p.ts);
     }
-    const series = createSeries(first, stepMs, Math.floor((lastTs - first) / stepMs) + 2);
+    const extra = Math.max(0, Math.ceil(extendMs / stepMs));
+    const series = createSeries(first, stepMs, Math.floor((lastTs - first) / stepMs) + 2 + extra);
     foldPoints(series, finite);
     finalize(series);
     return series;

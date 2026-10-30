@@ -1,5 +1,5 @@
 import type { TickSeries } from "./ticks.js";
-import { applyGapRule } from "./ticks.js";
+import { applyGapRule, GAP_MS } from "./ticks.js";
 
 /** A run may pause (power at idle level) for at most this long. */
 export const MAX_PAUSE_MS = 30 * 60_000;
@@ -17,7 +17,10 @@ export const TRAILER_BURST_MS = 2 * 60_000;
 export const TRAILER_GAP_MS: readonly [number, number] = [60_000, 15 * 60_000];
 /** Minimum length of the block before an anti-crease trailer. */
 export const SUSTAINED_MS = 2 * 60_000;
-/** A slightly raised level after the run lasting at least this long belongs to the run (drying). */
+/**
+ * A slightly raised level after the run lasting at least this long belongs to the run (drying), if
+ * the current device type keeps running at that level (see `LayoutOptions.keepAbove`).
+ */
 export const PLATEAU_RUN_MS = 20 * 60_000;
 /** The raised level ends after this long at idle level. */
 export const PLATEAU_QUIET_MS = 5 * 60_000;
@@ -98,6 +101,13 @@ export interface Layout {
 export interface LayoutOptions {
 	/** Recording of one run: idle from the tail, one run, the end of the series is not a gap. */
 	recording?: boolean;
+	/**
+	 * End threshold of the current device type in W. A raised phase of at least PLATEAU_RUN_MS after the
+	 * run belongs to the run only if its level is at or above it (the current type keeps the device
+	 * running there, as with the drying of a dishwasher); otherwise, and without a current type, it is
+	 * the display or door lock after the end.
+	 */
+	keepAbove?: number;
 }
 
 interface Segment extends Span {
@@ -166,6 +176,11 @@ function segments(s: TickSeries, limit: number, maxGap: number, endIsGap: number
 	const out: Segment[] = [];
 	let current: Segment | null = null;
 	let lastInvalid = Number.NEGATIVE_INFINITY;
+	// The time before the first stored value is unknown, but it cannot hide the start of a run if the
+	// first value is at idle level or if it came long after the begin (a running device stores values,
+	// see GAP_MS): history adapters storing changes only have no value before an idle stretch.
+	const lead = s.firstIdx;
+	const leadIdle = lead > 0 && lead < s.length && (lead * s.stepMs >= GAP_MS || s.last[lead] <= limit);
 	for (let i = 0; i < s.length; i++) {
 		if (s.valid[i] === 0) {
 			if (current && i - current.to - 1 <= maxGap) {
@@ -182,7 +197,8 @@ function segments(s: TickSeries, limit: number, maxGap: number, endIsGap: number
 			current.to = i;
 			current.active++;
 		} else {
-			current = { from: i, to: i, active: 1, touched: i - lastInvalid - 1 <= maxGap };
+			const afterLead = leadIdle && lastInvalid === lead - 1;
+			current = { from: i, to: i, active: 1, touched: !afterLead && i - lastInvalid - 1 <= maxGap };
 			out.push(current);
 		}
 	}
@@ -305,7 +321,7 @@ function idleOf(s: TickSeries, runs: RunInfo[], bounds: Bounds[], fallback: numb
 			levels.push(quantile(vals, 0.2));
 		}
 	});
-	return levels.length > 0 ? median(levels) : fallback;
+	return Math.max(0, levels.length > 0 ? median(levels) : fallback);
 }
 
 /**
@@ -316,17 +332,30 @@ function idleOf(s: TickSeries, runs: RunInfo[], bounds: Bounds[], fallback: numb
  * @param next - First tick of the next segment
  * @param idle - Idle level
  * @param runLimit - Run level
+ * @param keepAbove - End threshold of the current type in W (see `LayoutOptions.keepAbove`)
  */
-function finishRun(s: TickSeries, r: RunInfo, next: number, idle: number, runLimit: number): void {
+function finishRun(
+	s: TickSeries,
+	r: RunInfo,
+	next: number,
+	idle: number,
+	runLimit: number,
+	keepAbove: number | undefined,
+): void {
 	const level = Math.max(idle + LEVEL_SEP_W, idle * 1.3);
 	const quietTicks = Math.ceil(PLATEAU_QUIET_MS / s.stepMs);
 	let plateauTicks = 0;
 	let plateauLast = r.coreEnd;
 	let quiet = 0;
+	// anti-crease bursts or other activity after the core end: the raised level in between is the
+	// electronics of the trailer, no drying
+	let interrupted = r.bursts.length > 0;
 	const values: number[] = [];
-	for (let j = r.coreEnd + 1; j < Math.min(next, s.length) && s.valid[j] === 1; j++) {
+	for (let j = r.coreEnd + 1; !interrupted && j < Math.min(next, s.length) && s.valid[j] === 1; j++) {
 		const v = s.last[j];
-		if (v > level && v <= runLimit) {
+		if (v > runLimit) {
+			interrupted = true;
+		} else if (v > level) {
 			plateauTicks++;
 			plateauLast = j;
 			values.push(v);
@@ -335,15 +364,16 @@ function finishRun(s: TickSeries, r: RunInfo, next: number, idle: number, runLim
 			break;
 		}
 	}
-	if (plateauTicks * s.stepMs >= PLATEAU_RUN_MS) {
+	const plateau = values.length > 0 ? median(values) : 0;
+	if (!interrupted && keepAbove !== undefined && plateau >= keepAbove && plateauTicks * s.stepMs >= PLATEAU_RUN_MS) {
 		r.runEnd = plateauLast;
-		r.plateauLevel = median(values);
+		r.plateauLevel = plateau;
 	} else {
 		r.runEnd = r.coreEnd;
 		r.plateauLevel = null;
 	}
 	const post = valuesOf(s, r.runEnd + 1, Math.min(r.runEnd + Math.ceil(POST_END_MS / s.stepMs), next - 1));
-	r.postEnd = post.length > 0 ? quantile(post, 0.9) : idle;
+	r.postEnd = Math.max(0, post.length > 0 ? quantile(post, 0.9) : idle);
 }
 
 /**
@@ -390,7 +420,12 @@ function splitGrown(
 	}
 	const minBe = Math.min(...be);
 	const maxBe = Math.max(...be);
-	if (!(Math.max(...bp) * 1.5 + LEVEL_SEP_W < minBe * 0.8)) {
+	// pauses inside runs clearly below the level after an end (pump off at 0 W, display after the end)
+	// or clearly above it (electronics during drum pauses, plug at 0.3 W after the end); a single
+	// outlier (for example the gap between two grown-together runs) does not decide
+	const pausesBelow = quantile(bp, 0.9) * 1.5 + LEVEL_SEP_W < minBe * 0.8;
+	const pausesAbove = quantile(bp, 0.1) > maxBe * 1.5 + LEVEL_SEP_W;
+	if (!pausesBelow && !pausesAbove) {
 		return null;
 	}
 	const lo = 0.8 * minBe;
@@ -414,8 +449,12 @@ function splitGrown(
 			if (g.from <= from || (g.to - g.from + 1) * step < SPLIT_GAP_MIN_MS) {
 				continue;
 			}
-			const lv = gapLevel(s, g);
-			if (lv < lo || lv > hi) {
+			// pauses below: the gap is at the level after an end; pauses above: the gap stays at or
+			// below the level after an end (display, then idle) and therefore below every pause
+			const inBand = pausesBelow
+				? gapLevel(s, g) >= lo && gapLevel(s, g) <= hi
+				: quantile(valuesOf(s, g.from, g.to), 0.9) <= hi;
+			if (!inBand) {
 				continue;
 			}
 			const before = activeIn(from, g.from - 1);
@@ -439,6 +478,7 @@ function splitGrown(
  * @param bounds - Next segment per run
  * @param runLimit - Run level
  * @param fallbackIdle - Idle level without data after the runs
+ * @param keepAbove - End threshold of the current type in W (see `LayoutOptions.keepAbove`)
  */
 function detailRuns(
 	s: TickSeries,
@@ -446,10 +486,11 @@ function detailRuns(
 	bounds: Bounds[],
 	runLimit: number,
 	fallbackIdle: number,
+	keepAbove: number | undefined,
 ): { runs: RunInfo[]; idle: number } {
 	const runs = spans.map(seg => coreOf(s, seg, runLimit));
 	const idle = idleOf(s, runs, bounds, fallbackIdle);
-	runs.forEach((r, i) => finishRun(s, r, bounds[i].next, idle, runLimit));
+	runs.forEach((r, i) => finishRun(s, r, bounds[i].next, idle, runLimit, keepAbove));
 	return { runs, idle };
 }
 
@@ -476,9 +517,10 @@ export function buildLayout(s: TickSeries, opts: LayoutOptions = {}): Layout {
 	let tailIdle: number | null = null;
 	if (opts.recording) {
 		const tail = validValues.slice(-Math.max(3, Math.ceil(validValues.length * 0.1)));
-		tailIdle = median(tail);
+		// the last value as well: a recording stopped shortly after the end has the run in its tail
+		tailIdle = Math.max(0, Math.min(median(tail), tail.at(-1) ?? 0));
 	}
-	const runLimit = (tailIdle ?? median(validValues)) * 3 + 2;
+	const runLimit = Math.max(0, tailIdle ?? median(validValues)) * 3 + 2;
 	if (!opts.recording) {
 		applyGapRule(s, runLimit);
 	}
@@ -490,9 +532,9 @@ export function buildLayout(s: TickSeries, opts: LayoutOptions = {}): Layout {
 	let runSpans: (Span & { active: number })[] = usable.filter(x => x.active >= minActive);
 	const spikes: Span[] = usable.filter(x => x.active < minActive).slice(-MAX_WINDOWS);
 
-	const fallbackIdle = tailIdle ?? median(validValues);
+	const fallbackIdle = Math.max(0, tailIdle ?? median(validValues));
 	let bounds = boundsOf(runSpans, all, s.length);
-	let { runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle);
+	let { runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle, opts.keepAbove);
 	if (!opts.recording) {
 		const split = splitGrown(s, runs, bounds, runLimit);
 		if (split) {
@@ -502,7 +544,7 @@ export function buildLayout(s: TickSeries, opts: LayoutOptions = {}): Layout {
 				...runSpans,
 			].sort((a, b) => a.from - b.from);
 			bounds = boundsOf(runSpans, starts, s.length);
-			({ runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle));
+			({ runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle, opts.keepAbove));
 		}
 	}
 	if (opts.recording && tailIdle !== null) {

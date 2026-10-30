@@ -604,12 +604,14 @@ export class ReminderDeviceManagement extends DeviceManagement {
         const poll = this.adapter.instanceConfig.pollIntervalSec;
         let result;
         let unit = "W";
+        let unreadable = false;
         try {
             const { series, meta } = await loadHistorySeries(env, instance, powerId, Date.now(), poll, f => report(Math.round(60 * f), TEXT.learnReading));
             unit = meta.unit || "W";
             if (meta.error) {
-                this.adapter.log.debug(`History of ${powerId}: ${meta.failedChunks} of ${meta.queries} queries failed: ${meta.error}`);
+                this.adapter.log.warn(`History of ${powerId} from ${instance}: ${meta.failedChunks} of ${meta.queries} queries failed: ${meta.error}`);
             }
+            unreadable = meta.queries > 0 && meta.failedChunks === meta.queries;
             if (meta.energyCounter) {
                 result = { error: "energyCounter" };
             }
@@ -640,7 +642,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 await ctx.showMessage(TEXT.learnEnergyCounter);
                 return true;
             }
-            await ctx.showMessage(TEXT.learnHistoryTooFewRuns);
+            await ctx.showMessage(unreadable ? TEXT.learnHistoryUnreadable : TEXT.learnHistoryTooFewRuns);
             return false;
         }
         await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);

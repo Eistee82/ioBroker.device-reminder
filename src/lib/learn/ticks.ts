@@ -32,6 +32,8 @@ export interface TickSeries {
 	lastTs: Float64Array | null;
 	/** Number of processed stored values. */
 	points: number;
+	/** First tick with a stored value (set by `finalize`; `length` if there is none). */
+	firstIdx: number;
 }
 
 /** A gap without stored values longer than this, while the device was running, is unknown. */
@@ -57,6 +59,7 @@ export function createSeries(t0: number, stepMs: number, length: number): TickSe
 		valid: new Uint8Array(n).fill(1),
 		lastTs: new Float64Array(n).fill(Number.NEGATIVE_INFINITY),
 		points: 0,
+		firstIdx: 0,
 	};
 	return series;
 }
@@ -119,8 +122,12 @@ export function markInvalid(series: TickSeries, from: number, to: number): void 
 export function finalize(series: TickSeries): void {
 	let known = false;
 	let value = 0;
+	series.firstIdx = series.length;
 	for (let i = 0; i < series.length; i++) {
 		if (series.has[i] === 1) {
+			if (!known) {
+				series.firstIdx = i;
+			}
 			known = true;
 			value = series.last[i];
 			continue;
@@ -172,12 +179,24 @@ export function applyGapRule(series: TickSeries, runLimit: number): number {
 }
 
 /**
+ * Copy of a series with every value multiplied by a factor (for example W to kW).
+ *
+ * @param series - Finalized series
+ * @param factor - Factor
+ */
+export function scaled(series: TickSeries, factor: number): TickSeries {
+	const mul = (a: Float64Array): Float64Array => a.map(v => v * factor);
+	return { ...series, last: mul(series.last), min: mul(series.min), max: mul(series.max) };
+}
+
+/**
  * Series from a list of values (tests, recordings): tick 0 is the first value.
  *
  * @param points - Stored values in W (any order)
  * @param stepMs - Poll interval in ms
+ * @param extendMs - Time after the last value in which the last value stays (recording stopped early)
  */
-export function fromPoints(points: readonly HistoryPoint[], stepMs: number): TickSeries {
+export function fromPoints(points: readonly HistoryPoint[], stepMs: number, extendMs = 0): TickSeries {
 	const finite = points.filter(p => Number.isFinite(p.ts) && Number.isFinite(p.val));
 	if (finite.length === 0) {
 		return createSeries(0, stepMs, 0);
@@ -188,7 +207,8 @@ export function fromPoints(points: readonly HistoryPoint[], stepMs: number): Tic
 		first = Math.min(first, p.ts);
 		lastTs = Math.max(lastTs, p.ts);
 	}
-	const series = createSeries(first, stepMs, Math.floor((lastTs - first) / stepMs) + 2);
+	const extra = Math.max(0, Math.ceil(extendMs / stepMs));
+	const series = createSeries(first, stepMs, Math.floor((lastTs - first) / stepMs) + 2 + extra);
 	foldPoints(series, finite);
 	finalize(series);
 	return series;

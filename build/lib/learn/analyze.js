@@ -1,6 +1,7 @@
 import { endCandidates, planFor, runTable } from "./optimize.js";
 import { allOk, compare, evaluate, runOk, simulate } from "./replay.js";
 import { buildLayout, median } from "./runs.js";
+import { scaled } from "./ticks.js";
 export const HISTORY_DAYS = 30;
 export const MIN_RUNS = 2;
 export const DELAY_TOLERANCE_SEC = 60;
@@ -32,19 +33,39 @@ function longestAbove(s, spans, level) {
     return longest;
 }
 class Analysis {
-    s;
     layout;
     replay;
     opts;
+    factor;
     runWindows;
+    sim;
     done = 0;
     total = 1;
-    constructor(s, layout, replay, opts) {
-        this.s = s;
+    constructor(s, layout, replay, opts, factor) {
         this.layout = layout;
         this.replay = replay;
         this.opts = opts;
+        this.factor = factor;
         this.runWindows = layout.windows.filter(w => w.run !== null);
+        this.sim = factor === 1 ? s : scaled(s, 1 / factor);
+    }
+    out(v) {
+        return this.factor === 1 ? round2(v) : Math.round((v / this.factor) * 1e5) / 1e5;
+    }
+    inUnit(settings) {
+        return {
+            ...settings,
+            startVal: this.out(settings.startVal),
+            endVal: this.out(settings.endVal),
+            standby: this.out(settings.standby),
+            pauseBelowVal: this.out(settings.pauseBelowVal ?? 0),
+        };
+    }
+    simulate(win, settings) {
+        return simulate(this.sim, win, this.inUnit(settings), this.replay);
+    }
+    evaluateUnit(settings) {
+        return evaluate(this.sim, this.layout.windows, settings, this.replay, this.opts.yieldFn);
     }
     plan(total) {
         this.total = Math.max(1, total);
@@ -54,10 +75,10 @@ class Analysis {
         this.opts.onProgress?.(Math.min(1, this.done / this.total));
     }
     ok(settings) {
-        return allOk(this.s, this.runWindows, settings, this.replay, this.opts.yieldFn);
+        return allOk(this.sim, this.runWindows, this.inUnit(settings), this.replay, this.opts.yieldFn);
     }
     evaluate(settings) {
-        return evaluate(this.s, this.layout.windows, settings, this.replay, this.opts.yieldFn);
+        return this.evaluateUnit(this.inUnit(settings));
     }
     async searchCount(make, hi) {
         if (!(await this.ok(make(hi)))) {
@@ -88,14 +109,15 @@ export async function analyzeTicks(series, pollIntervalSec, opts = {}) {
     const poll = Math.max(pollIntervalSec, 1);
     const factor = opts.unitFactor && opts.unitFactor > 0 ? opts.unitFactor : 1;
     const minDeltaW = Math.max(0, opts.minDelta ?? 0) * factor;
-    const layout = buildLayout(series, { recording: opts.recording });
+    const keepAbove = opts.currentType ? opts.currentType.endVal * factor : undefined;
+    const layout = buildLayout(series, { recording: opts.recording, keepAbove });
     const { runs, idle, runLimit } = layout;
     const minRuns = Math.max(1, opts.minRuns ?? MIN_RUNS);
     if (runs.length < minRuns) {
         return { error: "tooFewRuns", runs: runs.length };
     }
     const replay = { abort: opts.abort === true, abortFixed: opts.abortFixed === true };
-    const an = new Analysis(series, layout, replay, opts);
+    const an = new Analysis(series, layout, replay, opts, factor);
     const runPower = runs.map(r => {
         const vals = [];
         for (let i = r.from; i <= r.coreEnd; i++) {
@@ -200,7 +222,7 @@ export async function analyzeTicks(series, pollIntervalSec, opts = {}) {
                 ...(plan.guard ?? NO_GUARD),
                 ...(mode === "count" ? { endCount, endDurationSec: endCount * poll } : { endDurationSec: plan.Ds }),
             };
-            const res = simulate(series, win, loo, replay);
+            const res = an.simulate(win, loo);
             if (runOk(series, win, res) && res.finished.length === 1) {
                 looDetected++;
             }
@@ -210,17 +232,10 @@ export async function analyzeTicks(series, pollIntervalSec, opts = {}) {
     an.progress();
     let current;
     if (opts.currentType) {
-        const c = opts.currentType;
-        current = await an.evaluate({
-            ...c,
-            startVal: c.startVal * factor,
-            endVal: c.endVal * factor,
-            standby: c.standby * factor,
-            pauseBelowVal: (c.pauseBelowVal ?? 0) * factor,
-        });
+        current = await an.evaluateUnit(opts.currentType);
     }
     an.progress();
-    const out = (v) => (factor === 1 ? round2(v) : Math.round((v / factor) * 1e5) / 1e5);
+    const out = (v) => an.out(v);
     const stepSec = series.stepMs / 1000;
     return {
         thresholds: {

@@ -807,6 +807,21 @@ describe("deviceManagement", () => {
 			assert.strictEqual(ctx.host.own("trockner.learning.active"), true);
 		});
 
+		it("says so when the history cannot be read and records a new run", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner");
+			withHistory(ctx, historyOf([washingMachine, washingMachine]));
+			ctx.adapter.getHistoryAsync = async () => {
+				throw new Error("connection lost");
+			};
+			const [info] = await load(ctx);
+			const action = fakeAction({ forms: [{ source: "history" }] });
+			await actionOf(info, "learn").handler("trockner", action);
+			assert.ok(action.messages[0].en.includes("could not be read"), JSON.stringify(action.messages[0]));
+			assert.ok(ctx.host.logs.warn.some(m => m.includes("connection lost")));
+			assert.strictEqual(ctx.host.own("trockner.learning.active"), true);
+		});
+
 		it("cancelling the source dialog changes nothing", async () => {
 			const ctx = setup();
 			await addDevice(ctx, "trockner");

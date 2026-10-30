@@ -108,7 +108,8 @@ describe("learning from the history", () => {
 	it("D: a long drying phase of a dishwasher belongs to the run", async () => {
 		const runs = [dishwasherLongDrying, dishwasherLongDrying, dishwasherLongDrying];
 		const points = historyOf(runs, START, { idle: 0.3 });
-		const s = await analyzeHistory(points, 10);
+		// the current dishwasher type (endVal 0.25 W) keeps running while drying at 1 W
+		const s = await analyzeHistory(points, 10, { currentType: DEFAULT_TYPES.find(t => t.id === "dishwasher") });
 		assert.ok(!("error" in s), JSON.stringify(s));
 		assert.strictEqual(s.runs, 3);
 		const coreSec = (238 - 3 - 1) * 10;
@@ -125,6 +126,45 @@ describe("learning from the history", () => {
 		assert.ok(!("error" in s), JSON.stringify(s));
 		assert.ok(s.durationSec <= (238 - 3) * 10, `durationSec ${s.durationSec}`);
 		assert.ok(chosenOf(s).endDelaySec <= 360);
+	});
+
+	it("D3: a long display phase after the end is no part of the run unless the current type runs there", async () => {
+		// 25 min display at 1.5 W after the end, then 0.3 W
+		const run = [...wm.slice(0, 203), ...times(1.5, 150), ...times(0.3, 100)];
+		const runs = [run, run, run];
+		const points = historyOf(runs, START, { idle: 0.3 });
+		const ends = runEnds(runs, 5);
+		for (const currentType of [undefined, DEFAULT_TYPES.find(t => t.id === "washing-machine")]) {
+			const s = await analyzeHistory(points, 10, { currentType });
+			assert.ok(!("error" in s), JSON.stringify(s));
+			assert.ok(s.durationSec < 2100, `durationSec ${s.durationSec}`);
+			const r = replay(points, s);
+			assert.strictEqual(r.started, 3);
+			delaysOf(r.finishedAt, ends, 360);
+		}
+		// with the dishwasher type (endVal 0.25 W) the phase belongs to the run as before
+		const dish = await analyzeHistory(points, 10, { currentType: DEFAULT_TYPES.find(t => t.id === "dishwasher") });
+		assert.ok(dish.durationSec >= 2030 + 1500 - 60, `durationSec ${dish.durationSec}`);
+	});
+
+	it("D4: the electronics between anti-crease bursts is no drying phase", async () => {
+		// bursts every 5 min for 30 min, 2 W in between, idle 0.2 W
+		const run = [
+			...dryer.slice(0, 153),
+			...Array.from({ length: 6 }, () => [...times(2, 28), 400, 400]).flat(),
+			...times(0.2, 200),
+		];
+		const runs = [run, run, run];
+		const points = historyOf(runs, START, { idle: 0.2 });
+		const s = await analyzeHistory(points, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.strictEqual(s.runs, 3);
+		assert.ok(s.durationSec < 1600, `durationSec ${s.durationSec}`);
+		const r = replay(points, s);
+		assert.strictEqual(r.started, 3);
+		const coreEnds = runStarts(runs, START).map(t => t + 152 * 10_000);
+		const delays = delaysOf(r.finishedAt, coreEnds, 360);
+		assert.ok(chosenOf(s).endDelayMaxSec >= Math.max(...delays) - 10, "the dialog shows the real delay");
 	});
 
 	it("E: plugs that only report changes (deadband) are no gaps", async () => {
@@ -158,6 +198,21 @@ describe("learning from the history", () => {
 		assert.strictEqual(chosenOf(t).detected, 2);
 	});
 
+	it("F2: runs 10 min apart are split when the pauses inside a run are above the level after an end", async () => {
+		// electronics at 2 W during the pauses, 0.3 W after the end
+		const run = wm.map(v => (v === 0 ? 2 : v === 0.5 ? 0.3 : v));
+		const runs = [run, run, run, run];
+		const o = { idle: 0.3, between: [undefined, times(0.3, 60)] };
+		const points = historyOf(runs, START, o);
+		const s = await analyzeHistory(points, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.strictEqual(s.runs, 4, "the pair is split");
+		assert.strictEqual(s.pauseHoldSec, 0, "the time between the pair is no pause");
+		const r = replay(points, s);
+		assert.deepStrictEqual([r.started, r.finished], [4, 4]);
+		delaysOf(r.finishedAt, runEnds(runs, 2.5, START, o), 360);
+	});
+
 	it("G: a run with a gap in the history is dropped, the others are detected", async () => {
 		const runs = [wm, wm, wm, wm];
 		const gapAt = runStarts(runs)[1] + (3 + 120) * 10_000;
@@ -189,6 +244,20 @@ describe("learning from the history", () => {
 		}
 	});
 
+	it("H2: a state in kW is replayed in kW (rounding of the count mode)", async () => {
+		// pauses at 4 W: in kW the count mode rounds every average below 5 W to 0.00
+		const lp4 = [...wm.slice(0, 80), ...times(4, 120), ...wm.slice(80)].map(v => (v === 0 ? 4 : v));
+		const wm4 = wm.map(v => (v === 0 ? 4 : v));
+		const points = historyOf([wm4, lp4, wm4, wm4]).map(p => ({ ts: p.ts, val: p.val / 1000 }));
+		const s = await analyzeHistory(points, 10, { unitFactor: 1000 });
+		assert.ok(!("error" in s), JSON.stringify(s));
+		const chosen = chosenOf(s);
+		const r = replay(points, s);
+		assert.deepStrictEqual([r.started, r.finished], [chosen.detected, chosen.detected], JSON.stringify(s));
+		assert.strictEqual(chosen.detected, 4);
+		assert.ok(s.evaluation.find(e => e.mode === "count").detected < 4, "the dialog shows the kW rounding");
+	});
+
 	it("I: with the abort detection the learned type reports no abort", async () => {
 		const points = historyOf(runsA);
 		const s = await analyzeHistory(points, 10, { abort: true });
@@ -203,6 +272,16 @@ describe("learning from the history", () => {
 		const s = await analyzeHistory(historyOf(runsA), 10, { currentType: washer });
 		assert.strictEqual(s.current.mode, "count");
 		assert.strictEqual(s.current.runs, 4);
+	});
+
+	it("N: a negative idle level gives no negative thresholds", async () => {
+		const points = historyOf([wm, wm, wm], START, { idle: -0.4 });
+		const s = await analyzeHistory(points, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.ok(s.thresholds.standby > 0, `standby ${s.thresholds.standby}`);
+		assert.ok(s.thresholds.endVal > 0 && s.pauseBelowVal >= 0, JSON.stringify(s.thresholds));
+		const r = replay(points, s);
+		assert.deepStrictEqual([r.started, r.finished], [3, 3]);
 	});
 
 	it("K: evaluates all three detection modes", async () => {
@@ -479,6 +558,30 @@ describe("history source", () => {
 			const { meta } = await loadHistorySeries(e, "history.0", "plug.0.power", now, 10);
 			assert.strictEqual(meta.energyCounter, true);
 			assert.strictEqual(e.calls.length, 0);
+		}
+	});
+
+	it("keeps the oldest run when only changes are stored and no value comes before it", async () => {
+		const now = 60 * 24 * HOUR;
+		for (const daysAgo of [
+			[10, 5],
+			[10, 5, 2],
+		]) {
+			const data = [];
+			for (const d of daysAgo) {
+				const at = now - d * 24 * HOUR;
+				wm.forEach((val, i) => {
+					if (data.at(-1)?.val !== val) {
+						data.push({ ts: at + i * 10_000, val });
+					}
+				});
+			}
+			const db = databaseOf(data);
+			const e = env({ objects: { "plug.0.power": powerObject() }, getHistory: db.getHistory });
+			const { series } = await loadHistorySeries(e, "history.0", "plug.0.power", now, 10);
+			const s = await analyzeHistory(series, 10);
+			assert.ok(!("error" in s), JSON.stringify(s));
+			assert.deepStrictEqual([s.runs, s.gapsDropped], [daysAgo.length, 0]);
 		}
 	});
 

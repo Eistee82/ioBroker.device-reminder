@@ -6,6 +6,7 @@ export class PauseGuard {
     runStart = null;
     stretchSince = null;
     stretchMax = -Infinity;
+    blockedSince = null;
     constructor(s) {
         const clean = (v) => typeof v === "number" && Number.isFinite(v) ? Math.max(0, v) : 0;
         this.holdMs = clean(s.pauseHoldSec) * 1000;
@@ -15,11 +16,16 @@ export class PauseGuard {
     }
     onStarted(now) {
         this.runStart = now;
+        this.blockedSince = null;
+    }
+    onActive() {
+        this.blockedSince = null;
     }
     reset() {
         this.runStart = null;
         this.stretchSince = null;
         this.stretchMax = -Infinity;
+        this.blockedSince = null;
     }
     observe(power, belowEndSince) {
         if (belowEndSince === null) {
@@ -38,12 +44,15 @@ export class PauseGuard {
         if (!this.enabled) {
             return true;
         }
-        if (this.stretchSince === null) {
-            return false;
+        if (this.stretchSince !== null) {
+            const early = this.untilMs <= 0 || this.runStart === null || this.stretchSince - this.runStart < this.untilMs;
+            const low = this.belowVal <= 0 || this.stretchMax < this.belowVal;
+            if (!(early && low) || now - this.stretchSince >= this.holdMs) {
+                return true;
+            }
         }
-        const early = this.untilMs <= 0 || this.runStart === null || this.stretchSince - this.runStart < this.untilMs;
-        const low = this.belowVal <= 0 || this.stretchMax < this.belowVal;
-        return !(early && low) || now - this.stretchSince >= this.holdMs;
+        this.blockedSince ??= now;
+        return now - this.blockedSince >= this.holdMs;
     }
 }
 //# sourceMappingURL=pauseGuard.js.map
