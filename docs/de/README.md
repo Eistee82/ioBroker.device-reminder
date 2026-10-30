@@ -58,6 +58,9 @@ Jedes Gerät nutzt einen Gerätetyp. Ein Typ enthält die Schwellwerte und den E
 | Standby-Wert (W) | Leistung unter diesem Wert gilt als „aus“, darüber als „Standby“ |
 | Start-/Endanzahl | Anzahl aufeinanderfolgender Abfragen (Modus Anzahl) |
 | Start-/Enddauer (s) | Mindestdauer über dem Start- bzw. unter dem Endwert (Modus Zeit und Kombiniert) |
+| Pause-Haltezeit (s) | Pausenschutz: so lange muss eine Pause unter dem Endwert dauern, bevor sie als Ende zählt (0 = aus) |
+| Pause, wenn sie beginnt vor (s) | Pausenschutz: eine Phase unter dem Endwert, die so früh nach dem Start beginnt, ist eine Pause (0 = nicht verwendet) |
+| Pause, wenn Leistung unter (W) | Pausenschutz: eine Phase unter dem Endwert, deren Leistung unter diesem Wert bleibt, ist eine Pause (0 = nicht verwendet) |
 
 ### Erkennungsmodi
 
@@ -72,6 +75,18 @@ Ein Abbruch ist ein Gerät, das während des Laufs von Hand ausgeschaltet wird. 
 - In 3.1.2 konnte die Abbrucherkennung bei den meisten Gerätetypen nie auslösen, weil ihr Standby-Puffer die nötige Länge nie erreichte. Dieses Verhalten bleibt erhalten, wenn nur **Abbrucherkennung** aktiv ist, die Geräte verhalten sich also genau wie in 3.1.2. Das gilt auch für die mitgelieferten Standardtypen.
 - Die Option **Korrigierte Abbrucherkennung** (`abortFixed`, Standard aus) korrigiert die Pufferlänge (`max(ceil(Endanzahl / 2), 2)`), sodass der Abbruch wirklich auslösen kann. Nutze sie zusammen mit **Abbrucherkennung**. Allein anhand der Leistung lässt sich ein Ausschalten von Hand nicht von einem normalen Ende unter dem Standby-Wert unterscheiden (z. B. eine Waschmaschine, die auf 0,5 W fällt). Deshalb löst der korrigierte Abbruch nur aus, wenn der **Schalter** des Geräts aus ist. Ohne konfigurierten Schalter löst er nie aus, und ein normales Ende wird immer als fertig gemeldet.
 - Im Modus Zeit löst der Abbruch aus, wenn die Leistung die halbe Enddauer lang unter dem Standby-Wert bleibt.
+
+### Pausenschutz
+
+Manche Programme pausieren lange, zum Beispiel beim Einweichen oder bei der Vorwäsche. Ohne Pausenschutz muss die Ende-Erkennung länger warten als die längste Pause, und dann kommt die Fertig-Meldung bei **jedem** Lauf so spät. Der Pausenschutz trennt solche Pausen vom echten Ende:
+
+- Eine Phase unter dem Endwert gilt als **Pause**, wenn sie früh im Lauf beginnt (vor „Pause, wenn sie beginnt vor“ Sekunden nach dem Start) bzw. wenn ihre Leistung unter „Pause, wenn Leistung unter“ bleibt. Sind beide Werte gesetzt, müssen beide zutreffen.
+- Eine Pause zählt erst nach der **Pause-Haltezeit** als Ende. Jede andere Phase unter dem Endwert wird wie gewohnt nach Endanzahl bzw. Enddauer als Ende gemeldet.
+- Garantie: Der Pausenschutz kann ein Ende nur verzögern, nie verhindern oder vorziehen. Das gilt auch für die Abbrucherkennung.
+- Ein Abbruch über den Schalter (korrigierte Abbrucherkennung) wird nicht verzögert, denn der ausgeschaltete Schalter ist ein sicherer Beleg.
+- Alle drei Werte 0 (Standard) = aus = Verhalten von 3.1.2. Eine Haltezeit ohne eine der beiden Bedingungen hat keine Wirkung.
+
+Die Werte setzt normalerweise das [Anlernen](#8-anlernen); du kannst sie in der Typen-Tabelle ändern.
 
 ### Weiteres Verhalten
 
@@ -193,19 +208,41 @@ Beim Anlernen werden Schwellwerte aus echten Läufen abgeleitet: aus der History
 
 ### Aus der History
 
-Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, InfluxDB oder jeder andere Adapter, der `getHistory` beantwortet), bietet **Anlernen** auf der Gerätekarte zuerst die History an. Die Standard-History aus den Systemeinstellungen wird bevorzugt.
+Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, InfluxDB oder jeder andere Adapter, der `getHistory` beantwortet), bietet **Anlernen** auf der Gerätekarte zuerst die History an. Die Standard-History aus den Systemeinstellungen wird bevorzugt. Du musst kein Programm wählen: Der Adapter unterscheidet keine Programme, der Gerätetyp muss **jeden** Lauf erkennen.
 
-- Aus der History werden alle Läufe der letzten 30 Tage herausgeschnitten. Ein Lauf darf bis zu 30 Minuten pausieren; Aktivität von insgesamt unter 5 Minuten (z. B. ein Display, das angeht) ist kein Lauf. Es braucht mindestens 2 Läufe, sonst wird ein neuer Lauf aufgezeichnet.
-- Der Adapter kann Programme nicht unterscheiden, deshalb muss der Gerätetyp **jeden** Lauf erkennen: Die Schwellwerte decken den Lauf mit der längsten Pause ab.
-- Jeder Lauf wird mit allen drei Erkennungsmodi (Anzahl, Dauer, Kombiniert) nachgespielt, mit demselben Code wie die Live-Erkennung. Der Dialog zeigt je Modus, wie viele Läufe richtig erkannt wurden und wie lange es im Mittel dauert, bis das Ende gemeldet wird. Vorausgewählt ist der Modus, der die meisten Läufe mit den wenigsten Fehlstarts erkennt; sind mehrere gleich zuverlässig und melden das Ende innerhalb einer Minute, gewinnt Anzahl (Verhalten von 3.1.2).
-- Vor dem Speichern als neuer eigener Gerätetyp kannst du jeden Wert und den Modus ändern.
+**Laden**
+
+- Die History wird tageweise gelesen, so kommen die vollen 30 Tage auch bei Steckdosen an, die jede Sekunde einen Wert senden. Eine kürzere Aufbewahrung (`retention`) des History-Adapters begrenzt den Zeitraum.
+- Lücken des Loggers werden ignoriert: Ein Lauf, in dem der Logger länger als 2 Stunden nichts gespeichert hat, zählt nicht. Ein Wert, der sich nicht ändert (Steckdose sendet nur bei Änderung), ist keine Lücke.
+- Einheiten W und kW werden unterstützt. Ein Energiezähler (Wh/kWh) wird erkannt und abgelehnt; wähle dann den State mit der aktuellen Leistung.
+
+**Läufe**
+
+- Ein Lauf darf bis zu 30 Minuten pausieren; Aktivität von insgesamt unter 5 Minuten (z. B. ein Display, das angeht) ist kein Lauf. Es braucht mindestens 2 Läufe, sonst wird ein neuer Lauf aufgezeichnet.
+- Zwei Läufe kurz hintereinander werden getrennt, wenn die Leistung dazwischen dem Ruhepegel nach einem Ende entspricht und sich deutlich von den Pausen im Lauf unterscheidet. Sonst bleibt es ein Lauf.
+- Knitterschutz-Stöße eines Trockners nach dem Ende zählen zum Nachlauf. Die Startdauer bzw. Startanzahl wird so gewählt, dass sie keinen neuen Start auslösen.
+- Eine Phase mit leicht erhöhter Leistung von mindestens 20 Minuten nach dem Lauf (Trocknung einer Spülmaschine) gehört zum Lauf, eine kürzere (Display, Türentriegelung) nicht.
+- `changesMinDelta` des History-Adapters wird beim Endwert berücksichtigt.
+
+**Optimierung**
+
+- Endwert und Ende-Wartezeit werden so gewählt, dass jeder Lauf genau einmal erkannt wird und das Ende so früh wie möglich kommt. Statt fester Faktoren wird die kürzeste sichere Endanzahl mit dem echten Erkennungscode gesucht.
+- Bringt der [Pausenschutz](#pausenschutz) im Mittel mindestens 3 Minuten, wird er vorgeschlagen. Beispiel: Ein Lauf mit 22 Minuten Einweichen bei 0 W, Nachlauf bei 0,5 W. Ohne Pausenschutz müsste jeder Lauf über 27 Minuten auf die Fertig-Meldung warten. Mit „Pause, wenn Leistung unter 0,25 W“ und 1670 s Haltezeit kommt sie bei allen Läufen nach etwa einer Minute. Liegen Pause und Nachlauf beide bei 0 W, trennt der Zeitpunkt („Pause, wenn sie beginnt vor 880 s“): Dann kommt das Ende nach etwa 4 Minuten, nur ein sehr kurzes Programm, das so früh endet, wie eine Pause beginnt, wird bis zur Haltezeit verzögert, aber erkannt.
+- Jeder Vorschlag wird mit dem echten Erkennungscode und den Abbruch-Optionen des Geräts nachgespielt.
+
+**Dialog**
+
+- Je Modus: richtig erkannte / gefundene Läufe · mittlere (maximale) Zeit, bis das Ende gemeldet wird. Vorausgewählt ist der Modus, der die meisten Läufe mit den wenigsten Fehlstarts erkennt; sind mehrere gleich zuverlässig und melden das Ende innerhalb einer Minute, gewinnt Anzahl (Verhalten von 3.1.2).
+- **Gegenprobe** x/y: so viele Läufe wären auch erkannt worden, wenn der jeweilige Lauf in der History gefehlt hätte. Ist der Wert kleiner als die Zahl der Läufe, kommt ein Programm (z. B. mit langer Pause) nur einmal vor; lerne nach weiteren Läufen erneut an.
+- Vergleich mit dem aktuellen Gerätetyp über dieselben Läufe und die längste Pause in einem Lauf.
+- Vor dem Speichern als neuer eigener Gerätetyp kannst du jeden Wert, den Pausenschutz und den Modus ändern.
 
 ### Einen Lauf aufzeichnen
 
 1. Anlernen auf der Gerätekarte starten (**Anlernen**) oder `learning.start` des Geräts schreiben.
 2. Einen kompletten Zyklus der Maschine laufen lassen. Die Aufnahme endet automatisch nach 12 Stunden oder 10 000 Messwerten.
 3. Anlernen im Device Manager beenden oder `learning.stop` schreiben.
-4. Die vorgeschlagenen Einstellungen stehen als JSON in `learning.result` (Schwellwerte, Startdauer, Enddauer, Laufdauer und Anzahl der Messwerte). Der Device Manager zeigt sie an und kann sie als neuen eigenen Gerätetyp speichern.
+4. Die Aufnahme wird mit derselben Logik ausgewertet wie die History, mit einem Lauf. Die vorgeschlagenen Einstellungen stehen als JSON in `learning.result` (Schwellwerte, Start- und Enddauer, Laufdauer, Anzahl der Messwerte, Modus, Auswertung je Modus und Pausenschutz). Der Device Manager zeigt sie an und kann sie als neuen eigenen Gerätetyp speichern.
 
 Wurden weniger als 20 Messwerte aufgenommen oder wird kein Lauf erkannt, enthält `learning.result` einen Fehler (`tooFewSamples` oder `noRun`). `learning.active` ist true, solange aufgenommen wird.
 
@@ -313,7 +350,7 @@ Gerätezustände sind relativ zum Geräteobjekt `<deviceId>` angegeben. Info-Zus
 | `learning.start` | boolean | button.start | w | - | Anlernen starten | true schreiben startet die Aufnahme eines Laufs |
 | `learning.stop` | boolean | button.stop | w | - | Anlernen beenden | true schreiben beendet die Aufnahme und berechnet den Vorschlag |
 | `learning.active` | boolean | indicator | r | - | Anlernen aktiv | True, solange ein Lauf aufgenommen wird |
-| `learning.result` | string | json | r | - | Anlern-Ergebnis | JSON: Schwellwerte, startDurationSec, endDurationSec, durationSec, samples (aus der History zusätzlich mode, runs, evaluation) oder ein Fehler (tooFewSamples, noRun) |
+| `learning.result` | string | json | r | - | Anlern-Ergebnis | JSON: Schwellwerte, startDurationSec, endDurationSec, durationSec, samples, pauseHoldSec, pauseUntilSec, pauseBelowVal, mode, runs, evaluation (aus der History zusätzlich looDetected, longestPauseSec, current, gapsDropped) oder ein Fehler (tooFewSamples, noRun) |
 | `lastOperationsHtml` | string | html | r | - | Letzte Vorgänge (HTML) | HTML-Tabelle der letzten Läufe (nur wenn in den allgemeinen Einstellungen aktiviert) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter verbunden | True, wenn der Adapter läuft |
 <!-- END STATES -->

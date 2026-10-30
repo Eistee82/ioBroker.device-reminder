@@ -1,54 +1,212 @@
 import assert from "node:assert";
-import { createDetector } from "../build/lib/detector/index.js";
+import { DEFAULT_TYPES } from "../build/lib/config.js";
 import { analyzeHistory, pickMode } from "../build/lib/historyLearning.js";
-import { findHistoryInstance, loadHistory } from "../build/lib/historySource.js";
-import { washingMachine } from "./helpers/curves.js";
-import { historyOf, longPause, shortRun } from "./helpers/history.js";
+import { CHUNK_CAP, findHistoryInstance, loadHistorySeries, MAX_QUERIES } from "../build/lib/historySource.js";
+import { dishwasher, dryer, washingMachine as wm } from "./helpers/curves.js";
+import {
+	dishwasherLongDrying,
+	dryerAntiCrease,
+	historyOf,
+	longPause,
+	runEnds,
+	runStarts,
+	shortRun,
+	steadyHeat,
+	times,
+	zeroTail,
+} from "./helpers/history.js";
+import { replay } from "./helpers/replay.js";
+
+const START = 1_700_000_000_000;
+const HOUR = 3_600_000;
 
 /**
- * Replay the whole history like the runtime does (values fed on arrival, poll every 10 s).
+ * Assert that every run got exactly one end, not before the run end and at most `maxDelay` later.
  *
- * @param {{ ts: number, val: number }[]} points stored values
- * @param {object} s suggestion
+ * @param {number[]} finishedAt timestamps of the reported ends
+ * @param {number[]} ends real ends of the runs
+ * @param {number} maxDelaySec longest allowed delay per run (array or number)
+ * @returns {number[]} delay per run in s
  */
-function replay(points, s) {
-	const detector = createDetector(
-		{ ...s.thresholds, mode: s.mode, startDurationSec: s.startDurationSec, endDurationSec: s.endDurationSec },
-		{ abort: false, abortFixed: false },
-	);
-	const counts = { started: 0, finished: 0 };
-	const count = events => events.forEach(e => (counts[e] = (counts[e] ?? 0) + 1));
-	let idx = 0;
-	let value = points[0].val;
-	for (let t = points[0].ts; t <= points.at(-1).ts; t += 10_000) {
-		while (idx < points.length && points[idx].ts <= t) {
-			value = points[idx].val;
-			if (s.mode === "timed") {
-				count(detector.feed(value, points[idx].ts).events);
-			}
-			idx++;
-		}
-		count(detector.tick(value, t).events);
-	}
-	return { started: counts.started, finished: counts.finished };
+function delaysOf(finishedAt, ends, maxDelaySec) {
+	assert.strictEqual(finishedAt.length, ends.length, `ends ${JSON.stringify(finishedAt)}`);
+	return ends.map((end, i) => {
+		const delay = (finishedAt[i] - end) / 1000;
+		const max = Array.isArray(maxDelaySec) ? maxDelaySec[i] : maxDelaySec;
+		assert.ok(delay >= 0 && delay <= max, `run ${i}: delay ${delay} s, max ${max} s`);
+		return delay;
+	});
 }
 
-const evalOf = (mode, detected, falseStarts, endDelaySec) => ({ mode, detected, runs: 5, falseStarts, endDelaySec });
+const chosenOf = s => s.evaluation.find(e => e.mode === s.mode);
+const evalOf = (mode, detected, falseStarts, endDelaySec) => ({
+	mode,
+	detected,
+	runs: 5,
+	falseStarts,
+	endDelaySec,
+	endDelayMaxSec: endDelaySec,
+});
 
 describe("learning from the history", () => {
-	it("finds every run, whatever programme, and suggests a type detecting each exactly once", () => {
-		const points = historyOf([washingMachine, longPause, shortRun, washingMachine]);
-		const s = analyzeHistory(points, 10);
+	const runsA = [wm, longPause, shortRun, wm];
+
+	it("A: a long soaking pause at a lower level delays only itself (pause protection by level)", async () => {
+		const points = historyOf(runsA);
+		const s = await analyzeHistory(points, 10);
 		assert.ok(!("error" in s), JSON.stringify(s));
 		assert.strictEqual(s.runs, 4);
-		const chosen = s.evaluation.find(e => e.mode === s.mode);
+		const chosen = chosenOf(s);
 		assert.deepStrictEqual([chosen.detected, chosen.falseStarts], [4, 0]);
-		assert.deepStrictEqual(replay(points, s), { started: 4, finished: 4 });
+		assert.ok(s.pauseBelowVal > 0 && s.pauseBelowVal < 0.5, `pauseBelowVal ${s.pauseBelowVal}`);
+		assert.strictEqual(s.pauseUntilSec, 0);
+		assert.ok(s.pauseHoldSec >= 1340 && s.pauseHoldSec <= 2000, `pauseHoldSec ${s.pauseHoldSec}`);
+		assert.ok(chosen.endDelaySec <= 360 && chosen.endDelayMaxSec <= 360, JSON.stringify(chosen));
+		const r = replay(points, s);
+		assert.deepStrictEqual([r.started, r.finished], [4, 4]);
+		delaysOf(r.finishedAt, runEnds(runsA, 3.5), 360);
+		assert.strictEqual(s.looDetected, 3);
+		assert.ok(s.longestPauseSec >= 1300);
 		assert.strictEqual(s.samples, points.length);
+		assert.strictEqual(s.gapsDropped, 0);
 	});
 
-	it("evaluates all three detection modes", () => {
-		const s = analyzeHistory(historyOf([washingMachine, longPause]), 10);
+	it("B: the same pause at the end level is told apart by the time since the start", async () => {
+		const runs = runsA.map(zeroTail);
+		const points = historyOf(runs, START, { idle: 0 });
+		const s = await analyzeHistory(points, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.strictEqual(s.runs, 4);
+		assert.ok(s.pauseUntilSec > 0, JSON.stringify(s));
+		assert.strictEqual(s.pauseBelowVal, 0);
+		const r = replay(points, s);
+		assert.deepStrictEqual([r.started, r.finished], [4, 4], "no run is split");
+		const delays = delaysOf(r.finishedAt, runEnds(runs, 2), [360, 360, s.pauseHoldSec + 120, 360]);
+		assert.ok(delays.reduce((a, b) => a + b, 0) / delays.length <= 720, `delays ${delays}`);
+		assert.strictEqual(s.looDetected, 3);
+	});
+
+	it("C: anti-crease bursts of a dryer belong to the run and start nothing", async () => {
+		const runs = [dryerAntiCrease, dryerAntiCrease, dryerAntiCrease];
+		const points = historyOf(runs);
+		const s = await analyzeHistory(points, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.strictEqual(s.runs, 3);
+		assert.ok(s.durationSec < 1800, `durationSec ${s.durationSec}`);
+		if (s.mode === "count") {
+			assert.ok(s.thresholds.startCount >= 3);
+		} else {
+			assert.ok(s.startDurationSec >= 30);
+		}
+		assert.ok(chosenOf(s).endDelaySec <= 360);
+		const r = replay(points, s);
+		assert.deepStrictEqual([r.started, r.finished], [3, 3]);
+		const coreEnds = runStarts(runs).map(t => t + 152 * 10_000);
+		delaysOf(r.finishedAt, coreEnds, 360);
+	});
+
+	it("D: a long drying phase of a dishwasher belongs to the run", async () => {
+		const runs = [dishwasherLongDrying, dishwasherLongDrying, dishwasherLongDrying];
+		const points = historyOf(runs, START, { idle: 0.3 });
+		const s = await analyzeHistory(points, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.strictEqual(s.runs, 3);
+		const coreSec = (238 - 3 - 1) * 10;
+		assert.ok(s.durationSec >= coreSec + 3600 - 60, `durationSec ${s.durationSec}`);
+		assert.ok(s.thresholds.endVal >= 0.5 && s.thresholds.endVal < 1, `endVal ${s.thresholds.endVal}`);
+		const r = replay(points, s);
+		assert.strictEqual(r.started, 3);
+		delaysOf(r.finishedAt, runEnds(runs, 0.6, START, {}), 360);
+	});
+
+	it("D2: a short raised level after the end (display) is no part of the run", async () => {
+		const runs = [dishwasher, dishwasher, dishwasher];
+		const s = await analyzeHistory(historyOf(runs), 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.ok(s.durationSec <= (238 - 3) * 10, `durationSec ${s.durationSec}`);
+		assert.ok(chosenOf(s).endDelaySec <= 360);
+	});
+
+	it("E: plugs that only report changes (deadband) are no gaps", async () => {
+		const runs = [steadyHeat, wm, dryer];
+		const points = historyOf(runs, START, { relog: false, deadband: 2 });
+		const s = await analyzeHistory(points, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.strictEqual(s.runs, 3);
+		assert.strictEqual(s.gapsDropped, 0);
+		for (const mode of ["timed", "count"]) {
+			assert.strictEqual(s.evaluation.find(e => e.mode === mode).detected, 3, mode);
+		}
+		const r = replay(points, s);
+		assert.deepStrictEqual([r.started, r.finished], [3, 3]);
+		const withDelta = await analyzeHistory(points, 10, { minDelta: 5 });
+		assert.ok(withDelta.thresholds.endVal >= 0.5 + 5, `endVal ${withDelta.thresholds.endVal}`);
+	});
+
+	it("F: two runs shortly after each other are split by the level between them", async () => {
+		const between = [times(0.5, 72)];
+		const points = historyOf([wm, wm, longPause], START, { between });
+		const s = await analyzeHistory(points, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.strictEqual(s.runs, 3, "split after 12 min, the long pause is not split");
+		assert.strictEqual(chosenOf(s).detected, 3);
+		assert.deepStrictEqual(replay(points, s).started, 3);
+
+		const same = historyOf([zeroTail(wm), wm, longPause], START, { between: [times(0, 72)] });
+		const t = await analyzeHistory(same, 10);
+		assert.strictEqual(t.runs, 2, "no split without a different level");
+		assert.strictEqual(chosenOf(t).detected, 2);
+	});
+
+	it("G: a run with a gap in the history is dropped, the others are detected", async () => {
+		const runs = [wm, wm, wm, wm];
+		const gapAt = runStarts(runs)[1] + (3 + 120) * 10_000;
+		const points = historyOf(runs).filter(p => p.ts < gapAt || p.ts >= gapAt + 4 * HOUR);
+		points.push({ ts: gapAt, val: 1500 });
+		points.sort((a, b) => a.ts - b.ts);
+		const s = await analyzeHistory(points, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.ok(s.gapsDropped >= 1);
+		assert.strictEqual(s.runs, 3);
+		const chosen = chosenOf(s);
+		assert.deepStrictEqual([chosen.detected, chosen.falseStarts], [3, 0]);
+	});
+
+	it("H: a state in kW learns the same type in kW", async () => {
+		const points = historyOf(runsA);
+		const w = await analyzeHistory(points, 10);
+		const kw = await analyzeHistory(
+			points.map(p => ({ ts: p.ts, val: p.val / 1000 })),
+			10,
+			{ unitFactor: 1000 },
+		);
+		assert.strictEqual(kw.mode, w.mode);
+		assert.strictEqual(kw.thresholds.startCount, w.thresholds.startCount);
+		assert.strictEqual(kw.thresholds.endCount, w.thresholds.endCount);
+		for (const key of ["startVal", "endVal", "standby"]) {
+			const expected = w.thresholds[key] / 1000;
+			assert.ok(Math.abs(kw.thresholds[key] - expected) <= expected * 0.01, key);
+		}
+	});
+
+	it("I: with the abort detection the learned type reports no abort", async () => {
+		const points = historyOf(runsA);
+		const s = await analyzeHistory(points, 10, { abort: true });
+		assert.ok(!("error" in s), JSON.stringify(s));
+		const r = replay(points, s, { abort: true });
+		assert.strictEqual(r.aborted, 0);
+		assert.deepStrictEqual([r.started, r.finished], [4, 4]);
+	});
+
+	it("J: the current device type is evaluated over the same runs", async () => {
+		const washer = DEFAULT_TYPES.find(t => t.id === "washing-machine");
+		const s = await analyzeHistory(historyOf(runsA), 10, { currentType: washer });
+		assert.strictEqual(s.current.mode, "count");
+		assert.strictEqual(s.current.runs, 4);
+	});
+
+	it("K: evaluates all three detection modes", async () => {
+		const s = await analyzeHistory(historyOf([wm, longPause]), 10);
 		assert.deepStrictEqual(
 			s.evaluation.map(e => e.mode),
 			["count", "combined", "timed"],
@@ -56,14 +214,37 @@ describe("learning from the history", () => {
 		assert.ok(s.evaluation.every(e => e.runs === 2));
 	});
 
-	it("needs at least two runs", () => {
-		assert.deepStrictEqual(analyzeHistory(historyOf([washingMachine]), 10), { error: "tooFewRuns", runs: 1 });
-		assert.deepStrictEqual(analyzeHistory([], 10), { error: "noHistory" });
+	it("K: needs at least two runs", async () => {
+		assert.deepStrictEqual(await analyzeHistory(historyOf([wm]), 10), { error: "tooFewRuns", runs: 1 });
+		assert.deepStrictEqual(await analyzeHistory([], 10), { error: "noHistory" });
+		const one = await analyzeHistory(historyOf([wm]), 10, { minRuns: 1 });
+		assert.strictEqual(one.runs, 1);
 	});
 
-	it("ignores short spikes as runs", () => {
-		const points = historyOf([washingMachine, washingMachine]);
-		assert.strictEqual(analyzeHistory(points, 10).runs, 2);
+	it("K: ignores short spikes as runs", async () => {
+		assert.strictEqual((await analyzeHistory(historyOf([wm, wm]), 10)).runs, 2);
+	});
+
+	it("L: 20 runs over 30 days are analysed within 3 s and yield regularly", async () => {
+		const runs = Array.from({ length: 20 }, (_, i) => [wm, longPause, shortRun, dryer][i % 4]);
+		const between = runs.map(r => times(0.5, 12_960 - r.length));
+		const points = historyOf(runs, START, { between });
+		let yields = 0;
+		const progress = [];
+		const t0 = Date.now();
+		const s = await analyzeHistory(points, 10, {
+			yieldFn: async () => {
+				yields++;
+			},
+			onProgress: f => progress.push(f),
+		});
+		const ms = Date.now() - t0;
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.strictEqual(s.runs, 20);
+		assert.ok(ms < 3000, `${ms} ms`);
+		assert.ok(yields >= 10, `${yields} yields`);
+		assert.ok(progress.every((f, i) => i === 0 || f >= progress[i - 1]));
+		assert.strictEqual(progress.at(-1), 1);
 	});
 });
 
@@ -107,12 +288,68 @@ function env(o = {}) {
 		alive: async instance => (o.alive ?? []).includes(instance),
 		getHistory: async (id, options) => {
 			calls.push({ id, options });
+			if (o.getHistory) {
+				return o.getHistory(options, calls.length);
+			}
 			return { result: o.result ?? [] };
 		},
 	};
 }
 
 const historyAdapter = { common: { getHistory: true } };
+
+/**
+ * One value per second of three washing machine runs over three days, newest value 1 h before now.
+ *
+ * @param {number} now current time
+ */
+function secondData(now) {
+	const start = now - 3 * 24 * HOUR;
+	const out = [];
+	const runAt = [5, 30, 55].map(h => start + h * HOUR);
+	for (let ts = start; ts <= now - HOUR; ts += 1000) {
+		let val = 0.5;
+		for (const at of runAt) {
+			const i = Math.floor((ts - at) / 10_000);
+			if (i >= 0 && i < wm.length) {
+				val = wm[i];
+			}
+		}
+		out.push({ ts, val });
+	}
+	return out;
+}
+
+/**
+ * History adapter answering like a database with a hard limit.
+ *
+ * @param {{ ts: number, val: number }[]} data stored values (sorted)
+ * @param {number} [overlap] extra milliseconds returned on both sides of the range
+ */
+function databaseOf(data, overlap = 0) {
+	const answers = [];
+	return {
+		answers,
+		getHistory: options => {
+			const from = options.start - overlap;
+			const to = options.end + overlap;
+			let lo = 0;
+			while (lo < data.length && data[lo].ts < from) {
+				lo++;
+			}
+			const result = [];
+			for (let i = lo; i < data.length && data[i].ts <= to && result.length < options.count; i++) {
+				result.push(data[i]);
+			}
+			answers.push(result.length);
+			return { result };
+		},
+	};
+}
+
+const powerObject = (custom = {}, common = {}) => ({
+	common: { unit: "W", role: "value.power", custom: { "history.0": { enabled: true, ...custom } }, ...common },
+});
 
 describe("history source", () => {
 	it("finds the running history instance that logs the power state", async () => {
@@ -155,24 +392,110 @@ describe("history source", () => {
 		assert.strictEqual(await findHistoryInstance(env(), "plug.0.power"), undefined);
 	});
 
-	it("reads the raw values of the last 30 days", async () => {
+	it("loads the raw values day by day and with the right query", async () => {
+		const now = 40 * 24 * HOUR;
 		const e = env({
+			objects: { "plug.0.power": powerObject() },
 			result: [
-				{ ts: 3, val: "7.5" },
-				{ ts: 1, val: 2 },
-				{ ts: 2, val: null },
-				{ ts: 4, val: "x" },
+				{ ts: now - 3000, val: "7.5" },
+				{ ts: now - 1000, val: 2 },
+				{ ts: now - 2000, val: null },
+				{ ts: now - 500, val: "x" },
 			],
 		});
-		assert.deepStrictEqual(await loadHistory(e, "influxdb.0", "plug.0.power", 30 * 86_400_000), [
-			{ ts: 1, val: 2 },
-			{ ts: 3, val: 7.5 },
-		]);
+		const progress = [];
+		const { series, meta } = await loadHistorySeries(e, "history.0", "plug.0.power", now, 10, f =>
+			progress.push(f),
+		);
+		assert.strictEqual(meta.days, 30);
+		assert.strictEqual(e.calls.length, 30);
+		assert.strictEqual(progress.at(-1), 1);
 		const { id, options } = e.calls[0];
 		assert.strictEqual(id, "plug.0.power");
 		assert.deepStrictEqual(
-			{ instance: options.instance, start: options.start, aggregate: options.aggregate },
-			{ instance: "influxdb.0", start: 0, aggregate: "none" },
+			{
+				instance: options.instance,
+				start: options.start,
+				end: options.end,
+				aggregate: options.aggregate,
+				returnNewestEntries: options.returnNewestEntries,
+				count: options.count,
+			},
+			{
+				instance: "history.0",
+				start: now - 24 * HOUR,
+				end: now - 1,
+				aggregate: "none",
+				returnNewestEntries: false,
+				count: CHUNK_CAP,
+			},
 		);
+		assert.ok(series.points >= 2);
+	});
+
+	it("finds every run in values stored every second, with a hard limit per query", async () => {
+		const now = 60 * 24 * HOUR;
+		const data = secondData(now);
+		const db = databaseOf(data);
+		const e = env({ objects: { "plug.0.power": powerObject() }, getHistory: db.getHistory });
+		const { series, meta } = await loadHistorySeries(e, "history.0", "plug.0.power", now, 10);
+		assert.ok(Math.max(...db.answers) <= CHUNK_CAP);
+		assert.ok(meta.queries <= MAX_QUERIES);
+		assert.strictEqual(meta.failedChunks, 0);
+		const s = await analyzeHistory(series, 10);
+		assert.ok(!("error" in s), JSON.stringify(s));
+		assert.strictEqual(s.runs, 3);
+
+		const overlapping = databaseOf(data, 1000);
+		const e2 = env({ objects: { "plug.0.power": powerObject() }, getHistory: overlapping.getHistory });
+		const second = await loadHistorySeries(e2, "history.0", "plug.0.power", now, 10);
+		const t = await analyzeHistory(second.series, 10);
+		assert.deepStrictEqual(
+			[t.thresholds, t.mode, t.runs],
+			[s.thresholds, s.mode, s.runs],
+			"overlapping borders change nothing",
+		);
+	});
+
+	it("limits the days by the retention and the poll interval", async () => {
+		const now = 60 * 24 * HOUR;
+		const e = env({ objects: { "plug.0.power": powerObject({ retention: 604800 }) } });
+		assert.strictEqual((await loadHistorySeries(e, "history.0", "plug.0.power", now, 10)).meta.days, 7);
+		const f = env({ objects: { "plug.0.power": powerObject() } });
+		assert.ok((await loadHistorySeries(f, "history.0", "plug.0.power", now, 1)).meta.days <= 11);
+	});
+
+	it("reads unit and deadband of the state", async () => {
+		const now = 60 * 24 * HOUR;
+		const e = env({ objects: { "plug.0.power": powerObject({ changesMinDelta: "2" }, { unit: "kW" }) } });
+		const { meta } = await loadHistorySeries(e, "history.0", "plug.0.power", now, 10);
+		assert.deepStrictEqual([meta.unit, meta.unitFactor, meta.minDelta], ["kW", 1000, 2]);
+	});
+
+	it("rejects energy meters without a query", async () => {
+		const now = 60 * 24 * HOUR;
+		for (const common of [{ unit: "kWh" }, { role: "value.energy.consumed" }]) {
+			const e = env({ objects: { "plug.0.power": powerObject({}, common) } });
+			const { meta } = await loadHistorySeries(e, "history.0", "plug.0.power", now, 10);
+			assert.strictEqual(meta.energyCounter, true);
+			assert.strictEqual(e.calls.length, 0);
+		}
+	});
+
+	it("goes on after a failed query", async () => {
+		const now = 60 * 24 * HOUR;
+		const e = env({
+			objects: { "plug.0.power": powerObject() },
+			getHistory: (_options, n) => {
+				if (n === 2) {
+					throw new Error("timeout");
+				}
+				return { result: [] };
+			},
+		});
+		const { meta } = await loadHistorySeries(e, "history.0", "plug.0.power", now, 10);
+		assert.strictEqual(meta.failedChunks, 1);
+		assert.strictEqual(meta.queries, 30);
+		assert.strictEqual(meta.error, "timeout");
 	});
 });

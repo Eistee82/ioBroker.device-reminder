@@ -282,6 +282,9 @@ export class DeviceRuntime {
 				mode: this.type.mode,
 				startDurationSec: this.type.startDurationSec,
 				endDurationSec: this.type.endDurationSec,
+				pauseHoldSec: this.type.pauseHoldSec,
+				pauseUntilSec: this.type.pauseUntilSec,
+				pauseBelowVal: this.type.pauseBelowVal,
 			},
 			{ abort: this.cfg.abort, abortFixed: this.cfg.abortFixed },
 		);

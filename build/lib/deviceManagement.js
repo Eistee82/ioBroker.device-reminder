@@ -6,7 +6,7 @@ import { enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
 import { plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import { analyzeHistory } from "./historyLearning.js";
-import { findHistoryInstance, loadHistory } from "./historySource.js";
+import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import { detectFromHost } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
 const RESERVED_IDS = ["info"];
@@ -112,6 +112,9 @@ export class ReminderDeviceManagement extends DeviceManagement {
             ];
             if (type.mode !== "count") {
                 rows.push(["dm_detailsStartDuration", type.startDurationSec, "s"], ["dm_detailsEndDuration", type.endDurationSec, "s"]);
+            }
+            if (type.pauseHoldSec > 0) {
+                rows.push(["dm_detailsPauseHold", type.pauseHoldSec, "s"], ["dm_detailsPauseUntil", type.pauseUntilSec, "s"], ["dm_detailsPauseBelow", type.pauseBelowVal, "W"]);
             }
             rows.forEach(([label, value, unit], i) => {
                 items[`type${i}`] = {
@@ -586,25 +589,62 @@ export class ReminderDeviceManagement extends DeviceManagement {
         if (choice.source !== "history") {
             return false;
         }
-        const progress = await ctx.openProgress(TEXT.learnAnalysing, { indeterminate: true });
+        const progress = await ctx.openProgress(TEXT.learnAnalysing, { value: 0, label: TEXT.learnReading });
+        let sent = 0;
+        let updates = Promise.resolve();
+        const report = (value, label) => {
+            if (value < sent + 5 && !(value === 100 && sent < 100)) {
+                return;
+            }
+            sent = value;
+            updates = updates.then(() => progress.update({ value, label })).catch(() => undefined);
+        };
+        const cfg = this.adapter.registry.get(id)?.config;
+        const type = cfg ? findType(this.adapter.instanceConfig, cfg.typeId) : undefined;
+        const poll = this.adapter.instanceConfig.pollIntervalSec;
         let result;
+        let unit = "W";
         try {
-            const points = await loadHistory(env, instance, powerId, Date.now());
-            result = analyzeHistory(points, this.adapter.instanceConfig.pollIntervalSec);
+            const { series, meta } = await loadHistorySeries(env, instance, powerId, Date.now(), poll, f => report(Math.round(60 * f), TEXT.learnReading));
+            unit = meta.unit || "W";
+            if (meta.error) {
+                this.adapter.log.debug(`History of ${powerId}: ${meta.failedChunks} of ${meta.queries} queries failed: ${meta.error}`);
+            }
+            if (meta.energyCounter) {
+                result = { error: "energyCounter" };
+            }
+            else {
+                result = await analyzeHistory(series, poll, {
+                    abort: cfg?.abort,
+                    abortFixed: cfg?.abortFixed,
+                    unitFactor: meta.unitFactor,
+                    minDelta: meta.minDelta,
+                    currentType: type ? detectionSettingsOf(type) : undefined,
+                    yieldFn: () => new Promise(resolve => {
+                        this.adapter.setTimeout(resolve, 0);
+                    }),
+                    onProgress: f => report(60 + Math.round(40 * f), TEXT.learnChecking),
+                });
+            }
         }
         catch (err) {
             this.adapter.log.warn(`Reading the history of ${powerId} from ${instance} failed: ${errorMessage(err)}`);
             result = { error: "noHistory" };
         }
         finally {
+            await updates;
             await progress.close();
         }
         if ("error" in result) {
+            if (result.error === "energyCounter") {
+                await ctx.showMessage(TEXT.learnEnergyCounter);
+                return true;
+            }
             await ctx.showMessage(TEXT.learnHistoryTooFewRuns);
             return false;
         }
         await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);
-        await this.saveLearnedType(id, result, ctx);
+        await this.saveLearnedType(id, result, ctx, unit);
         return true;
     }
     historyEnv() {
@@ -614,7 +654,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             getHistory: (id, options) => this.adapter.getHistoryAsync(id, options),
         };
     }
-    async saveLearnedType(id, suggestion, ctx) {
+    async saveLearnedType(id, suggestion, ctx, unit = "W") {
         const deviceName = this.adapter.registry.get(id)?.config.name ?? id;
         let data = {
             name: `${deviceName} (learned)`,
@@ -628,13 +668,24 @@ export class ReminderDeviceManagement extends DeviceManagement {
             durationSec: suggestion.durationSec,
             samples: suggestion.samples,
             mode: suggestion.mode ?? "count",
+            pauseHoldSec: suggestion.pauseHoldSec,
+            pauseUntilSec: suggestion.pauseUntilSec,
+            pauseBelowVal: suggestion.pauseBelowVal,
             ...(suggestion.evaluation ? { runs: suggestion.runs, ...evaluationTexts(suggestion.evaluation) } : {}),
+            ...(suggestion.looDetected !== undefined
+                ? { looText: `${suggestion.looDetected}/${suggestion.runs}` }
+                : {}),
+            ...(suggestion.longestPauseSec !== undefined
+                ? { longestPauseMin: Math.round(suggestion.longestPauseSec / 60) }
+                : {}),
+            ...(suggestion.current ? { eval_current: evaluationText(suggestion.current) } : {}),
         };
-        const fromHistory = suggestion.evaluation !== undefined;
+        const fromHistory = suggestion.looDetected !== undefined;
+        const schema = buildLearnSchema(fromHistory, unit, suggestion.current !== undefined, suggestion.evaluation !== undefined);
         let type = null;
         const inst = this.adapter.instanceConfig;
         while (!type) {
-            const result = await ctx.showForm(buildLearnSchema(fromHistory), { data, title: TEXT.learnTitle });
+            const result = await ctx.showForm(schema, { data, title: TEXT.learnTitle });
             if (!result) {
                 return;
             }
@@ -663,11 +714,29 @@ const MODE_LABELS = { count: "modeCount", timed: "modeTimed", combined: "modeCom
 export function evaluationTexts(evaluation) {
     const out = {};
     for (const e of evaluation) {
-        const delay = e.detected > 0 ? ` · ${Math.round(e.endDelaySec / 60)} min` : "";
-        const spikes = e.falseStarts > 0 ? ` · ${e.falseStarts}×!` : "";
-        out[`eval_${e.mode}`] = `${e.detected}/${e.runs}${delay}${spikes}`;
+        out[`eval_${e.mode}`] = evaluationText(e);
     }
     return out;
+}
+export function evaluationText(e) {
+    const delay = e.detected > 0 ? ` · ${Math.round(e.endDelaySec / 60)} min (max ${Math.round(e.endDelayMaxSec / 60)} min)` : "";
+    const spikes = e.falseStarts > 0 ? ` · ${e.falseStarts}×!` : "";
+    return `${e.detected}/${e.runs}${delay}${spikes}`;
+}
+function detectionSettingsOf(t) {
+    return {
+        startVal: t.startVal,
+        endVal: t.endVal,
+        standby: t.standby,
+        startCount: t.startCount,
+        endCount: t.endCount,
+        mode: t.mode,
+        startDurationSec: t.startDurationSec,
+        endDurationSec: t.endDurationSec,
+        pauseHoldSec: t.pauseHoldSec,
+        pauseUntilSec: t.pauseUntilSec,
+        pauseBelowVal: t.pauseBelowVal,
+    };
 }
 export function buildLearnSourceSchema() {
     return {
@@ -690,7 +759,7 @@ export function buildLearnSourceSchema() {
         },
     };
 }
-export function buildLearnSchema(fromHistory = false) {
+export function buildLearnSchema(fromHistory = false, unit = "W", withCurrent = false, withEval = fromHistory) {
     const num = (label, step, min, unit) => ({
         type: "number",
         label,
@@ -713,13 +782,17 @@ export function buildLearnSchema(fromHistory = false) {
                 newLine: true,
                 xs: 12,
             },
-            startVal: { ...num("dm_learnStartVal", 0.05, 0, "W"), newLine: true },
-            endVal: num("dm_learnEndVal", 0.05, 0, "W"),
-            standby: num("dm_learnStandby", 0.05, 0, "W"),
+            startVal: { ...num("dm_learnStartVal", 0.05, 0, unit), newLine: true },
+            endVal: num("dm_learnEndVal", 0.05, 0, unit),
+            standby: num("dm_learnStandby", 0.05, 0, unit),
             startCount: { ...num("dm_learnStartCount", 0.5, 1), newLine: true },
             endCount: num("dm_learnEndCount", 1, 2),
             startDurationSec: { ...num("dm_learnStartDuration", 1, 0, "s"), newLine: true },
             endDurationSec: num("dm_learnEndDuration", 1, 0, "s"),
+            pauseInfo: { type: "staticText", text: "dm_learnPauseInfo", newLine: true, xs: 12 },
+            pauseHoldSec: { ...num("dm_learnPauseHold", 1, 0, "s"), newLine: true },
+            pauseUntilSec: num("dm_learnPauseUntil", 1, 0, "s"),
+            pauseBelowVal: num("dm_learnPauseBelow", 0.05, 0, unit),
             durationSec: {
                 type: "number",
                 label: "dm_learnDuration",
@@ -736,31 +809,40 @@ export function buildLearnSchema(fromHistory = false) {
                 xs: 12,
                 sm: 4,
             },
-            ...(fromHistory ? historyItems() : {}),
+            ...(withEval ? historyItems(fromHistory, withCurrent) : {}),
         },
     };
 }
-function historyItems() {
-    const items = {
-        runs: { type: "number", label: "dm_learnRuns", disabled: true, xs: 12, sm: 4 },
-        mode: {
-            type: "select",
-            label: "dm_detailsMode",
-            options: DETECTION_MODES.map(m => ({ label: MODE_LABELS[m], value: m })),
-            newLine: true,
-            xs: 12,
-            sm: 4,
-        },
-        evalInfo: { type: "staticText", text: "dm_learnEvalInfo", newLine: true, xs: 12 },
+function historyItems(fromHistory, withCurrent) {
+    const items = {};
+    if (fromHistory) {
+        items.runs = { type: "number", label: "dm_learnRuns", disabled: true, xs: 12, sm: 4 };
+        items.longestPauseMin = { type: "number", label: "dm_learnLongestPause", disabled: true, xs: 12, sm: 4 };
+    }
+    items.mode = {
+        type: "select",
+        label: "dm_detailsMode",
+        options: DETECTION_MODES.map(m => ({ label: MODE_LABELS[m], value: m })),
+        newLine: true,
+        xs: 12,
+        sm: 4,
     };
+    items.evalInfo = { type: "staticText", text: "dm_learnEvalInfo", newLine: true, xs: 12 };
     for (const m of DETECTION_MODES) {
         items[`eval_${m}`] = { type: "text", label: MODE_LABELS[m], disabled: true, xs: 12, sm: 4 };
     }
+    if (fromHistory) {
+        items.looText = { type: "text", label: "dm_learnLoo", disabled: true, newLine: true, xs: 12, sm: 4 };
+    }
+    if (withCurrent) {
+        items.eval_current = { type: "text", label: "dm_learnCurrentType", disabled: true, xs: 12, sm: 4 };
+    }
     return items;
 }
-function parseLearnForm(data) {
+export function parseLearnForm(data) {
     const name = textOf(data.name).trim();
     const n = (key) => parseNumber(data[key]) ?? Number.NaN;
+    const optional = (key) => (data[key] === undefined || data[key] === "" ? 0 : n(key));
     const parsed = {
         startVal: n("startVal"),
         endVal: n("endVal"),
@@ -769,6 +851,9 @@ function parseLearnForm(data) {
         endCount: n("endCount"),
         startDurationSec: n("startDurationSec"),
         endDurationSec: n("endDurationSec"),
+        pauseHoldSec: optional("pauseHoldSec"),
+        pauseUntilSec: optional("pauseUntilSec"),
+        pauseBelowVal: optional("pauseBelowVal"),
     };
     if (name === "") {
         return { error: TEXT.typeNeedsName };

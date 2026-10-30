@@ -309,6 +309,9 @@ describe("migration", () => {
 				mode: "count",
 				startDurationSec: 60,
 				endDurationSec: 300,
+				pauseHoldSec: 0,
+				pauseUntilSec: 0,
+				pauseBelowVal: 0,
 			});
 			const dish = findType(result.instance, "dishwasher");
 			assert.deepStrictEqual(

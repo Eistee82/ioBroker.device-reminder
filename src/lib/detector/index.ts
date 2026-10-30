@@ -14,6 +14,8 @@ export type {
 } from "./types.js";
 export { LegacyDetector } from "./legacy.js";
 export { TimedDetector } from "./timed.js";
+export { PauseGuard } from "./pauseGuard.js";
+export type { PauseGuardSettings } from "./pauseGuard.js";
 
 /** Device options relevant for the detection. */
 export interface DetectorOptions {
@@ -34,6 +36,7 @@ export interface DetectorOptions {
  * @param o - Device options
  */
 export function createDetector(s: DetectionSettings, o: DetectorOptions): Detector {
+	const pauseGuard = { pauseHoldSec: s.pauseHoldSec, pauseUntilSec: s.pauseUntilSec, pauseBelowVal: s.pauseBelowVal };
 	switch (s.mode) {
 		case "timed":
 			return new TimedDetector(s, { abort: o.abort });
@@ -43,8 +46,9 @@ export function createDetector(s: DetectionSettings, o: DetectorOptions): Detect
 				abortFixed: o.abortFixed,
 				minStartMs: Math.max(s.startDurationSec, 0) * 1000,
 				minEndMs: Math.max(s.endDurationSec, 0) * 1000,
+				pauseGuard,
 			});
 		default:
-			return new LegacyDetector(s, { abort: o.abort, abortFixed: o.abortFixed });
+			return new LegacyDetector(s, { abort: o.abort, abortFixed: o.abortFixed, pauseGuard });
 	}
 }

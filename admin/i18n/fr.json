@@ -139,7 +139,7 @@
 	"typeStartCount": "Décompte de départ",
 	"typeStartDuration": "Durée(s) de début",
 	"typeStartVal": "Début (W)",
-	"typesHelp": "Seuils par type d'appareil. Les types intégrés ne peuvent pas être renommés ou supprimés. En mode comptage, les valeurs comptent les ticks d'interrogation (voir Général).",
+	"typesHelp": "Seuils par type d'appareil. Les types intégrés ne peuvent être ni renommés ni supprimés. En mode comptage, les valeurs comptent les cycles d'interrogation (voir Général). Protection de pause (facultative, 0 = désactivée) : une phase sous le seuil de fin qui commence dans les premières « Pause si elle commence avant » secondes d'un cycle, ou dont la puissance reste sous « Pause si la puissance est inférieure à », ne compte comme fin qu'après « Maintien de pause » secondes. Généralement définie par l'apprentissage.",
 	"dm_learnSourceInfo": "L'état de puissance de cet appareil est enregistré par un adaptateur d'historique. L'adaptateur peut déduire le type d'appareil de tous les cycles des 30 derniers jours au lieu d'enregistrer un nouveau cycle.",
 	"dm_learnSource": "Apprendre à partir de",
 	"dm_learnSourceHistory": "Historique des 30 derniers jours",
@@ -147,5 +147,18 @@
 	"dm_learnHistoryInstance": "Instance d'historique",
 	"dm_learnHistorySamples": "Valeurs enregistrées",
 	"dm_learnRuns": "Cycles trouvés",
-	"dm_learnEvalInfo": "Chaque cycle a été rejoué avec chaque mode de détection : cycles correctement détectés / cycles trouvés · délai moyen avant le signalement de la fin. Le mode recommandé est présélectionné."
+	"dm_learnEvalInfo": "Chaque cycle a été rejoué avec chaque mode de détection : cycles correctement détectés / cycles trouvés · temps moyen (maximal) jusqu'au signalement de la fin. Le mode recommandé est présélectionné. Contre-vérification : cycles qui auraient aussi été détectés si ce cycle avait manqué dans l'historique ; si la valeur est plus basse, relancez l'apprentissage après d'autres cycles.",
+	"typePauseHold": "Maintien de pause (s)",
+	"typePauseUntil": "Pause si elle commence avant (s)",
+	"typePauseBelow": "Pause si la puissance est inférieure à",
+	"dm_learnPauseInfo": "Protection de pause : une longue pause (p. ex. trempage) ne compte comme fin qu'après le temps de maintien, ainsi tous les autres cycles signalent la fin rapidement. 0 = désactivée.",
+	"dm_learnPauseHold": "Protection de pause : maintien",
+	"dm_learnPauseUntil": "Pause si elle commence avant",
+	"dm_learnPauseBelow": "Pause si la puissance est inférieure à",
+	"dm_learnLongestPause": "Pause la plus longue d'un cycle (min)",
+	"dm_learnLoo": "Contre-vérification (chaque cycle omis)",
+	"dm_learnCurrentType": "Type d'appareil actuel",
+	"dm_detailsPauseHold": "Protection de pause : maintien",
+	"dm_detailsPauseUntil": "Pause si elle commence avant",
+	"dm_detailsPauseBelow": "Pause si la puissance est inférieure à"
 }

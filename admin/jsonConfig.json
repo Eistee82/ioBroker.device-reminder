@@ -111,7 +111,7 @@
 							"type": "text",
 							"attr": "name",
 							"title": "typeName",
-							"width": "18%",
+							"width": "15%",
 							"readOnly": false,
 							"disabled": "data.builtin === true"
 						},
@@ -119,7 +119,7 @@
 							"type": "number",
 							"attr": "startVal",
 							"title": "typeStartVal",
-							"width": "9%",
+							"width": "7%",
 							"min": 0,
 							"step": 0.05
 						},
@@ -127,7 +127,7 @@
 							"type": "number",
 							"attr": "endVal",
 							"title": "typeEndVal",
-							"width": "9%",
+							"width": "7%",
 							"min": 0,
 							"step": 0.05
 						},
@@ -135,7 +135,7 @@
 							"type": "number",
 							"attr": "standby",
 							"title": "typeStandby",
-							"width": "9%",
+							"width": "7%",
 							"min": 0,
 							"step": 0.05
 						},
@@ -143,7 +143,7 @@
 							"type": "number",
 							"attr": "startCount",
 							"title": "typeStartCount",
-							"width": "9%",
+							"width": "7%",
 							"min": 1,
 							"step": 0.5
 						},
@@ -151,7 +151,7 @@
 							"type": "number",
 							"attr": "endCount",
 							"title": "typeEndCount",
-							"width": "9%",
+							"width": "7%",
 							"min": 2,
 							"step": 1
 						},
@@ -159,7 +159,7 @@
 							"type": "select",
 							"attr": "mode",
 							"title": "typeMode",
-							"width": "12%",
+							"width": "10%",
 							"options": [
 								{
 									"label": "modeCount",
@@ -179,7 +179,7 @@
 							"type": "number",
 							"attr": "startDurationSec",
 							"title": "typeStartDuration",
-							"width": "10%",
+							"width": "8%",
 							"min": 0,
 							"hidden": "data.mode === 'count'"
 						},
@@ -187,9 +187,33 @@
 							"type": "number",
 							"attr": "endDurationSec",
 							"title": "typeEndDuration",
-							"width": "10%",
+							"width": "8%",
 							"min": 0,
 							"hidden": "data.mode === 'count'"
+						},
+						{
+							"type": "number",
+							"attr": "pauseHoldSec",
+							"title": "typePauseHold",
+							"width": "8%",
+							"min": 0,
+							"step": 1
+						},
+						{
+							"type": "number",
+							"attr": "pauseUntilSec",
+							"title": "typePauseUntil",
+							"width": "8%",
+							"min": 0,
+							"step": 1
+						},
+						{
+							"type": "number",
+							"attr": "pauseBelowVal",
+							"title": "typePauseBelow",
+							"width": "8%",
+							"min": 0,
+							"step": 0.05
 						}
 					]
 				}

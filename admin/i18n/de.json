@@ -139,7 +139,7 @@
 	"typeStartCount": "Start-Anzahl",
 	"typeStartDuration": "Startdauer (s)",
 	"typeStartVal": "Start (W)",
-	"typesHelp": "Schwellwerte je Gerätetyp. Eingebaute Typen können nicht umbenannt oder entfernt werden. Im Modus Anzahl zählen die Werte Abfrage-Ticks (siehe Allgemein).",
+	"typesHelp": "Schwellwerte je Gerätetyp. Eingebaute Typen können nicht umbenannt oder entfernt werden. Im Modus Anzahl zählen die Werte Abfrage-Ticks (siehe Allgemein). Pausenschutz (optional, 0 = aus): Eine Phase unter dem Endwert, die in den ersten „Pause, wenn sie beginnt vor“ Sekunden eines Laufs beginnt oder deren Leistung unter „Pause, wenn Leistung unter“ bleibt, zählt erst nach „Pause-Haltezeit“ Sekunden als Ende. Wird meist beim Anlernen gesetzt.",
 	"dm_learnSourceInfo": "Der Leistungs-Datenpunkt dieses Geräts wird von einem History-Adapter gespeichert. Der Adapter kann den Gerätetyp aus allen Läufen der letzten 30 Tage ableiten, statt einen neuen Lauf aufzuzeichnen.",
 	"dm_learnSource": "Anlernen aus",
 	"dm_learnSourceHistory": "History der letzten 30 Tage",
@@ -147,5 +147,18 @@
 	"dm_learnHistoryInstance": "History-Instanz",
 	"dm_learnHistorySamples": "Gespeicherte Werte",
 	"dm_learnRuns": "Gefundene Läufe",
-	"dm_learnEvalInfo": "Jeder Lauf wurde mit jedem Erkennungsmodus nachgespielt: korrekt erkannte / gefundene Läufe · mittlere Zeit bis das Ende gemeldet wird. Der empfohlene Modus ist vorausgewählt."
+	"dm_learnEvalInfo": "Jeder Lauf wurde mit jedem Erkennungsmodus nachgespielt: korrekt erkannte / gefundene Läufe · mittlere (maximale) Zeit bis das Ende gemeldet wird. Der empfohlene Modus ist vorausgewählt. Gegenprobe: Läufe, die auch erkannt worden wären, wenn dieser Lauf in der History gefehlt hätte; ist der Wert kleiner, nach weiteren Läufen erneut anlernen.",
+	"typePauseHold": "Pause-Haltezeit (s)",
+	"typePauseUntil": "Pause, wenn sie beginnt vor (s)",
+	"typePauseBelow": "Pause, wenn Leistung unter",
+	"dm_learnPauseInfo": "Pausenschutz: Eine lange Pause (z. B. Einweichen) zählt erst nach der Haltezeit als Ende, damit alle anderen Läufe das Ende schnell melden. 0 = aus.",
+	"dm_learnPauseHold": "Pausenschutz: Haltezeit",
+	"dm_learnPauseUntil": "Pause, wenn sie beginnt vor",
+	"dm_learnPauseBelow": "Pause, wenn Leistung unter",
+	"dm_learnLongestPause": "Längste Pause in einem Lauf (min)",
+	"dm_learnLoo": "Gegenprobe (je ein Lauf weggelassen)",
+	"dm_learnCurrentType": "Aktueller Gerätetyp",
+	"dm_detailsPauseHold": "Pausenschutz: Haltezeit",
+	"dm_detailsPauseUntil": "Pause, wenn sie beginnt vor",
+	"dm_detailsPauseBelow": "Pause, wenn Leistung unter"
 }

@@ -41,6 +41,12 @@ export interface DetectionSettings extends TypeThresholds {
 	startDurationSec: number;
 	/** Minimum duration in seconds below the end threshold. */
 	endDurationSec: number;
+	/** Pause protection: hold time in seconds (0 or missing = off). */
+	pauseHoldSec?: number;
+	/** Pause protection: a phase below endVal beginning within this many seconds of the start is a pause (0 = unused). */
+	pauseUntilSec?: number;
+	/** Pause protection: a phase below endVal staying below this power is a pause (0 = unused). */
+	pauseBelowVal?: number;
 }
 
 /** Additional evidence for one poll step. */

@@ -58,6 +58,9 @@ Every device uses a device type. A type holds the thresholds and the detection m
 | Standby value (W) | Power below this value counts as "off", above it as "standby" |
 | Start count / End count | Number of consecutive polls (count mode) |
 | Start duration / End duration (s) | Minimum time above the start or below the end value (time and combined mode) |
+| Pause hold (s) | Pause protection: how long a pause below the end value has to last before it counts as the end (0 = off) |
+| Pause if it starts before (s) | Pause protection: a phase below the end value that begins this early after the start is a pause (0 = unused) |
+| Pause if power below (W) | Pause protection: a phase below the end value whose power stays below this value is a pause (0 = unused) |
 
 ### Detection modes
 
@@ -72,6 +75,18 @@ An abort is a device that is switched off by hand while running. The option **Ab
 - In 3.1.2 the abort detection could not fire for most device types, because its standby buffer never reached the required length. This behaviour is kept when only **Abort detection** is on, so devices behave exactly like in 3.1.2. This is a peculiarity of the default types as well.
 - The option **Corrected abort detection** (`abortFixed`, default off) fixes the buffer length (`max(ceil(end count / 2), 2)`) so that the abort can actually fire. Use it together with **Abort detection**. By power alone a switch-off by hand cannot be told apart from a normal end below the standby value (for example a washing machine that falls to 0.5 W), so the corrected abort fires only when the **switch** of the device is off. Without a configured switch it never fires, and a normal end is always reported as finished.
 - In time mode the abort fires when the power stays below the standby value for half of the end duration.
+
+### Pause protection
+
+Some programmes pause for a long time, for example while soaking or during a pre-wash. Without pause protection the end detection has to wait longer than the longest pause, and then the finished message comes that late for **every** run. Pause protection tells such pauses apart from the real end:
+
+- A phase below the end value counts as a **pause** if it begins early in the run (before "Pause if it starts before" seconds after the start) or if its power stays below "Pause if power below". If both values are set, both have to apply.
+- A pause only counts as the end after the **pause hold** time. Every other phase below the end value is reported as the end after the end count or end duration as usual.
+- Guarantee: pause protection can only delay an end, never prevent or advance it. This applies to the abort detection as well.
+- An abort by the switch (corrected abort detection) is not delayed, because the switched-off switch is a reliable proof.
+- All three values 0 (default) = off = the 3.1.2 behaviour. A hold time without one of the two conditions has no effect.
+
+The values are usually set by [learning](#8-learning-mode); you can change them in the types table.
 
 ### Other behaviour
 
@@ -193,19 +208,41 @@ Learning derives thresholds from real runs: from the history of the power state 
 
 ### From the history
 
-If the power state is logged by a history adapter (history, SQL, InfluxDB or any other adapter that answers `getHistory`), **Learn** on the device card first offers to use the history. The default history of the system settings is preferred.
+If the power state is logged by a history adapter (history, SQL, InfluxDB or any other adapter that answers `getHistory`), **Learn** on the device card first offers to use the history. The default history of the system settings is preferred. You never choose a programme: the adapter does not tell programmes apart, the device type has to detect **every** run.
 
-- All runs of the last 30 days are cut out of the history. A run may pause for up to 30 minutes; activity of less than 5 minutes in total (e.g. a display switching on) is not a run. At least 2 runs are needed, otherwise a new run is recorded.
-- The adapter cannot tell programmes apart, so the device type has to detect **every** run: the thresholds cover the run with the longest pause.
-- Every run is replayed with all three detection modes (count, duration, combined) using the same code as the live detection. The dialog shows for each mode how many runs were detected correctly and how long it takes on average until the end is reported. The mode that detects the most runs with the fewest false starts is preselected; if several are equally reliable and their end is reported within one minute of each other, count (the 3.1.2 behaviour) wins.
-- You can change every value and the mode before saving the new custom device type.
+**Loading**
+
+- The history is read day by day, so the full 30 days arrive even from plugs that report a value every second. A shorter retention (`retention`) of the history adapter limits the period.
+- Gaps of the logger are ignored: a run during which the logger stored nothing for more than 2 hours does not count. A value that does not change (plug reports only on change) is no gap.
+- The units W and kW are supported. An energy meter (Wh/kWh) is recognised and rejected; choose the state with the current power instead.
+
+**Runs**
+
+- A run may pause for up to 30 minutes; activity of less than 5 minutes in total (e.g. a display switching on) is not a run. At least 2 runs are needed, otherwise a new run is recorded.
+- Two runs shortly after each other are split if the power between them matches the idle level after an end and clearly differs from the pauses inside runs. Otherwise they stay one run.
+- Anti-crease bursts of a dryer after the end belong to the run. The start duration or start count is chosen so that they do not start a new run.
+- A phase with slightly raised power of at least 20 minutes after the run (drying of a dishwasher) belongs to the run, a shorter one (display, door release) does not.
+- `changesMinDelta` of the history adapter is taken into account for the end value.
+
+**Optimisation**
+
+- End value and end waiting time are chosen so that every run is detected exactly once and the end is reported as early as possible. Instead of fixed factors, the shortest safe end count is searched with the real detection code.
+- If [pause protection](#pause-protection) saves at least 3 minutes on average, it is suggested. Example: a run with 22 minutes of soaking at 0 W and 0.5 W after the end. Without pause protection every run would wait more than 27 minutes for the finished message. With "Pause if power below 0.25 W" and a hold of 1670 s it comes after about one minute for all runs. If pause and idle level are both 0 W, the time decides ("Pause if it starts before 880 s"): then the end comes after about 4 minutes; only a very short programme that ends as early as a pause begins is delayed up to the hold time, but it is detected.
+- Every suggestion is replayed with the real detection code and the abort options of the device.
+
+**Dialog**
+
+- Per mode: runs detected correctly / runs found · mean (maximum) time until the end is reported. The mode that detects the most runs with the fewest false starts is preselected; if several are equally reliable and their end is reported within one minute of each other, count (the 3.1.2 behaviour) wins.
+- **Cross-check** x/y: this many runs would also have been detected if that run had been missing from the history. If it is lower than the number of runs, a programme (e.g. one with a long pause) occurred only once; learn again after more runs.
+- Comparison with the current device type over the same runs, and the longest pause in a run.
+- You can change every value, the pause protection and the mode before saving the new custom device type.
 
 ### Recording a run
 
 1. Start learning from the device card (**Learn**) or write `learning.start` of the device.
 2. Run a complete cycle of the machine. The recording stops automatically after 12 hours or 10,000 samples.
 3. Stop learning in the Device Manager or write `learning.stop`.
-4. The suggested settings are written as JSON to `learning.result` (thresholds, start duration, end duration, run duration and number of samples). The Device Manager shows them and can store them as a new custom device type.
+4. The recording is analysed with the same logic as the history, with one run. The suggested settings are written as JSON to `learning.result` (thresholds, start and end duration, run duration, number of samples, mode, result per mode and pause protection). The Device Manager shows them and can store them as a new custom device type.
 
 If fewer than 20 samples were recorded or no run is recognised, `learning.result` contains an error (`tooFewSamples` or `noRun`). `learning.active` is true while recording.
 
@@ -313,7 +350,7 @@ Device states are relative to the device object `<deviceId>`. Info states are on
 | `learning.start` | boolean | button.start | w | - | Start learning | Write true to start recording a run |
 | `learning.stop` | boolean | button.stop | w | - | Stop learning | Write true to stop recording and compute the suggestion |
 | `learning.active` | boolean | indicator | r | - | Learning active | True while a run is recorded |
-| `learning.result` | string | json | r | - | Learning result | JSON: thresholds, startDurationSec, endDurationSec, durationSec, samples (from the history also mode, runs, evaluation), or an error (tooFewSamples, noRun) |
+| `learning.result` | string | json | r | - | Learning result | JSON: thresholds, startDurationSec, endDurationSec, durationSec, samples, pauseHoldSec, pauseUntilSec, pauseBelowVal, mode, runs, evaluation (from the history also looDetected, longestPauseSec, current, gapsDropped), or an error (tooFewSamples, noRun) |
 | `lastOperationsHtml` | string | html | r | - | Last operations (HTML) | HTML table of the last runs (only if enabled in the general settings) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter connected | True when the adapter is running |
 <!-- END STATES -->

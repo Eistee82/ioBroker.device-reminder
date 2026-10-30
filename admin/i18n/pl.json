@@ -139,7 +139,7 @@
 	"typeStartCount": "Rozpocznij liczenie",
 	"typeStartDuration": "Czas rozpoczęcia (y)",
 	"typeStartVal": "Początek (W)",
-	"typesHelp": "Progi według typu urządzenia. Nie można zmienić nazwy ani usunąć typów wbudowanych. W trybie zliczania wartości zliczają znaczniki odpytywania (patrz Ogólne).",
+	"typesHelp": "Progi dla każdego typu urządzenia. Wbudowanych typów nie można zmieniać nazwy ani usuwać. W trybie liczenia wartości liczą cykle odpytywania (patrz Ogólne). Ochrona pauzy (opcjonalna, 0 = wył.): faza poniżej progu końca, która zaczyna się w pierwszych „Pauza, jeśli zaczyna się przed” sekundach cyklu lub której moc pozostaje poniżej „Pauza, jeśli moc poniżej”, liczy się jako koniec dopiero po „Czas wstrzymania pauzy” sekundach. Zwykle ustawiana przez uczenie.",
 	"dm_learnSourceInfo": "Stan mocy tego urządzenia jest zapisywany przez adapter historii. Adapter może wyznaczyć typ urządzenia ze wszystkich cykli z ostatnich 30 dni zamiast nagrywać nowy cykl.",
 	"dm_learnSource": "Ucz na podstawie",
 	"dm_learnSourceHistory": "Historia z ostatnich 30 dni",
@@ -147,5 +147,18 @@
 	"dm_learnHistoryInstance": "Instancja historii",
 	"dm_learnHistorySamples": "Zapisane wartości",
 	"dm_learnRuns": "Znalezione cykle",
-	"dm_learnEvalInfo": "Każdy cykl odtworzono w każdym trybie wykrywania: poprawnie wykryte / znalezione cykle · średni czas do zgłoszenia końca. Zalecany tryb jest wybrany."
+	"dm_learnEvalInfo": "Każdy cykl odtworzono w każdym trybie wykrywania: poprawnie wykryte / znalezione cykle · średni (maksymalny) czas do zgłoszenia końca. Zalecany tryb jest wstępnie wybrany. Kontrola krzyżowa: cykle, które zostałyby wykryte także wtedy, gdyby tego cyklu brakowało w historii; jeśli wartość jest mniejsza, naucz ponownie po kolejnych cyklach.",
+	"typePauseHold": "Czas wstrzymania pauzy (s)",
+	"typePauseUntil": "Pauza, jeśli zaczyna się przed (s)",
+	"typePauseBelow": "Pauza, jeśli moc poniżej",
+	"dm_learnPauseInfo": "Ochrona pauzy: długa pauza (np. namaczanie) liczy się jako koniec dopiero po czasie wstrzymania, dzięki czemu wszystkie inne cykle szybko zgłaszają koniec. 0 = wył.",
+	"dm_learnPauseHold": "Ochrona pauzy: wstrzymanie",
+	"dm_learnPauseUntil": "Pauza, jeśli zaczyna się przed",
+	"dm_learnPauseBelow": "Pauza, jeśli moc poniżej",
+	"dm_learnLongestPause": "Najdłuższa pauza w cyklu (min)",
+	"dm_learnLoo": "Kontrola krzyżowa (pominięto po jednym cyklu)",
+	"dm_learnCurrentType": "Bieżący typ urządzenia",
+	"dm_detailsPauseHold": "Ochrona pauzy: wstrzymanie",
+	"dm_detailsPauseUntil": "Pauza, jeśli zaczyna się przed",
+	"dm_detailsPauseBelow": "Pauza, jeśli moc poniżej"
 }

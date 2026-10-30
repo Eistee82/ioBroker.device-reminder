@@ -5,7 +5,7 @@
 	"tabDevices": "Devices",
 	"introText": "Device Reminder detects when household devices start and finish and notifies you.",
 	"placeholderText": "This section is configured in a later step.",
-	"typesHelp": "Thresholds per device type. Built-in types cannot be renamed or removed. In count mode the values count polling ticks (see General).",
+	"typesHelp": "Thresholds per device type. Built-in types cannot be renamed or removed. In count mode the values count polling ticks (see General). Pause protection (optional, 0 = off): a phase below the end threshold that starts within the first \"Pause if it starts before\" seconds of a run, or whose power stays below \"Pause if power below\", only counts as the end after \"Pause hold\" seconds. Usually set by learning.",
 	"typeName": "Name",
 	"typeStartVal": "Start (W)",
 	"typeEndVal": "End (W)",
@@ -147,5 +147,18 @@
 	"dm_learnHistoryInstance": "History instance",
 	"dm_learnHistorySamples": "Stored values",
 	"dm_learnRuns": "Runs found",
-	"dm_learnEvalInfo": "Every run was replayed with each detection mode: runs detected correctly / runs found · mean time until the end is reported. The recommended mode is preselected."
+	"dm_learnEvalInfo": "Every run was replayed with each detection mode: runs detected correctly / runs found · mean (max) time until the end is reported. The recommended mode is preselected. Cross-check: runs that would also have been detected if that run had been missing from the history; if it is lower, learn again after more runs.",
+	"typePauseHold": "Pause hold (s)",
+	"typePauseUntil": "Pause if it starts before (s)",
+	"typePauseBelow": "Pause if power below",
+	"dm_learnPauseInfo": "Pause protection: a long pause (e.g. soaking) only counts as the end after the hold time, so every other run reports the end quickly. 0 = off.",
+	"dm_learnPauseHold": "Pause protection: hold",
+	"dm_learnPauseUntil": "Pause if it starts before",
+	"dm_learnPauseBelow": "Pause if power below",
+	"dm_learnLongestPause": "Longest pause in a run (min)",
+	"dm_learnLoo": "Cross-check (each run left out)",
+	"dm_learnCurrentType": "Current device type",
+	"dm_detailsPauseHold": "Pause protection: hold",
+	"dm_detailsPauseUntil": "Pause if it starts before",
+	"dm_detailsPauseBelow": "Pause if power below"
 }

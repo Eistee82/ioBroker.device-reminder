@@ -32,6 +32,12 @@ export interface DeviceTypeConfig extends TypeThresholds {
 	startDurationSec: number;
 	/** End duration (seconds). */
 	endDurationSec: number;
+	/** Pause protection: hold time in seconds before a pause counts as the end (0 = off). */
+	pauseHoldSec: number;
+	/** Pause protection: a phase below endVal beginning within this many seconds of the start is a pause (0 = unused). */
+	pauseUntilSec: number;
+	/** Pause protection: a phase below endVal staying below this power is a pause (0 = unused). */
+	pauseBelowVal: number;
 }
 
 /** Recipient config configuration. */
@@ -214,6 +220,9 @@ function builtinType(
 		mode: "count",
 		startDurationSec: 60,
 		endDurationSec: 300,
+		pauseHoldSec: 0,
+		pauseUntilSec: 0,
+		pauseBelowVal: 0,
 	};
 }
 
@@ -230,6 +239,9 @@ function customType(index: number): DeviceTypeConfig {
 		mode: "count",
 		startDurationSec: 60,
 		endDurationSec: 300,
+		pauseHoldSec: 0,
+		pauseUntilSec: 0,
+		pauseBelowVal: 0,
 	};
 }
 
@@ -313,6 +325,9 @@ function normalizeType(raw: unknown, index: number, id: string, warnings: string
 		mode,
 		startDurationSec: Math.max(0, num(raw.startDurationSec, 60)),
 		endDurationSec: Math.max(0, num(raw.endDurationSec, 300)),
+		pauseHoldSec: Math.max(0, num(raw.pauseHoldSec, 0)),
+		pauseUntilSec: Math.max(0, num(raw.pauseUntilSec, 0)),
+		pauseBelowVal: Math.max(0, num(raw.pauseBelowVal, 0)),
 	};
 }
 

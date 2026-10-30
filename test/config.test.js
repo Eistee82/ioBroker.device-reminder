@@ -118,6 +118,24 @@ describe("configuration model", () => {
 			assert.deepStrictEqual(res.idPatch, {});
 		});
 
+		it("normalizes the pause protection fields (default 0 = off)", () => {
+			const pkg = JSON.parse(fs.readFileSync(new URL("../io-package.json", import.meta.url), "utf8"));
+			const pause = t => [t.pauseHoldSec, t.pauseUntilSec, t.pauseBelowVal];
+			for (const t of [...DEFAULT_TYPES, ...pkg.native.types]) {
+				assert.deepStrictEqual(pause(t), [0, 0, 0], t.id);
+			}
+			const { config } = normalizeInstanceConfig({
+				types: [
+					{ id: "a", name: "A" },
+					{ id: "b", name: "B", pauseHoldSec: -5, pauseUntilSec: "x", pauseBelowVal: -1 },
+					{ id: "c", name: "C", pauseHoldSec: "12", pauseUntilSec: 900, pauseBelowVal: "0.25" },
+				],
+			});
+			assert.deepStrictEqual(pause(findType(config, "a")), [0, 0, 0]);
+			assert.deepStrictEqual(pause(findType(config, "b")), [0, 0, 0]);
+			assert.deepStrictEqual(pause(findType(config, "c")), [12, 900, 0.25]);
+		});
+
 		it("keeps standby 0", () => {
 			const { config } = normalizeInstanceConfig({ types: [{ id: "x", name: "X", standby: 0 }] });
 			assert.strictEqual(findType(config, "x").standby, 0);

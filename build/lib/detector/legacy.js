@@ -1,3 +1,4 @@
+import { PauseGuard } from "./pauseGuard.js";
 export function legacyAverage(values) {
     let sum = 0;
     for (const value of values) {
@@ -17,6 +18,7 @@ export class LegacyDetector {
     abortNeedsSwitch;
     minStartMs;
     minEndMs;
+    guard;
     isStarted = false;
     aboveStartSince = null;
     belowEndSince = null;
@@ -38,6 +40,7 @@ export class LegacyDetector {
         this.abortNeedsSwitch = options.abortFixed === true;
         this.minStartMs = options.minStartMs ?? 0;
         this.minEndMs = options.minEndMs ?? 0;
+        this.guard = new PauseGuard(options.pauseGuard ?? {});
     }
     get started() {
         return this.isStarted;
@@ -55,6 +58,7 @@ export class LegacyDetector {
         this.averages = { start: 0, end: 0, standby: 0 };
         this.aboveStartSince = null;
         this.belowEndSince = null;
+        this.guard.reset();
     }
     tick(power, now, hints) {
         const out = { events: [], status: null, average: null };
@@ -76,6 +80,7 @@ export class LegacyDetector {
         else {
             this.belowEndSince = null;
         }
+        this.guard.observe(power, this.belowEndSince);
     }
     startDurationMet(now) {
         return this.minStartMs <= 0 || (this.aboveStartSince !== null && now - this.aboveStartSince >= this.minStartMs);
@@ -123,7 +128,8 @@ export class LegacyDetector {
             this.isStarted &&
             (!this.abortNeedsSwitch || switchOff) &&
             avg.standby < this.standbyValue &&
-            this.buffers.standby.length >= this.valCancel) {
+            this.buffers.standby.length >= this.valCancel &&
+            (this.abortNeedsSwitch || this.guard.met(now))) {
             out.events.push("aborted");
             out.status = "off";
             out.average = avg.standby;
@@ -135,6 +141,7 @@ export class LegacyDetector {
             !this.isStarted &&
             this.startDurationMet(now)) {
             this.isStarted = true;
+            this.guard.onStarted(now);
             out.events.push("started");
             out.status = "running";
         }
@@ -145,7 +152,8 @@ export class LegacyDetector {
         else if (this.isStarted &&
             avg.end < this.endValue &&
             this.buffers.end.length >= this.endCount * (2 / 3) &&
-            this.endDurationMet(now)) {
+            this.endDurationMet(now) &&
+            this.guard.met(now)) {
             out.events.push("finished");
             this.isStarted = false;
             if (avg.end < this.standbyValue) {

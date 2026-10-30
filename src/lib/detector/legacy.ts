@@ -1,3 +1,5 @@
+import { PauseGuard } from "./pauseGuard.js";
+import type { PauseGuardSettings } from "./pauseGuard.js";
 import type { Detector, DetectorEvent, DeviceStatus, TickHints, TickResult, TypeThresholds } from "./types.js";
 
 export type { DetectorEvent, DeviceStatus, TickResult, TypeThresholds } from "./types.js";
@@ -17,6 +19,8 @@ export interface LegacyOptions {
 	minStartMs?: number;
 	/** Combined mode: "finished" additionally needs power < endVal for at least this many ms (0 = off). */
 	minEndMs?: number;
+	/** Pause protection (optional, off by default): delays the end during a pause inside a run. */
+	pauseGuard?: PauseGuardSettings;
 }
 
 type BufferName = "start" | "end" | "standby";
@@ -69,6 +73,7 @@ export class LegacyDetector implements Detector {
 	private readonly abortNeedsSwitch: boolean;
 	private readonly minStartMs: number;
 	private readonly minEndMs: number;
+	private readonly guard: PauseGuard;
 	private isStarted = false;
 	/** Timestamp since which the power is continuously >= startVal, otherwise null. */
 	private aboveStartSince: number | null = null;
@@ -97,6 +102,7 @@ export class LegacyDetector implements Detector {
 		this.abortNeedsSwitch = options.abortFixed === true;
 		this.minStartMs = options.minStartMs ?? 0;
 		this.minEndMs = options.minEndMs ?? 0;
+		this.guard = new PauseGuard(options.pauseGuard ?? {});
 	}
 
 	/** Whether a run is in progress. */
@@ -120,6 +126,7 @@ export class LegacyDetector implements Detector {
 		this.averages = { start: 0, end: 0, standby: 0 };
 		this.aboveStartSince = null;
 		this.belowEndSince = null;
+		this.guard.reset();
 	}
 
 	/**
@@ -154,6 +161,7 @@ export class LegacyDetector implements Detector {
 		} else {
 			this.belowEndSince = null;
 		}
+		this.guard.observe(power, this.belowEndSince);
 	}
 
 	/**
@@ -238,7 +246,8 @@ export class LegacyDetector implements Detector {
 			this.isStarted &&
 			(!this.abortNeedsSwitch || switchOff) &&
 			avg.standby < this.standbyValue &&
-			this.buffers.standby.length >= this.valCancel
+			this.buffers.standby.length >= this.valCancel &&
+			(this.abortNeedsSwitch || this.guard.met(now))
 		) {
 			out.events.push("aborted");
 			out.status = "off";
@@ -255,6 +264,7 @@ export class LegacyDetector implements Detector {
 			this.startDurationMet(now)
 		) {
 			this.isStarted = true;
+			this.guard.onStarted(now);
 			out.events.push("started");
 			out.status = "running";
 		}
@@ -267,7 +277,8 @@ export class LegacyDetector implements Detector {
 			this.isStarted &&
 			avg.end < this.endValue &&
 			this.buffers.end.length >= this.endCount * (2 / 3) &&
-			this.endDurationMet(now)
+			this.endDurationMet(now) &&
+			this.guard.met(now)
 		) {
 			// end detection
 			out.events.push("finished");

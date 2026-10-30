@@ -1,3 +1,4 @@
+import { PauseGuard } from "./pauseGuard.js";
 export class TimedDetector {
     startValue;
     endValue;
@@ -5,6 +6,7 @@ export class TimedDetector {
     startMs;
     endMs;
     abort;
+    guard;
     isStarted = false;
     aboveStartSince = null;
     belowEndSince = null;
@@ -16,6 +18,7 @@ export class TimedDetector {
         this.startMs = Math.max(settings.startDurationSec, 0) * 1000;
         this.endMs = Math.max(settings.endDurationSec, 0) * 1000;
         this.abort = options.abort;
+        this.guard = new PauseGuard(settings);
     }
     get started() {
         return this.isStarted;
@@ -25,6 +28,7 @@ export class TimedDetector {
         this.aboveStartSince = null;
         this.belowEndSince = null;
         this.belowStandbySince = null;
+        this.guard.reset();
     }
     feed(power, now) {
         return this.step(power, now);
@@ -39,6 +43,7 @@ export class TimedDetector {
         if (!this.isStarted) {
             if (this.elapsed(this.aboveStartSince, now, this.startMs)) {
                 this.isStarted = true;
+                this.guard.onStarted(now);
                 events.push("started");
                 status = "running";
             }
@@ -46,12 +51,12 @@ export class TimedDetector {
                 status = this.idleStatus(power);
             }
         }
-        else if (this.abort && this.elapsed(this.belowStandbySince, now, this.endMs / 2)) {
+        else if (this.abort && this.elapsed(this.belowStandbySince, now, this.endMs / 2) && this.guard.met(now)) {
             this.isStarted = false;
             events.push("aborted");
             status = "off";
         }
-        else if (this.elapsed(this.belowEndSince, now, this.endMs)) {
+        else if (this.elapsed(this.belowEndSince, now, this.endMs) && this.guard.met(now)) {
             this.isStarted = false;
             events.push("finished");
             status = power < this.standbyValue ? "off" : "standby";
@@ -66,6 +71,7 @@ export class TimedDetector {
         this.aboveStartSince = power >= this.startValue ? (this.aboveStartSince ?? now) : null;
         this.belowEndSince = power < this.endValue ? (this.belowEndSince ?? now) : null;
         this.belowStandbySince = power < this.standbyValue ? (this.belowStandbySince ?? now) : null;
+        this.guard.observe(power, this.belowEndSince);
     }
     elapsed(since, now, durationMs) {
         return since !== null && now - since >= durationMs;

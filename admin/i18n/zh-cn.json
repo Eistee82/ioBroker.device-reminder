@@ -139,7 +139,7 @@
 	"typeStartCount": "开始计数",
 	"typeStartDuration": "启动持续时间（秒）",
 	"typeStartVal": "开始（W）",
-	"typesHelp": "每个设备类型的阈值。内置类型无法重命名或删除。在计数模式下，值对轮询周期进行计数（请参阅“概述”）。",
+	"typesHelp": "每种设备类型的阈值。内置类型不能重命名或删除。在计数模式下，这些值按轮询周期计数（见“常规”）。暂停保护（可选，0 = 关闭）：低于结束阈值的阶段，如果在运行开始后的“若在此之前开始则为暂停”秒内开始，或其功率一直低于“若功率低于此值则为暂停”，则只有在“暂停保持时间”秒后才算作结束。通常由学习设置。",
 	"dm_learnSourceInfo": "此设备的功率状态由历史适配器保存。适配器可以根据最近 30 天的所有运行推导设备类型，而无需录制新的运行。",
 	"dm_learnSource": "学习来源",
 	"dm_learnSourceHistory": "最近 30 天的历史",
@@ -147,5 +147,18 @@
 	"dm_learnHistoryInstance": "历史实例",
 	"dm_learnHistorySamples": "已存储的值",
 	"dm_learnRuns": "找到的运行",
-	"dm_learnEvalInfo": "已用每种检测模式重放每次运行：正确检测的运行数 / 找到的运行数 · 报告结束的平均时间。已预选推荐模式。"
+	"dm_learnEvalInfo": "每次运行都用每种识别模式回放过：正确识别的运行 / 找到的运行 · 报告结束前的平均（最长）时间。推荐的模式已预先选中。交叉检验：即使历史中缺少该次运行也能识别的运行数；如果数值较小，请在更多运行后重新学习。",
+	"typePauseHold": "暂停保持时间 (s)",
+	"typePauseUntil": "若在此之前开始则为暂停 (s)",
+	"typePauseBelow": "若功率低于此值则为暂停",
+	"dm_learnPauseInfo": "暂停保护：长时间暂停（例如浸泡）只有在保持时间之后才算作结束，因此其他所有运行都能快速报告结束。0 = 关闭。",
+	"dm_learnPauseHold": "暂停保护：保持时间",
+	"dm_learnPauseUntil": "若在此之前开始则为暂停",
+	"dm_learnPauseBelow": "若功率低于此值则为暂停",
+	"dm_learnLongestPause": "运行中最长的暂停 (min)",
+	"dm_learnLoo": "交叉检验（每次去掉一次运行）",
+	"dm_learnCurrentType": "当前设备类型",
+	"dm_detailsPauseHold": "暂停保护：保持时间",
+	"dm_detailsPauseUntil": "若在此之前开始则为暂停",
+	"dm_detailsPauseBelow": "若功率低于此值则为暂停"
 }

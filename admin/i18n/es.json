@@ -139,7 +139,7 @@
 	"typeStartCount": "Iniciar recuento",
 	"typeStartDuration": "Duración de inicio (s)",
 	"typeStartVal": "Inicio (W)",
-	"typesHelp": "Umbrales por tipo de dispositivo. Los tipos integrados no se pueden cambiar de nombre ni eliminar. En el modo de conteo, los valores cuentan los ticks de sondeo (consulte General).",
+	"typesHelp": "Umbrales por tipo de dispositivo. Los tipos integrados no se pueden renombrar ni eliminar. En el modo de recuento los valores cuentan ciclos de sondeo (ver General). Protección de pausa (opcional, 0 = desactivada): una fase por debajo del umbral de fin que empieza en los primeros \"Pausa si empieza antes de\" segundos de un ciclo, o cuya potencia se mantiene por debajo de \"Pausa si la potencia es inferior a\", solo cuenta como fin tras \"Retención de pausa\" segundos. Normalmente la establece el aprendizaje.",
 	"dm_learnSourceInfo": "El estado de potencia de este dispositivo lo guarda un adaptador de historial. El adaptador puede derivar el tipo de dispositivo de todos los ciclos de los últimos 30 días en lugar de grabar un ciclo nuevo.",
 	"dm_learnSource": "Aprender de",
 	"dm_learnSourceHistory": "Historial de los últimos 30 días",
@@ -147,5 +147,18 @@
 	"dm_learnHistoryInstance": "Instancia de historial",
 	"dm_learnHistorySamples": "Valores guardados",
 	"dm_learnRuns": "Ciclos encontrados",
-	"dm_learnEvalInfo": "Cada ciclo se reprodujo con cada modo de detección: ciclos detectados correctamente / ciclos encontrados · tiempo medio hasta que se informa del final. El modo recomendado está preseleccionado."
+	"dm_learnEvalInfo": "Cada ciclo se reprodujo con cada modo de detección: ciclos detectados correctamente / ciclos encontrados · tiempo medio (máximo) hasta que se avisa del fin. El modo recomendado está preseleccionado. Comprobación cruzada: ciclos que también se habrían detectado si ese ciclo hubiera faltado en el historial; si es menor, vuelve a aprender tras más ciclos.",
+	"typePauseHold": "Retención de pausa (s)",
+	"typePauseUntil": "Pausa si empieza antes de (s)",
+	"typePauseBelow": "Pausa si la potencia es inferior a",
+	"dm_learnPauseInfo": "Protección de pausa: una pausa larga (p. ej. remojo) solo cuenta como fin tras el tiempo de retención, así todos los demás ciclos avisan del fin rápidamente. 0 = desactivada.",
+	"dm_learnPauseHold": "Protección de pausa: retención",
+	"dm_learnPauseUntil": "Pausa si empieza antes de",
+	"dm_learnPauseBelow": "Pausa si la potencia es inferior a",
+	"dm_learnLongestPause": "Pausa más larga en un ciclo (min)",
+	"dm_learnLoo": "Comprobación cruzada (cada ciclo omitido)",
+	"dm_learnCurrentType": "Tipo de dispositivo actual",
+	"dm_detailsPauseHold": "Protección de pausa: retención",
+	"dm_detailsPauseUntil": "Pausa si empieza antes de",
+	"dm_detailsPauseBelow": "Pausa si la potencia es inferior a"
 }

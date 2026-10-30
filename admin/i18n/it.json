@@ -139,7 +139,7 @@
 	"typeStartCount": "Inizia il conteggio",
 	"typeStartDuration": "Durata inizio (s)",
 	"typeStartVal": "Inizio (W)",
-	"typesHelp": "Soglie per tipo di dispositivo. I tipi incorporati non possono essere rinominati o rimossi. Nella modalità conteggio i valori contano i tick del polling (vedi Generale).",
+	"typesHelp": "Soglie per tipo di dispositivo. I tipi integrati non possono essere rinominati o rimossi. In modalità conteggio i valori contano i cicli di interrogazione (vedi Generale). Protezione pausa (facoltativa, 0 = disattivata): una fase sotto la soglia di fine che inizia entro i primi \"Pausa se inizia prima di\" secondi di un ciclo, o la cui potenza resta sotto \"Pausa se la potenza è inferiore a\", conta come fine solo dopo \"Tenuta pausa\" secondi. Di solito impostata dall'apprendimento.",
 	"dm_learnSourceInfo": "Lo stato di potenza di questo dispositivo viene salvato da un adattatore di cronologia. L'adattatore può ricavare il tipo di dispositivo da tutti i cicli degli ultimi 30 giorni invece di registrare un nuovo ciclo.",
 	"dm_learnSource": "Apprendi da",
 	"dm_learnSourceHistory": "Cronologia degli ultimi 30 giorni",
@@ -147,5 +147,18 @@
 	"dm_learnHistoryInstance": "Istanza della cronologia",
 	"dm_learnHistorySamples": "Valori salvati",
 	"dm_learnRuns": "Cicli trovati",
-	"dm_learnEvalInfo": "Ogni ciclo è stato riprodotto con ogni modalità di rilevamento: cicli rilevati correttamente / cicli trovati · tempo medio fino alla segnalazione della fine. La modalità consigliata è preselezionata."
+	"dm_learnEvalInfo": "Ogni ciclo è stato riprodotto con ogni modalità di rilevamento: cicli rilevati correttamente / cicli trovati · tempo medio (massimo) fino alla segnalazione della fine. La modalità consigliata è preselezionata. Controprova: cicli che sarebbero stati rilevati anche se quel ciclo fosse mancato nella cronologia; se il valore è inferiore, ripeti l'apprendimento dopo altri cicli.",
+	"typePauseHold": "Tenuta pausa (s)",
+	"typePauseUntil": "Pausa se inizia prima di (s)",
+	"typePauseBelow": "Pausa se la potenza è inferiore a",
+	"dm_learnPauseInfo": "Protezione pausa: una pausa lunga (ad es. ammollo) conta come fine solo dopo il tempo di tenuta, così tutti gli altri cicli segnalano subito la fine. 0 = disattivata.",
+	"dm_learnPauseHold": "Protezione pausa: tenuta",
+	"dm_learnPauseUntil": "Pausa se inizia prima di",
+	"dm_learnPauseBelow": "Pausa se la potenza è inferiore a",
+	"dm_learnLongestPause": "Pausa più lunga in un ciclo (min)",
+	"dm_learnLoo": "Controprova (ogni ciclo escluso)",
+	"dm_learnCurrentType": "Tipo di dispositivo attuale",
+	"dm_detailsPauseHold": "Protezione pausa: tenuta",
+	"dm_detailsPauseUntil": "Pausa se inizia prima di",
+	"dm_detailsPauseBelow": "Pausa se la potenza è inferiore a"
 }

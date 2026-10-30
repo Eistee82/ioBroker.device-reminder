@@ -286,7 +286,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "dryer",
@@ -299,7 +302,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "dishwasher",
@@ -312,7 +318,10 @@
         "standby": 0.5,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom1",
@@ -325,7 +334,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom2",
@@ -338,7 +350,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom3",
@@ -351,7 +366,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom4",
@@ -364,7 +382,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom5",
@@ -377,7 +398,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom6",
@@ -390,7 +414,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom7",
@@ -403,7 +430,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom8",
@@ -416,7 +446,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom9",
@@ -429,7 +462,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       },
       {
         "id": "custom10",
@@ -442,7 +478,10 @@
         "standby": 1,
         "mode": "count",
         "startDurationSec": 60,
-        "endDurationSec": 300
+        "endDurationSec": 300,
+        "pauseHoldSec": 0,
+        "pauseUntilSec": 0,
+        "pauseBelowVal": 0
       }
     ],
     "recipients": [],

@@ -31,6 +31,9 @@ function builtinType(id, name, startVal, endVal, standby, startCount, endCount) 
         mode: "count",
         startDurationSec: 60,
         endDurationSec: 300,
+        pauseHoldSec: 0,
+        pauseUntilSec: 0,
+        pauseBelowVal: 0,
     };
 }
 function customType(index) {
@@ -46,6 +49,9 @@ function customType(index) {
         mode: "count",
         startDurationSec: 60,
         endDurationSec: 300,
+        pauseHoldSec: 0,
+        pauseUntilSec: 0,
+        pauseBelowVal: 0,
     };
 }
 export const DEFAULT_TYPES = [
@@ -117,6 +123,9 @@ function normalizeType(raw, index, id, warnings) {
         mode,
         startDurationSec: Math.max(0, num(raw.startDurationSec, 60)),
         endDurationSec: Math.max(0, num(raw.endDurationSec, 300)),
+        pauseHoldSec: Math.max(0, num(raw.pauseHoldSec, 0)),
+        pauseUntilSec: Math.max(0, num(raw.pauseUntilSec, 0)),
+        pauseBelowVal: Math.max(0, num(raw.pauseBelowVal, 0)),
     };
 }
 function normalizeRecipient(raw, index, id, warnings) {

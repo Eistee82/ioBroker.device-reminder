@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
-import { ReminderDeviceManagement } from "../build/lib/deviceManagement.js";
+import { buildLearnSchema, parseLearnForm, ReminderDeviceManagement } from "../build/lib/deviceManagement.js";
 import { ensureDeviceObjects } from "../build/lib/deviceObjects.js";
 import { Notifier } from "../build/lib/notifier.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
@@ -133,6 +133,7 @@ function createFakeAdapter(host, inst) {
 			adapter.extendedForeign.push({ id, obj });
 		},
 		instanceConfig: inst,
+		setTimeout: (cb, ms) => setTimeout(cb, ms),
 	};
 	// own states written by the runtime are visible through getStateAsync
 	const setOwnState = host.setOwnState.bind(host);
@@ -146,7 +147,7 @@ function createFakeAdapter(host, inst) {
 function setup(opts = {}) {
 	const host = createFakeHost({ objects: { [POWER]: "number" } });
 	const inst = normalizeInstanceConfig({
-		types: [testType],
+		types: opts.types ?? [testType],
 		recipients: [
 			{ id: "tg", name: "Telegram", enabled: true, kind: "telegram", instance: "telegram.0" },
 			{ id: "tg2", name: "Telegram 2", enabled: true, kind: "telegram", instance: "telegram.1" },
@@ -204,8 +205,16 @@ function fakeAction(over = {}) {
 			return answers.shift();
 		},
 		progress: [],
-		openProgress: async title => {
-			const dialog = { title, closed: false, update: async () => {}, close: async () => (dialog.closed = true) };
+		openProgress: async (title, options) => {
+			const dialog = {
+				title,
+				closed: false,
+				values: [options?.value],
+				update: async u => {
+					dialog.values.push(u.value);
+				},
+				close: async () => (dialog.closed = true),
+			};
 			forms.progress = dialog;
 			return dialog;
 		},
@@ -656,18 +665,34 @@ describe("deviceManagement", () => {
 		 *
 		 * @param {object} ctx test context
 		 * @param {{ ts: number, val: number }[]} points stored values
+		 * @param {object} [common] additional common properties of the power state
 		 */
-		function withHistory(ctx, points) {
+		function withHistory(ctx, points, common = {}) {
 			ctx.adapter.foreign.set(POWER, {
 				type: "state",
-				common: { type: "number", role: "value.power", custom: { "history.0": { enabled: true } } },
+				common: {
+					type: "number",
+					role: "value.power",
+					unit: "W",
+					custom: { "history.0": { enabled: true } },
+					...common,
+				},
 				native: {},
 			});
 			ctx.adapter.foreign.set("system.adapter.history.0", { common: { getHistory: true } });
 			ctx.adapter.getForeignStateAsync = async id => ({ val: id === "system.adapter.history.0.alive" });
+			// the stored values end two hours ago
+			const shift = points.length > 0 ? Date.now() - 2 * 3_600_000 - points.at(-1).ts : 0;
+			const stored = points.map(p => ({ ts: p.ts + shift, val: p.val }));
+			if (stored.length > 0) {
+				// idle before the first run (a run right after the first stored value counts as incomplete)
+				stored.unshift({ ts: stored[0].ts - 3_600_000, val: 0.5 });
+			}
+			ctx.historyQueries = [];
 			ctx.adapter.getHistoryAsync = async (id, options) => {
 				ctx.historyQuery = { id, options };
-				return { result: points };
+				ctx.historyQueries.push(options);
+				return { result: stored.filter(p => p.ts >= options.start && p.ts <= options.end) };
 			};
 			ctx.adapter.setStateAsync = async (id, val) => ctx.adapter.states.set(id, val);
 		}
@@ -697,13 +722,68 @@ describe("deviceManagement", () => {
 			const dialog = action.forms[1];
 			assert.strictEqual(dialog.options.data.runs, 3);
 			assert.strictEqual(dialog.options.data.mode, "count");
-			assert.match(dialog.options.data.eval_count, /^3\/3 · \d+ min$/);
+			assert.match(dialog.options.data.eval_count, /^3\/3 · \d+ min \(max \d+ min\)$/);
 			assert.ok(dialog.schema.items.mode, "the detection mode can be chosen");
+			assert.strictEqual(dialog.options.data.looText, "2/3");
+			assert.ok(dialog.options.data.longestPauseMin >= 20);
+			assert.ok(dialog.options.data.pauseHoldSec > 0, "pause protection is suggested");
+			assert.match(dialog.options.data.eval_current, /^\d\/3/);
+			assert.ok(dialog.schema.items.eval_current);
+			const values = action.forms.progress.values;
+			assert.strictEqual(values[0], 0);
+			assert.strictEqual(values.at(-1), 100);
+			assert.ok(
+				values.every((v, i) => i === 0 || v >= values[i - 1]),
+				`progress ${values}`,
+			);
 			const added = ctx.adapter.extendedForeign[0].obj.native.types.at(-1);
 			assert.strictEqual(added.mode, "timed", "the chosen mode is stored");
 			assert.strictEqual(added.endCount, 200);
 			assert.notStrictEqual(ctx.host.own("trockner.learning.active"), true, "nothing was recorded");
 			assert.ok(JSON.parse(ctx.adapter.states.get("trockner.learning.result")).runs === 3);
+		});
+
+		it("rejects an energy meter and records nothing", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner");
+			withHistory(ctx, historyOf([washingMachine, washingMachine]), { unit: "kWh" });
+			const [info] = await load(ctx);
+			const action = fakeAction({ forms: [{ source: "history" }] });
+			await actionOf(info, "learn").handler("trockner", action);
+			assert.ok(action.messages[0].en.includes("energy meter"));
+			assert.strictEqual(ctx.historyQueries.length, 0);
+			assert.notStrictEqual(ctx.host.own("trockner.learning.active"), true);
+		});
+
+		it("offers the pause protection and the cross-check in the dialog", () => {
+			const items = buildLearnSchema(true, "kW", true).items;
+			for (const key of ["pauseHoldSec", "pauseUntilSec", "pauseBelowVal", "looText", "longestPauseMin"]) {
+				assert.ok(items[key], key);
+			}
+			assert.strictEqual(items.endVal.unit, "kW");
+			assert.ok(items.eval_current);
+			assert.strictEqual(buildLearnSchema(true).items.eval_current, undefined);
+			assert.strictEqual(buildLearnSchema(false).items.looText, undefined);
+		});
+
+		it("takes the pause protection from the dialog and rejects negative values", () => {
+			const form = {
+				name: "W",
+				startVal: 20,
+				endVal: 3,
+				standby: 1,
+				startCount: 2,
+				endCount: 4,
+				startDurationSec: 1,
+				endDurationSec: 1,
+			};
+			assert.deepStrictEqual(
+				[parseLearnForm(form).type.pauseHoldSec, parseLearnForm(form).type.pauseBelowVal],
+				[0, 0],
+			);
+			const { type } = parseLearnForm({ ...form, pauseHoldSec: "1700", pauseUntilSec: 0, pauseBelowVal: 0.25 });
+			assert.deepStrictEqual([type.pauseHoldSec, type.pauseUntilSec, type.pauseBelowVal], [1700, 0, 0.25]);
+			assert.ok(parseLearnForm({ ...form, pauseHoldSec: -1 }).error);
 		});
 
 		it("records a new run when chosen instead of the history", async () => {
@@ -778,6 +858,16 @@ describe("deviceManagement", () => {
 			assert.ok(values.some(i => i.label === "dm_detailsStartVal" && i.data === 30 && i.unit === "W"));
 			assert.ok(values.some(i => i.label === "dm_detailsReminderInterval" && i.data === 15));
 			assert.ok(values.some(i => i.label === "dm_detailsReminderMax" && i.data === 4));
+			assert.ok(!values.some(i => i.label === "dm_detailsPauseHold"), "no pause protection rows when off");
+		});
+
+		it("shows the pause protection of the type when it is on", async () => {
+			const ctx = setup({ types: [{ ...testType, pauseHoldSec: 1700, pauseBelowVal: 0.25 }] });
+			await addDevice(ctx, "trockner");
+			const details = await ctx.dm.getDeviceDetails("trockner");
+			const values = Object.values(details.schema.items).filter(i => i.type === "staticInfo");
+			assert.ok(values.some(i => i.label === "dm_detailsPauseHold" && i.data === 1700));
+			assert.ok(values.some(i => i.label === "dm_detailsPauseBelow" && i.data === 0.25));
 		});
 
 		it("tolerates a broken lastOperations state and an unknown type", async () => {

@@ -1,5 +1,8 @@
 import type { DetectionMode, TypeThresholds } from "./detector/types.js";
-import type { ModeEvaluation } from "./historyLearning.js";
+import type { AnalyzeOptions } from "./learn/analyze.js";
+import { analyzeTicks } from "./learn/analyze.js";
+import type { ModeEvaluation } from "./learn/replay.js";
+import { fromPoints } from "./learn/ticks.js";
 
 /** One recorded power sample. */
 export interface LearningSample {
@@ -21,12 +24,26 @@ export interface LearningSuggestion {
 	durationSec: number;
 	/** Number of samples used. */
 	samples: number;
-	/** Recommended detection mode (history analysis; a recording suggests the count mode). */
+	/** Pause protection: hold time in seconds (0 = off). */
+	pauseHoldSec: number;
+	/** Pause protection: a phase beginning within this many seconds of the start is a pause (0 = unused). */
+	pauseUntilSec: number;
+	/** Pause protection: a phase staying below this power is a pause (0 = unused). */
+	pauseBelowVal: number;
+	/** Recommended detection mode. */
 	mode?: DetectionMode;
-	/** Number of runs found in the history. */
+	/** Number of runs found. */
 	runs?: number;
-	/** Result of every detection mode over the runs of the history. */
+	/** Result of every detection mode over the runs. */
 	evaluation?: ModeEvaluation[];
+	/** Cross-check: runs that would also be detected if they had been missing from the history. */
+	looDetected?: number;
+	/** Longest pause inside a run (s). */
+	longestPauseSec?: number;
+	/** Result of the current device type over the same runs. */
+	current?: ModeEvaluation;
+	/** Runs and spikes dropped because of gaps in the history. */
+	gapsDropped?: number;
 }
 
 const MAX_DURATION_MS = 12 * 60 * 60 * 1000;
@@ -91,64 +108,29 @@ export class LearningRecorder {
 	}
 }
 
-function median(values: number[]): number {
-	const sorted = [...values].sort((a, b) => a - b);
-	const mid = Math.floor(sorted.length / 2);
-	return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-function round2(v: number): number {
-	return Math.round(v * 100) / 100;
-}
-
 /**
- * Derive type settings from a recorded run.
+ * Derive type settings from a recorded run with the same analysis as the history (one run).
  *
  * @param samples - Recorded samples
  * @param pollIntervalSec - Poll interval in seconds
+ * @param opts - Device options
  */
-export function suggestType(
+export async function suggestType(
 	samples: LearningSample[],
 	pollIntervalSec: number,
-): LearningSuggestion | { error: "tooFewSamples" | "noRun" } {
+	opts: Pick<AnalyzeOptions, "abort" | "abortFixed" | "yieldFn"> = {},
+): Promise<LearningSuggestion | { error: "tooFewSamples" | "noRun" }> {
 	if (samples.length < 20) {
 		return { error: "tooFewSamples" };
 	}
-	const tailCount = Math.max(3, Math.ceil(samples.length * 0.1));
-	const idle = median(samples.slice(-tailCount).map(s => s.p));
-	const runLimit = idle * 3 + 2;
-	const runIdx: number[] = [];
-	samples.forEach((s, i) => {
-		if (s.p > runLimit) {
-			runIdx.push(i);
-		}
-	});
-	if (runIdx.length < 6) {
+	const poll = Math.max(pollIntervalSec, 1);
+	const series = fromPoints(
+		samples.map(s => ({ ts: s.t, val: s.p })),
+		poll * 1000,
+	);
+	const result = await analyzeTicks(series, poll, { ...opts, minRuns: 1, recording: true });
+	if ("error" in result) {
 		return { error: "noRun" };
 	}
-	const startVal = round2(Math.max(idle + 5, 0.25 * median(runIdx.map(i => samples[i].p))));
-	const endVal = round2(Math.max(idle * 1.5, idle + 1));
-	const standby = round2(idle * 1.2 + 0.1);
-
-	let longestDip = 0;
-	let current = 0;
-	for (let i = runIdx[0]; i <= runIdx[runIdx.length - 1]; i++) {
-		if (samples[i].p < endVal) {
-			current++;
-			longestDip = Math.max(longestDip, current);
-		} else {
-			current = 0;
-		}
-	}
-	const endCount = Math.max(2, Math.ceil((longestDip + 3) * 1.5));
-	const startCount = 2;
-	const lastRun = samples[runIdx[runIdx.length - 1]];
-	const firstRun = samples[runIdx[0]];
-	return {
-		thresholds: { startVal, endVal, standby, startCount, endCount },
-		startDurationSec: startCount * pollIntervalSec,
-		endDurationSec: endCount * pollIntervalSec,
-		durationSec: Math.round((lastRun.t - firstRun.t) / 1000),
-		samples: samples.length,
-	};
+	return result;
 }

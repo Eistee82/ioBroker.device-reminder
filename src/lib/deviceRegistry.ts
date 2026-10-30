@@ -264,7 +264,11 @@ export class DeviceRegistry implements RuntimeListener {
 			return { error: "unknownDevice" };
 		}
 		const samples = entry.recorder.stop(this.host.now());
-		const result = suggestType(samples, this.getConfig().pollIntervalSec);
+		const cfg = entry.runtime.config;
+		const result = await suggestType(samples, this.getConfig().pollIntervalSec, {
+			abort: cfg.abort,
+			abortFixed: cfg.abortFixed,
+		});
 		await this.host.setOwnState(`${deviceId}.learning.active`, false);
 		await this.host.setOwnState(`${deviceId}.learning.result`, JSON.stringify(result));
 		this.host.log.info(`Learning stopped for device ${entry.runtime.config.name}`);

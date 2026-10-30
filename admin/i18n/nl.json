@@ -139,7 +139,7 @@
 	"typeStartCount": "Begin met tellen",
 	"typeStartDuration": "Startduur(en)",
 	"typeStartVal": "Begin (W)",
-	"typesHelp": "Drempels per apparaattype. Ingebouwde typen kunnen niet worden hernoemd of verwijderd. In de telmodus tellen de waarden polling ticks (zie Algemeen).",
+	"typesHelp": "Drempelwaarden per apparaattype. Ingebouwde types kunnen niet worden hernoemd of verwijderd. In de telmodus tellen de waarden poll-ticks (zie Algemeen). Pauzebescherming (optioneel, 0 = uit): een fase onder de eindwaarde die begint binnen de eerste \"Pauze als ze begint vóór\" seconden van een run, of waarvan het vermogen onder \"Pauze als vermogen onder\" blijft, telt pas na \"Pauze-houdtijd\" seconden als einde. Wordt meestal door het leren ingesteld.",
 	"dm_learnSourceInfo": "Het vermogensdatapunt van dit apparaat wordt door een history-adapter opgeslagen. De adapter kan het apparaattype afleiden uit alle runs van de laatste 30 dagen in plaats van een nieuwe run op te nemen.",
 	"dm_learnSource": "Leren uit",
 	"dm_learnSourceHistory": "Geschiedenis van de laatste 30 dagen",
@@ -147,5 +147,18 @@
 	"dm_learnHistoryInstance": "History-instantie",
 	"dm_learnHistorySamples": "Opgeslagen waarden",
 	"dm_learnRuns": "Gevonden runs",
-	"dm_learnEvalInfo": "Elke run is met elke detectiemodus opnieuw afgespeeld: correct herkende / gevonden runs · gemiddelde tijd tot het einde gemeld wordt. De aanbevolen modus is voorgeselecteerd."
+	"dm_learnEvalInfo": "Elke run is met elke detectiemodus opnieuw afgespeeld: correct herkende / gevonden runs · gemiddelde (maximale) tijd tot het einde wordt gemeld. De aanbevolen modus is voorgeselecteerd. Controle: runs die ook herkend zouden zijn als die run in de geschiedenis had ontbroken; is de waarde lager, leer dan opnieuw na meer runs.",
+	"typePauseHold": "Pauze-houdtijd (s)",
+	"typePauseUntil": "Pauze als ze begint vóór (s)",
+	"typePauseBelow": "Pauze als vermogen onder",
+	"dm_learnPauseInfo": "Pauzebescherming: een lange pauze (bijv. weken) telt pas na de houdtijd als einde, zodat alle andere runs het einde snel melden. 0 = uit.",
+	"dm_learnPauseHold": "Pauzebescherming: houdtijd",
+	"dm_learnPauseUntil": "Pauze als ze begint vóór",
+	"dm_learnPauseBelow": "Pauze als vermogen onder",
+	"dm_learnLongestPause": "Langste pauze in een run (min)",
+	"dm_learnLoo": "Controle (telkens één run weggelaten)",
+	"dm_learnCurrentType": "Huidig apparaattype",
+	"dm_detailsPauseHold": "Pauzebescherming: houdtijd",
+	"dm_detailsPauseUntil": "Pauze als ze begint vóór",
+	"dm_detailsPauseBelow": "Pauze als vermogen onder"
 }
