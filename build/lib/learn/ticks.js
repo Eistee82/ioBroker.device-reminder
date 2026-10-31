@@ -122,4 +122,85 @@ export function fromPoints(points, stepMs, extendMs = 0) {
     finalize(series);
     return series;
 }
+export function quantOf(unitFactor) {
+    return unitFactor >= 1000 ? 100_000 : 100;
+}
+export function encodeCells(cells, q) {
+    const out = [];
+    let prev = "";
+    for (const c of cells) {
+        let entry;
+        if (!c.valid || !Number.isFinite(c.last)) {
+            entry = [1, null];
+        }
+        else {
+            const last = Math.round(c.last * q);
+            const min = Math.round(Math.min(c.min, c.last) * q);
+            const max = Math.round(Math.max(c.max, c.last) * q);
+            entry = min === last && max === last ? [1, last] : [1, last, min, max];
+        }
+        const key = JSON.stringify(entry.slice(1));
+        const top = out.at(-1);
+        if (top && key === prev) {
+            top[0]++;
+        }
+        else {
+            out.push(entry);
+            prev = key;
+        }
+    }
+    return JSON.stringify(out);
+}
+export function decodeCells(data, q) {
+    const parsed = JSON.parse(data);
+    if (!Array.isArray(parsed)) {
+        throw new Error("invalid cell data");
+    }
+    const out = [];
+    for (const raw of parsed) {
+        if (!Array.isArray(raw) || typeof raw[0] !== "number" || raw[0] < 1) {
+            throw new Error("invalid cell entry");
+        }
+        const [n, last, min, max] = raw;
+        for (let k = 0; k < n; k++) {
+            if (last === null || typeof last !== "number") {
+                out.push({ min: 0, max: 0, last: 0, valid: false });
+            }
+            else {
+                out.push({ last: last / q, min: (min ?? last) / q, max: (max ?? last) / q, valid: true });
+            }
+        }
+    }
+    return out;
+}
+export function fromCells(cells, t0, stepMs, factor = 1) {
+    const s = createSeries(t0, stepMs, cells.length);
+    let value = 0;
+    let first = -1;
+    cells.forEach((c, i) => {
+        if (c.valid) {
+            value = c.last * factor;
+            s.last[i] = value;
+            s.min[i] = Math.min(c.min, c.last) * factor;
+            s.max[i] = Math.max(c.max, c.last) * factor;
+            s.has[i] = 1;
+            s.points++;
+            if (first < 0) {
+                first = i;
+            }
+        }
+        else {
+            s.last[i] = value;
+            s.min[i] = value;
+            s.max[i] = value;
+            s.valid[i] = 0;
+        }
+    });
+    s.lastTs = null;
+    s.firstIdx = first < 0 ? cells.length : first;
+    return s;
+}
+export function fromStored(run, factor = 1) {
+    return fromCells(decodeCells(run.data, run.q), run.ts, run.step, factor);
+}
 //# sourceMappingURL=ticks.js.map

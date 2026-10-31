@@ -250,6 +250,36 @@ Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, In
 
 Wurden weniger als 20 Messwerte aufgenommen oder wird kein Lauf erkannt, enthält `learning.result` einen Fehler (`tooFewSamples` oder `noRun`). `learning.active` ist true, solange aufgenommen wird.
 
+### Knitterschutz
+
+Viele Waschmaschinen und Trockner bewegen nach dem Programm ab und zu die Trommel (Knitterschutz, z. B. 100–600 W für 10–30 s alle 1–5 Minuten, bis zu 2 Stunden lang). Ohne Sonderbehandlung kommt das Ende erst nach dieser Phase, oder jede Trommelbewegung startet einen neuen Lauf (Trocknertyp von 3.1.2 mit 2 Messwerten über 120 W).
+
+Der optionale **Knitterschutz-Filter** eines Gerätetyps (standardmäßig aus) hält eine Phase über dem Endwert zurück, die nach einer Ruhezeit beginnt. Endet sie innerhalb der längsten Burst-Dauer, war es eine Trommelbewegung und die Erkennung sieht stattdessen den Ruhepegel; sonst war es echte Aktivität und die Erkennung erhält die Originalwerte, höchstens eine Burst-Dauer später. So wird das Ende gemeldet, wenn das Programm fertig ist, und Trommelbewegungen im Knitterschutz starten keinen Lauf. Ein in dieser Phase neu gestartetes Programm wird trotzdem erkannt.
+
+| Feld | Bedeutung |
+| --- | --- |
+| `trailerBurstSec` | Längste Trommelbewegung in s (15–180; 0 = Filter aus) |
+| `trailerGapSec` | Mindest-Ruhezeit vor einer Trommelbewegung in s (0 = 3 Abfragen, mindestens 30 s); kürzere Stopps (Waschrhythmus) werden nie zurückgehalten |
+| `trailerAfterSec` | Trommelbewegungen werden erst so lange nach dem Start zurückgehalten (0 = ungenutzt) |
+| `trailerBlockVal` | Trommelbewegungen werden erst nach einem Block von mindestens 2 Minuten zurückgehalten, dessen Leistung in den letzten 2 Minuten mindestens diesen Wert hat (0 = ungenutzt), z. B. das Schleudern am Programmende |
+| `trailerMaxSec` | Dauer des Knitterschutzes nach dem Ende in s (900–14400); er endet auch nach 20 Minuten ohne Trommelbewegung |
+
+Das Anlernen findet Knitterschutzphasen (mindestens 2 kurze Bursts, auch im Abstand von 1 Minute, nach einem längeren Block; eine längere Lücke für eine zwischendurch geöffnete Tür ist erlaubt), misst die Ende-Verzögerung ab dem Programmende und setzt die Felder, wenn mindestens 2 Läufe eine solche Phase haben und der Filter das Ende mindestens eine Minute früher meldet. Endwerte in der Nähe der Burst-Leistung werden nie vorgeschlagen. Innerhalb eines Programms kann eine Phase genauso aussehen wie der Knitterschutz (Einweichen mit Trommelbewegungen). Die Filtervarianten mit `trailerBlockVal` und `trailerAfterSec` unterscheiden sie; erkennt keine Variante jeden Lauf, zeigt der Dialog „nicht trennbar“ und das Ende bleibt nach dem Knitterschutz (es wird nie zu früh gemeldet).
+
+### Automatische Optimierung
+
+Die Geräte-Option **Automatische Optimierung** (standardmäßig aus) prüft die Erkennung nach jedem Lauf und verbessert sie, ohne die Instanz neu zu starten und ohne den Gerätetyp zu ändern:
+
+- Die Leistung rund um jeden Lauf (30 Minuten davor bis 30 ruhige Minuten nach dem Ende, höchstens 3 Stunden danach) wird kompakt im Dateispeicher des Adapters abgelegt (`<namespace>.learn/<gerät>.a.json` / `.b.json`, höchstens 20 Läufe aller Programme und 10 Fehlstarts, höchstens 400 KB). Ein History-Adapter ist nicht nötig.
+- Jeder Kandidat wird mit der echten Erkennung über **alle** gespeicherten Läufe und Fehlstarts nachgespielt; eine Änderung wird nur übernommen, wenn jeder Lauf genau einmal erkannt wird, kein Fehlstart einen Lauf startet und das Ende nie vor dem Programmende gemeldet wird. Bereits gesehene Programme können dadurch nicht kaputtgehen.
+- **Reparatur** (vorsichtigere Werte) sofort nach einem Lauf, der nicht richtig erkannt wurde (Ende zu früh, Fehlstart, z. B. durch Knitterschutz-Bursts). Danach 5 Läufe und 14 Tage keine Verschärfung.
+- **Verschärfung** (Ende früher, z. B. Knitterschutz-Filter an) erst ab 4 Läufen, 2 neuen Läufen und 24 Stunden seit der letzten Änderung, mit höchstens 25 % Änderung je Schritt (Schwellwerte 30 %), Gegenprobe ohne jede Programmgruppe, leicht veränderten Eingangsdaten (±10 % Leistung, eine Abfrage später, fehlende Werte) und Grenzen aus der längsten je gesehenen Pause und dem längsten Burst. Sie braucht mindestens eine Minute Gewinn (oder weniger Fehlstarts).
+- Die optimierten Werte werden je Gerät gespeichert und gelten nur, solange die Option an ist; aus bedeutet wieder die Werte des Gerätetyps (Verhalten von 3.1.2). Wird der Gerätetyp geändert, werden die optimierten Werte verworfen.
+- Erkennt keine Einstellung alle gespeicherten Läufe, ändert sich nichts (Warnung im Log); nach 3 solchen Läufen in Folge pausiert die Optimierung, bis die Anlerndaten gelöscht werden.
+- States: `learning.optimized`, `learning.parameters`, `learning.lastChange`, `learning.optimizeInfo`, `learning.lastEndDelay`; `learning.undo` macht die letzte Änderung rückgängig, `learning.reset` kehrt zu den Werten des Gerätetyps zurück (beide sperren die Verschärfung für 14 Tage). Mit der Option „Änderungen als Nachricht melden“ wird jede Änderung auch an die Empfänger des Geräts geschickt.
+
+Grenzen: Ein Neustart des Adapters während eines Laufs verliert diesen Lauf (ein Neustart nach dem Ende wird fortgesetzt); ein nie gesehenes Programm ist nur durch die Grenzen und Sicherheitsabstände geschützt und wird nach einem fehlerhaften Lauf repariert; eine Änderung des Abfrageintervalls oder der Einheit des Leistungs-States verwirft die gespeicherten Läufe.
+
 ## 9. Migration von 3.1.2
 
 Beim ersten Start von Version 4 wird eine 3.1.2-Konfiguration automatisch umgewandelt. Alle neuen Optionen bleiben aus, jedes migrierte Gerät verhält sich also wie in 3.1.2.
@@ -355,6 +385,14 @@ Gerätezustände sind relativ zum Geräteobjekt `<deviceId>` angegeben. Info-Zus
 | `learning.stop` | boolean | button.stop | w | - | Anlernen beenden | true schreiben beendet die Aufnahme und berechnet den Vorschlag |
 | `learning.active` | boolean | indicator | r | - | Anlernen aktiv | True, solange ein Lauf aufgenommen wird |
 | `learning.result` | string | json | r | - | Anlern-Ergebnis | JSON: Schwellwerte, startDurationSec, endDurationSec, durationSec, samples, pauseHoldSec, pauseUntilSec, pauseBelowVal, mode, runs, evaluation (aus der History zusätzlich looDetected, longestPauseSec, current, gapsDropped) oder ein Fehler (tooFewSamples, noRun) |
+| `antiCrease` | boolean | indicator | r | - | Knitterschutz aktiv | True, solange der Knitterschutz nach einem Lauf erkannt wird (Knitterschutz-Filter des Gerätetyps) |
+| `learning.optimized` | boolean | indicator | r | - | Optimierte Werte aktiv | True, wenn die automatische Optimierung andere Werte als der Gerätetyp verwendet |
+| `learning.parameters` | string | json | r | - | Erkennungsparameter | JSON: type (Werte des Gerätetyps), override (optimierte Werte), effective (verwendete Werte) |
+| `learning.lastChange` | string | json | r | - | Letzte Änderung der Optimierung | JSON der letzten Änderung der automatischen Optimierung (kind, from, to, reason, runs, gainSec) |
+| `learning.optimizeInfo` | string | json | r | - | Status der Optimierung | JSON: status, runs, spikes, families, trailer, lastCheckTs, nextPossibleTs, lastEndDelaySec, unclear |
+| `learning.lastEndDelay` | number | value.interval | r | s | Ende-Verzögerung des letzten Laufs | Zeit vom Programmende bis zur Ende-Meldung des letzten aufgezeichneten Laufs |
+| `learning.undo` | boolean | button | w | - | Letzte Optimierung rückgängig machen | true schreiben macht die letzte Änderung der automatischen Optimierung rückgängig (14 Tage keine Verschärfung) |
+| `learning.reset` | boolean | button | w | - | Auf Werte des Gerätetyps zurücksetzen | true schreiben verwendet wieder die Werte des Gerätetyps (14 Tage keine Verschärfung) |
 | `lastOperationsHtml` | string | html | r | - | Letzte Vorgänge (HTML) | HTML-Tabelle der letzten Läufe (nur wenn in den allgemeinen Einstellungen aktiviert) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter verbunden | True, wenn der Adapter läuft |
 <!-- END STATES -->

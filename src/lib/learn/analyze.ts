@@ -1,10 +1,11 @@
+import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import type { DetectionMode, DetectionSettings } from "../detector/types.js";
 import type { LearningSuggestion } from "../learning.js";
-import type { GuardSettings, Plan, PlanContext, RunTable } from "./optimize.js";
-import { endCandidates, planFor, runTable } from "./optimize.js";
+import type { GuardSettings, Plan, PlanContext, RunTable, TrailerParams } from "./optimize.js";
+import { endCandidates, planFor, runTable, suppressBursts } from "./optimize.js";
 import type { ModeEvaluation, ReplayOptions, SimResult } from "./replay.js";
-import { allOk, compare, evaluate, runOk, simulate } from "./replay.js";
-import type { Layout, Span, Window } from "./runs.js";
+import { allOk, compare, evaluate, runOkFull, simulate } from "./replay.js";
+import type { Layout, RunInfo, Span, Window } from "./runs.js";
 import { buildLayout, median } from "./runs.js";
 import type { TickSeries } from "./ticks.js";
 import { scaled } from "./ticks.js";
@@ -141,6 +142,7 @@ class Analysis {
 			endVal: this.out(settings.endVal),
 			standby: this.out(settings.standby),
 			pauseBelowVal: this.out(settings.pauseBelowVal ?? 0),
+			...(settings.trailerBlockVal ? { trailerBlockVal: this.out(settings.trailerBlockVal) } : {}),
 		};
 	}
 
@@ -165,6 +167,11 @@ class Analysis {
 
 	public plan(total: number): void {
 		this.total = Math.max(1, total);
+	}
+
+	public finish(): void {
+		this.done = this.total;
+		this.opts.onProgress?.(1);
 	}
 
 	public progress(): void {
@@ -236,7 +243,11 @@ export async function analyzeTicks(
 	if (runs.length < minRuns) {
 		return { error: "tooFewRuns", runs: runs.length };
 	}
-	const replay: ReplayOptions = { abort: opts.abort === true, abortFixed: opts.abortFixed === true };
+	const replay: ReplayOptions = {
+		abort: opts.abort === true,
+		abortFixed: opts.abortFixed === true,
+		pollSec: poll,
+	};
 	const an = new Analysis(series, layout, replay, opts, factor);
 
 	// start
@@ -253,19 +264,229 @@ export async function analyzeTicks(
 	const standby = round2(idle * 1.2 + 0.1);
 	const maxBurst = longestAbove(series, [...runs.flatMap(r => r.bursts), ...layout.spikes], startVal);
 	const k0 = Math.max(2, maxBurst + 1);
+	const base: SearchBase = { series, layout, poll, minDeltaW, startVal, standby, k0 };
+
+	// anti-crease filter: derived from the trailers, used only if it reports the end earlier
+	const withTrailer = runs.filter(r => r.bursts.length >= 2);
+	const trailerParams = withTrailer.length >= 2 ? deriveTrailer(withTrailer, series.stepMs, poll) : null;
+	const variants: TrailerParams[] = [];
+	if (trailerParams) {
+		const minCore = Math.min(...runs.map(r => (r.coreEnd - r.from) * (series.stepMs / 1000)));
+		const minBlock = Math.min(...runs.map(r => r.blockMean));
+		const after = Math.floor(0.9 * minCore);
+		const block = round2(0.8 * minBlock);
+		variants.push(trailerParams);
+		variants.push({ ...trailerParams, trailerAfterSec: after });
+		if (block > startVal) {
+			variants.push({ ...trailerParams, trailerBlockVal: block });
+			variants.push({ ...trailerParams, trailerAfterSec: after, trailerBlockVal: block });
+		}
+	}
+	const perSearch =
+		Math.min(2, endCandidates(series, layout, minDeltaW).length) *
+		(2 + 2 * new Set([k0 * poll, Math.max(60, k0 * poll)]).size);
+	an.plan((1 + variants.length) * perSearch + 2);
+
+	const plain = await searchModes(an, base, null);
+	let chosenSearch = plain;
+	let trailer: "none" | "used" | "notSeparable" = "none";
+	if (variants.length > 0) {
+		// every variant is searched; the best one that detects every run competes with the plain search
+		let bestFiltered: { search: SearchResult; evaluation: ModeEvaluation } | null = null;
+		for (const v of variants) {
+			const filtered = await searchModes(an, base, v);
+			const fBest = bestOf(filtered);
+			if (fBest.evaluation.detected < fBest.evaluation.runs) {
+				continue;
+			}
+			if (!bestFiltered || compare(fBest.evaluation, bestFiltered.evaluation) < 0) {
+				bestFiltered = { search: filtered, evaluation: fBest.evaluation };
+			}
+		}
+		if (!bestFiltered) {
+			trailer = "notSeparable";
+		} else if (betterWithFilter(bestFiltered.evaluation, bestOf(plain).evaluation)) {
+			chosenSearch = bestFiltered.search;
+			trailer = "used";
+		}
+	}
+
+	const evaluation = MODE_ORDER.map(m => chosenSearch.best.get(m)?.evaluation).filter(e => e !== undefined);
+	const mode = pickMode(evaluation);
+	const chosen = chosenSearch.best.get(mode) as Candidate;
+	const settings = chosen.settings;
+
+	// cross-check: would each run have been detected if it had been missing from the history?
+	let looDetected: number | undefined;
+	if (runs.length >= 2) {
+		looDetected = 0;
+		const tables = chosenSearch.tablesByE.get(chosen.plan.e) ?? [];
+		for (const win of layout.windows) {
+			if (win.run === null) {
+				continue;
+			}
+			const plan = planFor(
+				chosenSearch.ctx,
+				chosen.plan.e,
+				tables.filter(t => t.run !== win.run),
+			);
+			const endTicks = Math.ceil(plan.Ds / poll);
+			const endCount = endTicks + Math.max(2, Math.ceil(0.25 * endTicks));
+			const loo: DetectionSettings = {
+				...settings,
+				...(plan.guard ?? NO_GUARD),
+				...(mode === "count" ? { endCount, endDurationSec: endCount * poll } : { endDurationSec: plan.Ds }),
+			};
+			const res = an.simulate(win, loo);
+			if (runOkFull(series, win, res)) {
+				looDetected++;
+			}
+			await opts.yieldFn?.();
+		}
+	}
+	an.progress();
+
+	let current: ModeEvaluation | undefined;
+	if (opts.currentType) {
+		current = await an.evaluateUnit(opts.currentType);
+	}
+	an.finish();
+
+	const out = (v: number): number => an.out(v);
+	const stepSec = series.stepMs / 1000;
+	const chosenEval = chosen.evaluation;
+	const trailerOut =
+		trailer === "used" && settings.trailerBurstSec
+			? {
+					trailerBurstSec: settings.trailerBurstSec,
+					trailerGapSec: settings.trailerGapSec ?? 0,
+					trailerAfterSec: settings.trailerAfterSec ?? 0,
+					trailerBlockVal: out(settings.trailerBlockVal ?? 0),
+					trailerMaxSec: settings.trailerMaxSec ?? 0,
+				}
+			: {};
+	return {
+		thresholds: {
+			startVal: out(settings.startVal),
+			endVal: out(settings.endVal),
+			standby: out(settings.standby),
+			startCount: settings.startCount,
+			endCount: settings.endCount,
+		},
+		startDurationSec: settings.startDurationSec,
+		endDurationSec: settings.endDurationSec,
+		durationSec: Math.max(...runs.map(r => Math.round((r.runEnd - r.from) * stepSec))),
+		samples: series.points,
+		pauseHoldSec: settings.pauseHoldSec ?? 0,
+		pauseUntilSec: settings.pauseUntilSec ?? 0,
+		pauseBelowVal: out(settings.pauseBelowVal ?? 0),
+		...trailerOut,
+		mode,
+		runs: runs.length,
+		evaluation,
+		...(looDetected !== undefined ? { looDetected } : {}),
+		longestPauseSec: Math.round(chosen.plan.dmax),
+		...(current ? { current } : {}),
+		gapsDropped: layout.gapsDropped,
+		trailer,
+		trailerRuns: [withTrailer.length, runs.length],
+		delays: chosenEval.delays ?? [],
+		falseStarts: chosenEval.falseStarts,
+	};
+}
+
+/** Inputs of the candidate search that do not depend on the anti-crease filter. */
+interface SearchBase {
+	series: TickSeries;
+	layout: Layout;
+	poll: number;
+	minDeltaW: number;
+	startVal: number;
+	standby: number;
+	k0: number;
+}
+
+/** Best candidate per mode of one search. */
+interface SearchResult {
+	best: Map<DetectionMode, Candidate>;
+	tablesByE: Map<number, RunTable[]>;
+	ctx: PlanContext;
+}
+
+/**
+ * Best candidate of a search (by pickMode).
+ *
+ * @param r - Search result
+ */
+function bestOf(r: SearchResult): Candidate {
+	const evaluation = MODE_ORDER.map(m => r.best.get(m)?.evaluation).filter(e => e !== undefined);
+	return r.best.get(pickMode(evaluation)) as Candidate;
+}
+
+/**
+ * Whether the filter variant is clearly better: more runs, fewer false starts, or an end reported at
+ * least DELAY_TOLERANCE_SEC earlier (a tie keeps the detection without filter).
+ *
+ * @param f - Evaluation with the filter
+ * @param p - Evaluation without the filter
+ */
+export function betterWithFilter(f: ModeEvaluation, p: ModeEvaluation): boolean {
+	if (f.detected !== p.detected) {
+		return f.detected > p.detected;
+	}
+	if (f.falseStarts !== p.falseStarts) {
+		return f.falseStarts < p.falseStarts;
+	}
+	return f.endDelaySec < p.endDelaySec - DELAY_TOLERANCE_SEC;
+}
+
+/**
+ * Settings of the anti-crease filter derived from the trailers of the runs.
+ *
+ * @param runs - Runs with a trailer
+ * @param stepMs - Poll interval in ms
+ * @param poll - Poll interval in s
+ */
+export function deriveTrailer(runs: readonly RunInfo[], stepMs: number, poll: number): TrailerParams {
+	const burstMax = Math.max(...runs.map(r => r.burstMaxMs)) / 1000;
+	const gapMin = Math.min(...runs.map(r => r.gapMinMs)) / 1000;
+	const longest = Math.max(...runs.map(r => ((r.trailerTo ?? r.coreEnd) - r.coreEnd) * (stepMs / 1000)));
+	const burst = Math.min(180, Math.max(Math.ceil(Math.max(15, 1.5 * poll + 10)), Math.ceil(burstMax * 1.5)));
+	const gap = Math.max(1, Math.min(Math.floor(0.8 * gapMin), Math.max(3 * poll, 30, Math.floor(0.5 * gapMin))));
+	return {
+		trailerBurstSec: burst,
+		trailerGapSec: gap,
+		trailerAfterSec: 0,
+		trailerBlockVal: 0,
+		// generous: the phase also ends after a quiet time, and real activity is always passed on
+		trailerMaxSec: Math.min(14400, Math.max(TRAILER_MAX_DEFAULT_SEC, Math.ceil(longest * 1.25 + 900))),
+	};
+}
+
+/**
+ * Search the best candidate of every mode: end threshold candidates planned in closed form (on the
+ * burst-free copy when the filter is used), the best two simulated with the real detector.
+ *
+ * @param an - Analysis
+ * @param b - Inputs
+ * @param trailer - Filter settings or null
+ */
+async function searchModes(an: Analysis, b: SearchBase, trailer: TrailerParams | null): Promise<SearchResult> {
+	const { series, layout, poll, minDeltaW, startVal, standby, k0 } = b;
+	const extra: Partial<DetectionSettings> = trailer ?? {};
 	const startCounts = [k0, k0 + 1];
 	const startDurations = [...new Set([k0 * poll, Math.max(60, k0 * poll)])];
-
-	// end threshold candidates, planned in closed form; the best two are simulated
-	const ctx: PlanContext = { series, runs, pollSec: poll, minDeltaW };
+	const ctx0: PlanContext = { series, runs: layout.runs, pollSec: poll, minDeltaW };
 	const tablesByE = new Map<number, RunTable[]>();
+	let ctx = ctx0;
 	const plans = endCandidates(series, layout, minDeltaW).map(e => {
-		const tables = runs.map((r, i) => runTable(series, r, e, i));
+		const planSeries = trailer ? suppressBursts(series, layout, trailer, e, poll) : series;
+		ctx = { ...ctx0, series: planSeries };
+		const tables = layout.runs.map((r, i) => runTable(planSeries, r, e, i));
 		tablesByE.set(e, tables);
 		return planFor(ctx, e, tables);
 	});
-	const chosenPlans = [...plans].sort((a, b) => a.estCost - b.estCost).slice(0, 2);
-	an.plan(chosenPlans.length * (startCounts.length + 2 * startDurations.length) + 2);
+	const chosenPlans = [...plans].sort((x, y) => x.estCost - y.estCost).slice(0, 2);
 
 	const best = new Map<DetectionMode, Candidate>();
 	const consider = async (settings: DetectionSettings, plan: Plan): Promise<void> => {
@@ -277,7 +498,7 @@ export async function analyzeTicks(
 		an.progress();
 	};
 	for (const plan of chosenPlans) {
-		const thresholds = { startVal, endVal: plan.e, standby };
+		const thresholds = { startVal, endVal: plan.e, standby, ...extra };
 		let countE = 0;
 		for (const startCount of startCounts) {
 			const make =
@@ -333,71 +554,5 @@ export async function analyzeTicks(
 			}
 		}
 	}
-
-	const evaluation = MODE_ORDER.map(m => best.get(m)?.evaluation).filter(e => e !== undefined);
-	const mode = pickMode(evaluation);
-	const chosen = best.get(mode) as Candidate;
-	const settings = chosen.settings;
-
-	// cross-check: would each run have been detected if it had been missing from the history?
-	let looDetected: number | undefined;
-	if (runs.length >= 2) {
-		looDetected = 0;
-		const tables = tablesByE.get(chosen.plan.e) ?? [];
-		for (const win of layout.windows) {
-			if (win.run === null) {
-				continue;
-			}
-			const plan = planFor(
-				ctx,
-				chosen.plan.e,
-				tables.filter(t => t.run !== win.run),
-			);
-			const endTicks = Math.ceil(plan.Ds / poll);
-			const endCount = endTicks + Math.max(2, Math.ceil(0.25 * endTicks));
-			const loo: DetectionSettings = {
-				...settings,
-				...(plan.guard ?? NO_GUARD),
-				...(mode === "count" ? { endCount, endDurationSec: endCount * poll } : { endDurationSec: plan.Ds }),
-			};
-			const res = an.simulate(win, loo);
-			if (runOk(series, win, res) && res.finished.length === 1) {
-				looDetected++;
-			}
-			await opts.yieldFn?.();
-		}
-	}
-	an.progress();
-
-	let current: ModeEvaluation | undefined;
-	if (opts.currentType) {
-		current = await an.evaluateUnit(opts.currentType);
-	}
-	an.progress();
-
-	const out = (v: number): number => an.out(v);
-	const stepSec = series.stepMs / 1000;
-	return {
-		thresholds: {
-			startVal: out(settings.startVal),
-			endVal: out(settings.endVal),
-			standby: out(settings.standby),
-			startCount: settings.startCount,
-			endCount: settings.endCount,
-		},
-		startDurationSec: settings.startDurationSec,
-		endDurationSec: settings.endDurationSec,
-		durationSec: Math.max(...runs.map(r => Math.round((r.runEnd - r.from) * stepSec))),
-		samples: series.points,
-		pauseHoldSec: settings.pauseHoldSec ?? 0,
-		pauseUntilSec: settings.pauseUntilSec ?? 0,
-		pauseBelowVal: out(settings.pauseBelowVal ?? 0),
-		mode,
-		runs: runs.length,
-		evaluation,
-		...(looDetected !== undefined ? { looDetected } : {}),
-		longestPauseSec: Math.round(chosen.plan.dmax),
-		...(current ? { current } : {}),
-		gapsDropped: layout.gapsDropped,
-	};
+	return { best, tablesByE, ctx };
 }

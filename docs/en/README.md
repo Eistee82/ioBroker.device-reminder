@@ -250,6 +250,36 @@ If the power state is logged by a history adapter (history, SQL, InfluxDB or any
 
 If fewer than 20 samples were recorded or no run is recognised, `learning.result` contains an error (`tooFewSamples` or `noRun`). `learning.active` is true while recording.
 
+### Anti-crease phase
+
+Many washing machines and dryers move the drum now and then after the programme (anti-crease, e.g. 100–600 W for 10–30 s every 1–5 minutes, for up to 2 hours). Without special handling the end is reported only after this phase, or every drum movement starts a new run (the 3.1.2 dryer type with 2 samples at 120 W).
+
+The optional **anti-crease filter** of a device type (off by default) holds back a phase above the end value that starts after a quiet time. If it ends within the longest burst time it was a drum movement and the detection sees the quiet level instead; otherwise it was real activity and the detection gets the original values, at most one burst time later. So the end is reported when the programme finishes, and drum movements in the anti-crease phase start no run. A new programme started in that phase is still detected.
+
+| Field | Meaning |
+| --- | --- |
+| `trailerBurstSec` | Longest drum movement in s (15–180; 0 = filter off) |
+| `trailerGapSec` | Minimum quiet time before a drum movement in s (0 = 3 polls, at least 30 s); shorter stops (tumbling while washing) are never held |
+| `trailerAfterSec` | Drum movements are held only this long after the start (0 = unused) |
+| `trailerBlockVal` | Drum movements are held only after a block of at least 2 minutes whose power in its last 2 minutes is at least this value (0 = unused), e.g. the spinning at the end of a programme |
+| `trailerMaxSec` | Length of the anti-crease phase after the end in s (900–14400); it also ends after 20 minutes without a drum movement |
+
+Learning finds anti-crease phases (at least 2 short bursts, also 1 minute apart, after a sustained block; one longer gap for a door opened in between is allowed), measures the end delay from the end of the programme and sets the fields when at least 2 runs have such a phase and the filter reports the end at least a minute earlier. End values near the burst power are never suggested. Inside a programme a phase can look exactly like the anti-crease phase (soaking with drum movements). The filter variants with `trailerBlockVal` and `trailerAfterSec` tell them apart; if no variant detects every run, the dialog shows "not separable" and the end stays after the anti-crease phase (it is never reported too early).
+
+### Automatic optimisation
+
+The device option **Automatic optimisation** (off by default) checks the detection after every run and improves it without restarting the instance and without changing the device type:
+
+- The power around every run (30 minutes before to 30 minutes of quiet after the end, at most 3 hours after it) is stored compactly in the file storage of the adapter (`<namespace>.learn/<device>.a.json` / `.b.json`, at most 20 runs of all programmes and 10 false starts, at most 400 KB). No history adapter is needed.
+- Every candidate is replayed with the real detection over **all** stored runs and false starts; a change is applied only if every run is detected exactly once, no false start starts a run and the end is never reported before the programme end. Programmes that occurred before can therefore not be broken.
+- **Repair** (looser values) right after one run that was not detected correctly (end reported too early, false start, e.g. by anti-crease bursts). Afterwards no tightening for 5 runs and 14 days.
+- **Tightening** (end reported earlier, e.g. the anti-crease filter on) only with at least 4 runs, 2 new runs and 24 hours since the last change, with values changing by at most 25 % (thresholds 30 %) per step, a cross-check without each programme group, slightly changed input (±10 % power, one poll later, missing values) and limits from the longest pause and burst ever seen. It needs a gain of at least one minute (or fewer false starts).
+- The optimised values are stored per device and apply only while the option is on; switching it off means the values of the device type again (3.1.2 behaviour). If the device type is edited, the optimised values are discarded.
+- If no setting detects all stored runs, nothing changes (warning in the log); after 3 such runs in a row the optimisation pauses until the learning data is cleared.
+- States: `learning.optimized`, `learning.parameters`, `learning.lastChange`, `learning.optimizeInfo`, `learning.lastEndDelay`; `learning.undo` undoes the last change, `learning.reset` goes back to the values of the device type (both lock the tightening for 14 days). With the option "Report changes as a message" every change is also sent to the recipients of the device.
+
+Limits: a restart of the adapter during a run loses that run (a restart after the end is resumed); a programme never seen before is only protected by the limits and margins and is repaired after one faulty run; changing the poll interval or the unit of the power state discards the stored runs.
+
 ## 9. Migration from 3.1.2
 
 The first start of version 4 converts a 3.1.2 configuration automatically. All new options stay off, so every migrated device behaves like in 3.1.2.
@@ -355,6 +385,14 @@ Device states are relative to the device object `<deviceId>`. Info states are on
 | `learning.stop` | boolean | button.stop | w | - | Stop learning | Write true to stop recording and compute the suggestion |
 | `learning.active` | boolean | indicator | r | - | Learning active | True while a run is recorded |
 | `learning.result` | string | json | r | - | Learning result | JSON: thresholds, startDurationSec, endDurationSec, durationSec, samples, pauseHoldSec, pauseUntilSec, pauseBelowVal, mode, runs, evaluation (from the history also looDetected, longestPauseSec, current, gapsDropped), or an error (tooFewSamples, noRun) |
+| `antiCrease` | boolean | indicator | r | - | Anti-crease active | True while the anti-crease phase after a run is recognised (anti-crease filter of the device type) |
+| `learning.optimized` | boolean | indicator | r | - | Optimised values active | True when the automatic optimisation uses values that differ from the device type |
+| `learning.parameters` | string | json | r | - | Detection parameters | JSON: type (values of the device type), override (optimised values), effective (values in use) |
+| `learning.lastChange` | string | json | r | - | Last optimisation change | JSON of the last change of the automatic optimisation (kind, from, to, reason, runs, gainSec) |
+| `learning.optimizeInfo` | string | json | r | - | Optimisation status | JSON: status, runs, spikes, families, trailer, lastCheckTs, nextPossibleTs, lastEndDelaySec, unclear |
+| `learning.lastEndDelay` | number | value.interval | r | s | End delay of the last run | Time from the end of the programme to the reported end of the last recorded run |
+| `learning.undo` | boolean | button | w | - | Undo last optimisation | Write true to undo the last change of the automatic optimisation (no tightening for 14 days) |
+| `learning.reset` | boolean | button | w | - | Reset to device type values | Write true to use the values of the device type again (no tightening for 14 days) |
 | `lastOperationsHtml` | string | html | r | - | Last operations (HTML) | HTML table of the last runs (only if enabled in the general settings) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter connected | True when the adapter is running |
 <!-- END STATES -->

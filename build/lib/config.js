@@ -1,6 +1,39 @@
 import { allocateDeviceId } from "./ids.js";
 import { defaultInstance, fixedTextState, kindFromInstance } from "./messenger/adapters.js";
 import { parseNumber } from "./utils.js";
+export const TRAILER_BOUNDS = {
+    trailerBurstSec: [15, 180],
+    trailerGapSec: [0, 600],
+    trailerAfterSec: [0, 21600],
+    trailerBlockVal: [0, 10000],
+    trailerMaxSec: [900, 14400],
+};
+export const TRAILER_KEYS = Object.keys(TRAILER_BOUNDS);
+export function normalizeTrailer(raw) {
+    const val = (key) => {
+        const v = parseNumber(raw[key]);
+        return v !== null && Number.isFinite(v) ? Math.max(0, v) : 0;
+    };
+    const burst = val("trailerBurstSec");
+    if (burst <= 0) {
+        return {};
+    }
+    const clamp = (key, v, zeroOk) => {
+        const [lo, hi] = TRAILER_BOUNDS[key];
+        if (zeroOk && v === 0) {
+            return 0;
+        }
+        return Math.min(hi, Math.max(lo, v));
+    };
+    const max = val("trailerMaxSec");
+    return {
+        trailerBurstSec: clamp("trailerBurstSec", burst, false),
+        trailerGapSec: clamp("trailerGapSec", val("trailerGapSec"), true),
+        trailerAfterSec: clamp("trailerAfterSec", val("trailerAfterSec"), true),
+        trailerBlockVal: clamp("trailerBlockVal", val("trailerBlockVal"), true),
+        trailerMaxSec: clamp("trailerMaxSec", max > 0 ? max : 7200, false),
+    };
+}
 const MESSENGER_KINDS = [
     "alexa",
     "sayit",
@@ -126,6 +159,7 @@ function normalizeType(raw, index, id, warnings) {
         pauseHoldSec: Math.max(0, num(raw.pauseHoldSec, 0)),
         pauseUntilSec: Math.max(0, num(raw.pauseUntilSec, 0)),
         pauseBelowVal: Math.max(0, num(raw.pauseBelowVal, 0)),
+        ...normalizeTrailer(raw),
     };
 }
 function normalizeRecipient(raw, index, id, warnings) {
@@ -358,6 +392,12 @@ export function normalizeDeviceConfig(native) {
         reminder,
         actions,
     };
+    if (bool(src.autoOptimize, false)) {
+        config.autoOptimize = true;
+    }
+    if (bool(src.optimizeNotify, false)) {
+        config.optimizeNotify = true;
+    }
     const sourceId = optStr(src.sourceId);
     if (sourceId !== undefined) {
         config.sourceId = sourceId;

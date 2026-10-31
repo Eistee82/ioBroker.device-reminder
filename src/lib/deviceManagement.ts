@@ -673,6 +673,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		if (!(await ctx.showConfirmation(TEXT.deleteConfirm))) {
 			return { refresh: "none" };
 		}
+		await this.adapter.registry.deleteLearningData(id);
 		this.adapter.registry.remove(id);
 		await this.assignEnums(id, (await this.loadEnums()).members, [], []);
 		await this.adapter.delObjectAsync(id, { recursive: true });

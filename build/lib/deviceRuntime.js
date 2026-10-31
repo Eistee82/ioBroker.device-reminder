@@ -1,4 +1,4 @@
-import { createDetector } from "./detector/index.js";
+import { createDetector, TrailerFilter } from "./detector/index.js";
 import { renderHistoryHtml } from "./historyHtml.js";
 import { errorMessage, formatDuration, formatTimestamp, parseNumber } from "./utils.js";
 export { renderHistoryHtml } from "./historyHtml.js";
@@ -25,6 +25,9 @@ export class DeviceRuntime {
     autoOffTimer = null;
     disposed = false;
     queue = Promise.resolve();
+    override = null;
+    recorder = null;
+    antiCrease = false;
     constructor(host, deviceId, cfg, type, inst, sink, listener) {
         this.host = host;
         this.deviceId = deviceId;
@@ -37,6 +40,52 @@ export class DeviceRuntime {
     }
     get config() {
         return this.cfg;
+    }
+    get effective() {
+        const t = this.type;
+        return {
+            startVal: t.startVal,
+            endVal: t.endVal,
+            standby: t.standby,
+            startCount: t.startCount,
+            endCount: t.endCount,
+            mode: t.mode,
+            startDurationSec: t.startDurationSec,
+            endDurationSec: t.endDurationSec,
+            pauseHoldSec: t.pauseHoldSec,
+            pauseUntilSec: t.pauseUntilSec,
+            pauseBelowVal: t.pauseBelowVal,
+            trailerBurstSec: t.trailerBurstSec ?? 0,
+            trailerGapSec: t.trailerGapSec ?? 0,
+            trailerAfterSec: t.trailerAfterSec ?? 0,
+            trailerBlockVal: t.trailerBlockVal ?? 0,
+            trailerMaxSec: t.trailerMaxSec ?? 0,
+            ...(this.override ?? {}),
+        };
+    }
+    get deviceType() {
+        return this.type;
+    }
+    get currentOverride() {
+        return this.override;
+    }
+    setOverride(o) {
+        if (JSON.stringify(o) === JSON.stringify(this.override)) {
+            return;
+        }
+        this.override = o;
+        if (this.detector.started) {
+            this.rebuildDetectorAfterRun = true;
+        }
+        else {
+            this.detector = this.buildDetector();
+        }
+    }
+    attachRecorder(r) {
+        this.recorder = r;
+    }
+    get runRecorder() {
+        return this.recorder;
     }
     get doNotDisturb() {
         return this.dnd;
@@ -82,7 +131,8 @@ export class DeviceRuntime {
         }
         this.power = parsed;
         this.missingPower = false;
-        if (this.type.mode !== "timed" || !this.detector.feed) {
+        this.recorder?.event(parsed);
+        if (this.effective.mode !== "timed" || !this.detector.feed) {
             return;
         }
         await this.enqueue(async () => {
@@ -130,6 +180,7 @@ export class DeviceRuntime {
             if (power === null) {
                 return;
             }
+            this.recorder?.sample(power, this.host.now());
             await this.apply(this.detector.tick(power, this.host.now(), { switchOff: this.switchOn === false }), power);
         });
     }
@@ -190,19 +241,11 @@ export class DeviceRuntime {
         await this.host.setOwnState(this.own(rel), val);
     }
     buildDetector() {
-        return createDetector({
-            startVal: this.type.startVal,
-            endVal: this.type.endVal,
-            standby: this.type.standby,
-            startCount: this.type.startCount,
-            endCount: this.type.endCount,
-            mode: this.type.mode,
-            startDurationSec: this.type.startDurationSec,
-            endDurationSec: this.type.endDurationSec,
-            pauseHoldSec: this.type.pauseHoldSec,
-            pauseUntilSec: this.type.pauseUntilSec,
-            pauseBelowVal: this.type.pauseBelowVal,
-        }, { abort: this.cfg.abort, abortFixed: this.cfg.abortFixed });
+        return createDetector(this.effective, {
+            abort: this.cfg.abort,
+            abortFixed: this.cfg.abortFixed,
+            pollSec: this.inst.pollIntervalSec,
+        });
     }
     enqueue(step) {
         const next = this.queue.then(async () => {
@@ -235,28 +278,38 @@ export class DeviceRuntime {
             await this.setState("averageConsumption", res.average);
         }
         await this.setState("consumption", power);
-        for (const ev of res.events) {
+        for (let k = 0; k < res.events.length; k++) {
             if (this.disposed) {
                 return;
             }
-            switch (ev) {
+            const at = res.times?.[k] ?? this.host.now();
+            switch (res.events[k]) {
                 case "started":
-                    await this.onStarted();
+                    await this.onStarted(at);
                     break;
                 case "running":
                     await this.onRunning();
                     break;
                 case "finished":
-                    await this.onFinished();
+                    await this.onFinished(at);
                     break;
                 case "aborted":
-                    await this.onAborted();
+                    await this.onAborted(at);
                     break;
             }
         }
+        const inTrailer = this.detector instanceof TrailerFilter && this.detector.inTrailer;
+        if (inTrailer !== this.antiCrease) {
+            this.antiCrease = inTrailer;
+            await this.setState("antiCrease", inTrailer);
+        }
     }
-    async onStarted() {
-        this.startedAt = this.host.now();
+    record(ev, at) {
+        this.recorder?.onEvent(ev, at);
+    }
+    async onStarted(at) {
+        this.startedAt = at;
+        this.record("s", at);
         this.cancelAutoOff();
         await this.setState("running", true);
         await this.setState("finished", false);
@@ -276,8 +329,9 @@ export class DeviceRuntime {
             await this.setState("alertRuntime", elapsed >= this.runtimeMax * 60_000 + 1000);
         }
     }
-    async onFinished() {
-        const now = this.host.now();
+    async onFinished(at) {
+        const now = at;
+        this.record("f", at);
         const runtime = formatDuration(Math.max(0, now - this.startedAt));
         if (this.cfg.endText) {
             await this.notify(this.cfg.endText);
@@ -296,7 +350,8 @@ export class DeviceRuntime {
         await this.startAutoOff();
         this.emit("end");
     }
-    async onAborted() {
+    async onAborted(at) {
+        this.record("a", at);
         await this.setState("running", false);
         await this.setState("alertRuntime", false);
         this.afterRun();

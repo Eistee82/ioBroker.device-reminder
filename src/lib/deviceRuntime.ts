@@ -1,8 +1,9 @@
 import type { DeviceConfig, DeviceTypeConfig, InstanceConfig } from "./config.js";
-import { createDetector } from "./detector/index.js";
-import type { Detector, TickResult } from "./detector/types.js";
+import { createDetector, TrailerFilter } from "./detector/index.js";
+import type { DetectionSettings, Detector, TickResult } from "./detector/types.js";
 import { renderHistoryHtml } from "./historyHtml.js";
 import type { DeviceHost, MessageSink, RuntimeEvent, RuntimeListener } from "./host.js";
+import type { CaptureEvent, RunRecorder } from "./runRecorder.js";
 import { errorMessage, formatDuration, formatTimestamp, parseNumber } from "./utils.js";
 
 export type { DeviceHost, MessageSink, RuntimeEvent, RuntimeListener } from "./host.js";
@@ -38,6 +39,9 @@ export class DeviceRuntime {
 	private autoOffTimer: unknown = null;
 	private disposed = false;
 	private queue: Promise<void> = Promise.resolve();
+	private override: Partial<DetectionSettings> | null = null;
+	private recorder: RunRecorder | null = null;
+	private antiCrease = false;
 
 	/**
 	 * @param host - Adapter access
@@ -64,6 +68,72 @@ export class DeviceRuntime {
 	/** Current device configuration. */
 	public get config(): DeviceConfig {
 		return this.cfg;
+	}
+
+	/** Detection values in use: the device type with the optimised values (if any). */
+	public get effective(): DetectionSettings {
+		const t = this.type;
+		return {
+			startVal: t.startVal,
+			endVal: t.endVal,
+			standby: t.standby,
+			startCount: t.startCount,
+			endCount: t.endCount,
+			mode: t.mode,
+			startDurationSec: t.startDurationSec,
+			endDurationSec: t.endDurationSec,
+			pauseHoldSec: t.pauseHoldSec,
+			pauseUntilSec: t.pauseUntilSec,
+			pauseBelowVal: t.pauseBelowVal,
+			trailerBurstSec: t.trailerBurstSec ?? 0,
+			trailerGapSec: t.trailerGapSec ?? 0,
+			trailerAfterSec: t.trailerAfterSec ?? 0,
+			trailerBlockVal: t.trailerBlockVal ?? 0,
+			trailerMaxSec: t.trailerMaxSec ?? 0,
+			...(this.override ?? {}),
+		};
+	}
+
+	/** Device type (without optimised values). */
+	public get deviceType(): DeviceTypeConfig {
+		return this.type;
+	}
+
+	/** Optimised values in use, or null. */
+	public get currentOverride(): Partial<DetectionSettings> | null {
+		return this.override;
+	}
+
+	/**
+	 * Use optimised values (null = the values of the device type). The detector is rebuilt at once
+	 * when no run is in progress, otherwise after the run.
+	 *
+	 * @param o - Optimised values or null
+	 */
+	public setOverride(o: Partial<DetectionSettings> | null): void {
+		if (JSON.stringify(o) === JSON.stringify(this.override)) {
+			return;
+		}
+		this.override = o;
+		if (this.detector.started) {
+			this.rebuildDetectorAfterRun = true;
+		} else {
+			this.detector = this.buildDetector();
+		}
+	}
+
+	/**
+	 * Record the power for the automatic optimisation (null = stop).
+	 *
+	 * @param r - Recorder or null
+	 */
+	public attachRecorder(r: RunRecorder | null): void {
+		this.recorder = r;
+	}
+
+	/** Recorder of the automatic optimisation, or null. */
+	public get runRecorder(): RunRecorder | null {
+		return this.recorder;
 	}
 
 	/** Whether voice output is suppressed. */
@@ -127,7 +197,8 @@ export class DeviceRuntime {
 		}
 		this.power = parsed;
 		this.missingPower = false;
-		if (this.type.mode !== "timed" || !this.detector.feed) {
+		this.recorder?.event(parsed);
+		if (this.effective.mode !== "timed" || !this.detector.feed) {
 			return;
 		}
 		await this.enqueue(async () => {
@@ -191,6 +262,7 @@ export class DeviceRuntime {
 			if (power === null) {
 				return;
 			}
+			this.recorder?.sample(power, this.host.now());
 			await this.apply(this.detector.tick(power, this.host.now(), { switchOff: this.switchOn === false }), power);
 		});
 	}
@@ -272,22 +344,11 @@ export class DeviceRuntime {
 	}
 
 	private buildDetector(): Detector {
-		return createDetector(
-			{
-				startVal: this.type.startVal,
-				endVal: this.type.endVal,
-				standby: this.type.standby,
-				startCount: this.type.startCount,
-				endCount: this.type.endCount,
-				mode: this.type.mode,
-				startDurationSec: this.type.startDurationSec,
-				endDurationSec: this.type.endDurationSec,
-				pauseHoldSec: this.type.pauseHoldSec,
-				pauseUntilSec: this.type.pauseUntilSec,
-				pauseBelowVal: this.type.pauseBelowVal,
-			},
-			{ abort: this.cfg.abort, abortFixed: this.cfg.abortFixed },
-		);
+		return createDetector(this.effective, {
+			abort: this.cfg.abort,
+			abortFixed: this.cfg.abortFixed,
+			pollSec: this.inst.pollIntervalSec,
+		});
 	}
 
 	/**
@@ -334,29 +395,40 @@ export class DeviceRuntime {
 		}
 		await this.setState("consumption", power);
 
-		for (const ev of res.events) {
+		for (let k = 0; k < res.events.length; k++) {
 			if (this.disposed) {
 				return;
 			}
-			switch (ev) {
+			const at = res.times?.[k] ?? this.host.now();
+			switch (res.events[k]) {
 				case "started":
-					await this.onStarted();
+					await this.onStarted(at);
 					break;
 				case "running":
 					await this.onRunning();
 					break;
 				case "finished":
-					await this.onFinished();
+					await this.onFinished(at);
 					break;
 				case "aborted":
-					await this.onAborted();
+					await this.onAborted(at);
 					break;
 			}
 		}
+		const inTrailer = this.detector instanceof TrailerFilter && this.detector.inTrailer;
+		if (inTrailer !== this.antiCrease) {
+			this.antiCrease = inTrailer;
+			await this.setState("antiCrease", inTrailer);
+		}
 	}
 
-	private async onStarted(): Promise<void> {
-		this.startedAt = this.host.now();
+	private record(ev: CaptureEvent, at: number): void {
+		this.recorder?.onEvent(ev, at);
+	}
+
+	private async onStarted(at: number): Promise<void> {
+		this.startedAt = at;
+		this.record("s", at);
 		this.cancelAutoOff();
 		await this.setState("running", true);
 		await this.setState("finished", false);
@@ -378,8 +450,9 @@ export class DeviceRuntime {
 		}
 	}
 
-	private async onFinished(): Promise<void> {
-		const now = this.host.now();
+	private async onFinished(at: number): Promise<void> {
+		const now = at;
+		this.record("f", at);
 		const runtime = formatDuration(Math.max(0, now - this.startedAt));
 		if (this.cfg.endText) {
 			await this.notify(this.cfg.endText);
@@ -399,7 +472,8 @@ export class DeviceRuntime {
 		this.emit("end");
 	}
 
-	private async onAborted(): Promise<void> {
+	private async onAborted(at: number): Promise<void> {
+		this.record("a", at);
 		await this.setState("running", false);
 		await this.setState("alertRuntime", false);
 		this.afterRun();

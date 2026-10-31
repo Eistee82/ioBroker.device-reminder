@@ -41,7 +41,8 @@ class DeviceReminder extends utils.Adapter {
             }
             const host = this.createHost();
             this.notifier = new Notifier(host, () => this.instanceConfig.recipients);
-            const registry = new DeviceRegistry(host, this.notifier, () => this.instanceConfig);
+            await this.ensureLearnObject();
+            const registry = new DeviceRegistry(host, this.notifier, () => this.instanceConfig, this.learnFiles());
             this.registry = registry;
             const sync = new DeviceSync(registry, this.objectWriter(), () => this.instanceConfig, this.log);
             this.sync = sync;
@@ -296,6 +297,47 @@ class DeviceReminder extends utils.Adapter {
             }
         }
     }
+    async ensureLearnObject() {
+        try {
+            await this.setObjectNotExistsAsync("learn", {
+                type: "meta",
+                common: { name: "Learning data", type: "meta.user" },
+                native: {},
+            });
+        }
+        catch (err) {
+            this.log.warn(`Cannot create the learning data object: ${errorMessage(err)}`);
+        }
+    }
+    learnFiles() {
+        const meta = `${this.namespace}.learn`;
+        return {
+            read: async (name) => {
+                try {
+                    const res = await this.readFileAsync(meta, name);
+                    const file = res.file;
+                    return typeof file === "string" ? file : Buffer.isBuffer(file) ? file.toString("utf8") : null;
+                }
+                catch {
+                    return null;
+                }
+            },
+            write: async (name, data) => {
+                if (this.unloading) {
+                    return;
+                }
+                await this.writeFileAsync(meta, name, data);
+            },
+            remove: async (name) => {
+                try {
+                    await this.delFileAsync(meta, name);
+                }
+                catch (err) {
+                    this.log.debug(`Cannot delete ${name}: ${errorMessage(err)}`);
+                }
+            },
+        };
+    }
     objectWriter() {
         return {
             extendObject: (id, obj) => this.extendObjectAsync(id, obj),
@@ -334,6 +376,11 @@ class DeviceReminder extends utils.Adapter {
                     return null;
                 }
                 return obj.common.type ?? "mixed";
+            },
+            getForeignObjectUnit: async (id) => {
+                const obj = await this.getForeignObjectAsync(id);
+                const unit = obj?.common?.unit;
+                return typeof unit === "string" ? unit : null;
             },
             setTimeout: (cb, ms) => this.setTimeout(cb, ms),
             clearTimeout: handle => this.clearTimeout(handle),

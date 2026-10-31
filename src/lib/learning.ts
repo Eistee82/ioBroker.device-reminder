@@ -45,6 +45,24 @@ export interface LearningSuggestion {
 	current?: ModeEvaluation;
 	/** Runs and spikes dropped because of gaps in the history. */
 	gapsDropped?: number;
+	/** Anti-crease filter: longest drum burst in s (set only when the filter is used). */
+	trailerBurstSec?: number;
+	/** Anti-crease filter: minimum quiet time before a burst in s. */
+	trailerGapSec?: number;
+	/** Anti-crease filter: bursts are held only this many seconds after the start. */
+	trailerAfterSec?: number;
+	/** Anti-crease filter: bursts are held only after a block of at least this mean power. */
+	trailerBlockVal?: number;
+	/** Anti-crease filter: length of the anti-crease phase after the end in s. */
+	trailerMaxSec?: number;
+	/** Anti-crease phase: none found, used by the filter, or not separable from phases inside a programme. */
+	trailer?: "none" | "used" | "notSeparable";
+	/** Runs with an anti-crease phase and all runs. */
+	trailerRuns?: [number, number];
+	/** End delay per run in s (from the end of the programme; NaN = not detected). */
+	delays?: number[];
+	/** Starts outside of a run. */
+	falseStarts?: number;
 }
 
 const MAX_DURATION_MS = 12 * 60 * 60 * 1000;
@@ -117,19 +135,21 @@ export class LearningRecorder {
  *
  * @param samples - Recorded samples
  * @param pollIntervalSec - Poll interval in seconds
- * @param opts - Device options and the current device type
+ * @param opts - Device options, the current device type and the unit factor of the state
  */
 export async function suggestType(
 	samples: LearningSample[],
 	pollIntervalSec: number,
-	opts: Pick<AnalyzeOptions, "abort" | "abortFixed" | "yieldFn" | "currentType"> = {},
+	opts: Pick<AnalyzeOptions, "abort" | "abortFixed" | "yieldFn" | "currentType" | "unitFactor"> = {},
 ): Promise<LearningSuggestion | { error: "tooFewSamples" | "noRun" }> {
 	if (samples.length < 20) {
 		return { error: "tooFewSamples" };
 	}
 	const poll = Math.max(pollIntervalSec, 1);
+	// the samples are in the unit of the state, the analysis works in W
+	const factor = opts.unitFactor && opts.unitFactor > 0 ? opts.unitFactor : 1;
 	const series = fromPoints(
-		samples.map(s => ({ ts: s.t, val: s.p })),
+		samples.map(s => ({ ts: s.t, val: s.p * factor })),
 		poll * 1000,
 		PAD_AFTER_MS,
 	);

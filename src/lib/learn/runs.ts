@@ -13,8 +13,16 @@ export const PAD_AFTER_MS = 3 * 60 * 60_000;
 export const MAX_WINDOWS = 20;
 /** Longest burst of an anti-crease trailer. */
 export const TRAILER_BURST_MS = 2 * 60_000;
-/** Distance between two bursts of an anti-crease trailer. */
-export const TRAILER_GAP_MS: readonly [number, number] = [60_000, 15 * 60_000];
+/** Longest distance between two bursts of an anti-crease trailer. */
+export const TRAILER_GAP_MAX_MS = 15 * 60_000;
+/**
+ * Blocks closer than this belong together (tumbling with short stops is one block).
+ *
+ * @param stepMs - Poll interval in ms
+ */
+export function TRAILER_GAP_MIN_MS(stepMs: number): number {
+	return Math.max(20_000, 2 * stepMs);
+}
 /** Minimum length of the block before an anti-crease trailer. */
 export const SUSTAINED_MS = 2 * 60_000;
 /**
@@ -61,8 +69,20 @@ export interface RunInfo {
 	gaps: Span[];
 	/** Median power of the drying plateau, or null. */
 	plateauLevel: number | null;
-	/** Level after the end (p90 of the first 10 minutes). */
+	/** Level after the end (p90 of the first 10 minutes without the bursts). */
 	postEnd: number;
+	/** First tick of the anti-crease trailer, or null. */
+	trailerFrom: number | null;
+	/** Last tick of the anti-crease trailer, or null. */
+	trailerTo: number | null;
+	/** Longest burst of the trailer in ms (0 without trailer). */
+	burstMaxMs: number;
+	/** Shortest quiet time before a burst of the trailer in ms (0 without trailer). */
+	gapMinMs: number;
+	/** p10 of the highest value of each burst in W (0 without trailer). */
+	burstP10W: number;
+	/** Mean power of the last 2 minutes of the terminal block (the last sustained block before the core end) in W. */
+	blockMean: number;
 }
 
 /** Simulated tick range with the expected result. */
@@ -251,28 +271,59 @@ function gapsBetween(blocks: Span[], upTo: number): Span[] {
 }
 
 /**
- * Anti-crease trailer: the longest suffix of at least two short bursts with regular distances after
- * a sustained block. Returns the index of the sustained block, or -1.
+ * Merge blocks whose distance is shorter than `minGapTicks`.
+ *
+ * @param blocks - Active blocks in order
+ * @param minGapTicks - Shortest distance that separates two blocks
+ */
+function mergeBlocks(blocks: Span[], minGapTicks: number): Span[] {
+	const out: Span[] = [];
+	for (const b of blocks) {
+		const last = out.at(-1);
+		if (last && b.from - last.to - 1 < minGapTicks) {
+			last.to = b.to;
+		} else {
+			out.push({ from: b.from, to: b.to });
+		}
+	}
+	return out;
+}
+
+/**
+ * Anti-crease trailer: the longest suffix of at least two short bursts (gaps up to 15 min, one longer
+ * gap up to MAX_PAUSE_MS for a door opened in between) after a sustained block. Blocks closer than
+ * TRAILER_GAP_MIN_MS are merged first.
  *
  * @param blocks - Active blocks of the segment
  * @param stepMs - Poll interval in ms
+ * @returns the sustained block and the bursts, or null
  */
-function trailerStart(blocks: Span[], stepMs: number): number {
+function trailerOf(blocks: Span[], stepMs: number): { block: Span; bursts: Span[] } | null {
+	const merged = mergeBlocks(blocks, Math.ceil(TRAILER_GAP_MIN_MS(stepMs) / stepMs));
 	const dur = (b: Span): number => (b.to - b.from + 1) * stepMs;
+	const gap = (a: Span, b: Span): number => (b.from - a.to - 1) * stepMs;
+	let door = false;
 	const gapOk = (a: Span, b: Span): boolean => {
-		const gap = (b.from - a.to - 1) * stepMs;
-		return gap >= TRAILER_GAP_MS[0] && gap <= TRAILER_GAP_MS[1];
+		const g = gap(a, b);
+		if (g <= TRAILER_GAP_MAX_MS) {
+			return true;
+		}
+		if (!door && g <= MAX_PAUSE_MS) {
+			door = true;
+			return true;
+		}
+		return false;
 	};
-	let k = blocks.length - 1;
+	let k = merged.length - 1;
 	let n = 0;
-	while (k >= 0 && dur(blocks[k]) <= TRAILER_BURST_MS && (n === 0 || gapOk(blocks[k], blocks[k + 1]))) {
+	while (k >= 0 && dur(merged[k]) <= TRAILER_BURST_MS && (n === 0 || gapOk(merged[k], merged[k + 1]))) {
 		k--;
 		n++;
 	}
-	if (n >= 2 && k >= 0 && dur(blocks[k]) >= SUSTAINED_MS && gapOk(blocks[k], blocks[k + 1])) {
-		return k;
+	if (n >= 2 && k >= 0 && dur(merged[k]) >= SUSTAINED_MS && gapOk(merged[k], merged[k + 1])) {
+		return { block: merged[k], bursts: merged.slice(k + 1) };
 	}
-	return -1;
+	return null;
 }
 
 interface Bounds {
@@ -289,18 +340,58 @@ interface Bounds {
  */
 function coreOf(s: TickSeries, seg: Span & { active: number }, runLimit: number): RunInfo {
 	const blocks = blocksOf(s, seg, runLimit);
-	const k = trailerStart(blocks, s.stepMs);
-	const coreEnd = k >= 0 ? blocks[k].to : seg.to;
+	const trailer = trailerOf(blocks, s.stepMs);
+	const coreEnd = trailer ? trailer.block.to : seg.to;
+	const bursts = trailer ? trailer.bursts : [];
+	let burstMaxMs = 0;
+	let gapMinMs = 0;
+	const maxima: number[] = [];
+	bursts.forEach((b, i) => {
+		burstMaxMs = Math.max(burstMaxMs, (b.to - b.from + 1) * s.stepMs);
+		const prevEnd = i === 0 ? coreEnd : bursts[i - 1].to;
+		const g = (b.from - prevEnd - 1) * s.stepMs;
+		gapMinMs = i === 0 ? g : Math.min(gapMinMs, g);
+		let m = Number.NEGATIVE_INFINITY;
+		for (let j = b.from; j <= b.to; j++) {
+			m = Math.max(m, s.max[j]);
+		}
+		maxima.push(m);
+	});
+	// terminal block: the last block of at least SUSTAINED_MS before the core end (short dips bridged)
+	const merged = mergeBlocks(
+		blocks.filter(b => b.to <= coreEnd),
+		Math.ceil(TRAILER_GAP_MIN_MS(s.stepMs) / s.stepMs),
+	);
+	const terminal =
+		[...merged].reverse().find(b => (b.to - b.from + 1) * s.stepMs >= SUSTAINED_MS) ?? merged.at(-1) ?? null;
+	// mean of the last SUSTAINED_MS of the terminal block (as the anti-crease filter sees it)
+	let blockMean = 0;
+	if (terminal) {
+		const from = Math.max(terminal.from, terminal.to - Math.ceil(SUSTAINED_MS / s.stepMs) + 1);
+		const vals: number[] = [];
+		for (let j = from; j <= terminal.to; j++) {
+			if (s.last[j] > runLimit) {
+				vals.push(s.last[j]);
+			}
+		}
+		blockMean = vals.length > 0 ? vals.reduce((a, v) => a + v, 0) / vals.length : 0;
+	}
 	return {
 		from: seg.from,
 		to: seg.to,
 		active: seg.active,
 		coreEnd,
 		runEnd: coreEnd,
-		bursts: k >= 0 ? blocks.slice(k + 1) : [],
+		bursts,
 		gaps: gapsBetween(blocks, coreEnd),
 		plateauLevel: null,
 		postEnd: 0,
+		trailerFrom: bursts.length > 0 ? bursts[0].from : null,
+		trailerTo: bursts.length > 0 ? (bursts.at(-1) as Span).to : null,
+		burstMaxMs,
+		gapMinMs,
+		burstP10W: maxima.length > 0 ? quantile(maxima, 0.1) : 0,
+		blockMean,
 	};
 }
 
@@ -372,8 +463,24 @@ function finishRun(
 		r.runEnd = r.coreEnd;
 		r.plateauLevel = null;
 	}
-	const post = valuesOf(s, r.runEnd + 1, Math.min(r.runEnd + Math.ceil(POST_END_MS / s.stepMs), next - 1));
-	r.postEnd = Math.max(0, post.length > 0 ? quantile(post, 0.9) : idle);
+	// the bursts of an anti-crease trailer are no level after the end
+	const inBurst = (i: number): boolean => r.bursts.some(b => i >= b.from && i <= b.to);
+	const quietOf = (from: number, to: number): number[] => {
+		const out: number[] = [];
+		for (let i = Math.max(0, from); i <= Math.min(s.length - 1, to); i++) {
+			if (s.valid[i] === 1 && !inBurst(i)) {
+				out.push(s.last[i]);
+			}
+		}
+		return out;
+	};
+	const post = quietOf(r.runEnd + 1, Math.min(r.runEnd + Math.ceil(POST_END_MS / s.stepMs), next - 1));
+	let level0 = post.length > 0 ? quantile(post, 0.9) : null;
+	if (level0 === null && r.trailerFrom !== null && r.trailerTo !== null) {
+		const quiet = quietOf(r.trailerFrom, r.trailerTo);
+		level0 = quiet.length > 0 ? median(quiet) : null;
+	}
+	r.postEnd = Math.max(0, level0 ?? idle);
 }
 
 /**

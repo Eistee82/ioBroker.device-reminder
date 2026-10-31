@@ -38,6 +38,60 @@ export interface DeviceTypeConfig extends TypeThresholds {
 	pauseUntilSec: number;
 	/** Pause protection: a phase below endVal staying below this power is a pause (0 = unused). */
 	pauseBelowVal: number;
+	/** Anti-crease filter: longest drum burst in s (missing or 0 = off; all trailer fields are set only when on). */
+	trailerBurstSec?: number;
+	/** Anti-crease filter: minimum quiet time before a burst in s (0 = automatic). */
+	trailerGapSec?: number;
+	/** Anti-crease filter: bursts are held only this many seconds after the start (0 = unused). */
+	trailerAfterSec?: number;
+	/** Anti-crease filter: bursts are held only after a block of at least this mean power (0 = unused). */
+	trailerBlockVal?: number;
+	/** Anti-crease filter: length of the anti-crease phase after the end in s. */
+	trailerMaxSec?: number;
+}
+
+/** Bounds of the anti-crease fields: [min when on, max]. */
+export const TRAILER_BOUNDS = {
+	trailerBurstSec: [15, 180],
+	trailerGapSec: [0, 600],
+	trailerAfterSec: [0, 21600],
+	trailerBlockVal: [0, 10000],
+	trailerMaxSec: [900, 14400],
+} as const;
+
+/** Names of the anti-crease fields. */
+export const TRAILER_KEYS = Object.keys(TRAILER_BOUNDS) as (keyof typeof TRAILER_BOUNDS)[];
+
+/**
+ * Normalized anti-crease fields of a raw type: empty when the filter is off (3.1.2 behaviour),
+ * otherwise all five clamped to their bounds.
+ *
+ * @param raw - Raw type (native row or settings)
+ */
+export function normalizeTrailer(raw: Record<string, unknown>): Partial<Record<(typeof TRAILER_KEYS)[number], number>> {
+	const val = (key: (typeof TRAILER_KEYS)[number]): number => {
+		const v = parseNumber(raw[key]);
+		return v !== null && Number.isFinite(v) ? Math.max(0, v) : 0;
+	};
+	const burst = val("trailerBurstSec");
+	if (burst <= 0) {
+		return {};
+	}
+	const clamp = (key: (typeof TRAILER_KEYS)[number], v: number, zeroOk: boolean): number => {
+		const [lo, hi] = TRAILER_BOUNDS[key];
+		if (zeroOk && v === 0) {
+			return 0;
+		}
+		return Math.min(hi, Math.max(lo, v));
+	};
+	const max = val("trailerMaxSec");
+	return {
+		trailerBurstSec: clamp("trailerBurstSec", burst, false),
+		trailerGapSec: clamp("trailerGapSec", val("trailerGapSec"), true),
+		trailerAfterSec: clamp("trailerAfterSec", val("trailerAfterSec"), true),
+		trailerBlockVal: clamp("trailerBlockVal", val("trailerBlockVal"), true),
+		trailerMaxSec: clamp("trailerMaxSec", max > 0 ? max : 7200, false),
+	};
 }
 
 /** Recipient config configuration. */
@@ -179,6 +233,10 @@ export interface DeviceConfig {
 	reminder: ReminderConfig;
 	/** Actions. */
 	actions: DeviceAction[];
+	/** Automatic optimisation of the detection (set only when on; off = values of the device type). */
+	autoOptimize?: boolean;
+	/** Report changes of the automatic optimisation as a message (set only when on). */
+	optimizeNotify?: boolean;
 }
 
 const MESSENGER_KINDS: readonly MessengerKind[] = [
@@ -328,6 +386,7 @@ function normalizeType(raw: unknown, index: number, id: string, warnings: string
 		pauseHoldSec: Math.max(0, num(raw.pauseHoldSec, 0)),
 		pauseUntilSec: Math.max(0, num(raw.pauseUntilSec, 0)),
 		pauseBelowVal: Math.max(0, num(raw.pauseBelowVal, 0)),
+		...normalizeTrailer(raw),
 	};
 }
 
@@ -618,6 +677,12 @@ export function normalizeDeviceConfig(native: Record<string, unknown>): {
 		reminder,
 		actions,
 	};
+	if (bool(src.autoOptimize, false)) {
+		config.autoOptimize = true;
+	}
+	if (bool(src.optimizeNotify, false)) {
+		config.optimizeNotify = true;
+	}
 	const sourceId = optStr(src.sourceId);
 	if (sourceId !== undefined) {
 		config.sourceId = sourceId;

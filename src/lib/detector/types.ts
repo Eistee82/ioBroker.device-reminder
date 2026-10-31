@@ -28,6 +28,11 @@ export interface TickResult {
 	average: number | null;
 	/** Whether a run is in progress after this step. */
 	started: boolean;
+	/**
+	 * Time of the call that raised each event (same length as `events`). Only set by detectors that
+	 * pass on calls later (anti-crease filter); otherwise every event belongs to the current call.
+	 */
+	times?: number[];
 }
 
 /** How start and end are detected. */
@@ -47,6 +52,16 @@ export interface DetectionSettings extends TypeThresholds {
 	pauseUntilSec?: number;
 	/** Pause protection: a phase below endVal staying below this power is a pause (0 = unused). */
 	pauseBelowVal?: number;
+	/** Anti-crease filter (master switch): longest phase >= endVal that still counts as a drum burst in s (0 = off). */
+	trailerBurstSec?: number;
+	/** Anti-crease filter: minimum time below endVal before a burst can be held in s (0 = automatic). */
+	trailerGapSec?: number;
+	/** Anti-crease filter: bursts are held only this many seconds after the start (0 = unused). */
+	trailerAfterSec?: number;
+	/** Anti-crease filter: bursts are held only after a sustained block with a mean of at least this power (0 = unused). */
+	trailerBlockVal?: number;
+	/** Anti-crease filter: how long the anti-crease phase may last after the end in s. */
+	trailerMaxSec?: number;
 }
 
 /** Additional evidence for one poll step. */

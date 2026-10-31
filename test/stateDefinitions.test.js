@@ -21,11 +21,11 @@ describe("stateDefinitions", () => {
 		assert.ok(ids.every(id => !/\s/.test(id)));
 	});
 
-	it("uses specific roles (only finished is a plain indicator among the reading states)", () => {
+	it("uses specific roles (only finished and a few flags are plain indicators among the reading states)", () => {
 		for (const def of DEVICE_STATES) {
 			assert.notStrictEqual(def.role, "state", def.id);
 			if (def.role === "indicator") {
-				assert.ok(["finished", "learning.active"].includes(def.id), def.id);
+				assert.ok(["finished", "learning.active", "antiCrease", "learning.optimized"].includes(def.id), def.id);
 			}
 		}
 	});

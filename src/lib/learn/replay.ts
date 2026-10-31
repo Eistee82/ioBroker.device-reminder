@@ -1,5 +1,5 @@
 import { createDetector } from "../detector/index.js";
-import type { DetectionMode, DetectionSettings } from "../detector/types.js";
+import type { DetectionMode, DetectionSettings, TickResult } from "../detector/types.js";
 import type { Window } from "./runs.js";
 import type { TickSeries } from "./ticks.js";
 
@@ -17,6 +17,8 @@ export interface ModeEvaluation {
 	endDelaySec: number;
 	/** Longest time from the real end of a run to the reported end, in seconds. */
 	endDelayMaxSec: number;
+	/** Delay per run window in s (NaN if the run was not detected correctly). */
+	delays?: number[];
 }
 
 /** Device options for the replay. */
@@ -25,6 +27,8 @@ export interface ReplayOptions {
 	abort: boolean;
 	/** Corrected abort detection. */
 	abortFixed: boolean;
+	/** Poll interval in s (anti-crease filter; default: step of the series). */
+	pollSec?: number;
 }
 
 /** Events of one simulated window. */
@@ -35,6 +39,8 @@ export interface SimResult {
 	aborted: number;
 	/** Timestamps of the "finished" events. */
 	finished: number[];
+	/** Timestamps of the "started" events. */
+	startedAt: number[];
 }
 
 /**
@@ -55,19 +61,25 @@ export function simulate(
 	opts: ReplayOptions,
 	stopAtFinish = false,
 ): SimResult {
-	const detector = createDetector(settings, { abort: opts.abort, abortFixed: opts.abortFixed });
+	const detector = createDetector(settings, {
+		abort: opts.abort,
+		abortFixed: opts.abortFixed,
+		pollSec: opts.pollSec ?? s.stepMs / 1000,
+	});
 	const feed = settings.mode === "timed" ? detector.feed?.bind(detector) : undefined;
-	const res: SimResult = { started: 0, aborted: 0, finished: [] };
-	const collect = (events: readonly string[], t: number): void => {
-		for (const ev of events) {
+	const res: SimResult = { started: 0, aborted: 0, finished: [], startedAt: [] };
+	const collect = (r: TickResult, t: number): void => {
+		r.events.forEach((ev, k) => {
+			const at = r.times?.[k] ?? t;
 			if (ev === "started") {
 				res.started++;
+				res.startedAt.push(at);
 			} else if (ev === "aborted") {
 				res.aborted++;
 			} else if (ev === "finished") {
-				res.finished.push(t);
+				res.finished.push(at);
 			}
-		}
+		});
 	};
 	const step = s.stepMs;
 	for (let i = win.fromIdx; i <= win.toIdx; i++) {
@@ -75,14 +87,14 @@ export function simulate(
 		const last = s.last[i];
 		if (feed && s.has[i] === 1) {
 			if (s.max[i] > last) {
-				collect(feed(s.max[i], t - step / 2).events, t - step / 2);
+				collect(feed(s.max[i], t - step / 2), t - step / 2);
 			}
 			if (s.min[i] < last) {
-				collect(feed(s.min[i], t - step / 4).events, t - step / 4);
+				collect(feed(s.min[i], t - step / 4), t - step / 4);
 			}
-			collect(feed(last, t).events, t);
+			collect(feed(last, t), t);
 		}
-		collect(detector.tick(last, t, { switchOff: false }).events, t);
+		collect(detector.tick(last, t, { switchOff: false }), t);
 		if (stopAtFinish && res.finished.length > 0) {
 			break;
 		}
@@ -100,6 +112,21 @@ export function simulate(
 export function runOk(s: TickSeries, win: Window, r: SimResult): boolean {
 	const end = s.t0 + (win.runEndIdx ?? 0) * s.stepMs;
 	return r.started === 1 && r.aborted === 0 && r.finished.length > 0 && r.finished[0] >= end;
+}
+
+/**
+ * Whether a run window was detected exactly right over the whole window: one start, no abort, one
+ * end not before the end of the run and no start after it. A spike window passes without a start.
+ *
+ * @param s - Series
+ * @param win - Window
+ * @param r - Simulation result of the whole window (without stopAtFinish)
+ */
+export function runOkFull(s: TickSeries, win: Window, r: SimResult): boolean {
+	if (win.runEndIdx === null) {
+		return r.started === 0;
+	}
+	return runOk(s, win, r) && r.finished.length === 1 && r.startedAt.every(t => t <= r.finished[0]);
 }
 
 /**
@@ -150,6 +177,7 @@ export async function evaluate(
 	let delaySum = 0;
 	let delayMax = 0;
 	let runs = 0;
+	const delays: number[] = [];
 	for (const win of windows) {
 		const res = simulate(s, win, settings, opts);
 		if (win.runEndIdx === null) {
@@ -157,11 +185,14 @@ export async function evaluate(
 			continue;
 		}
 		runs++;
-		if (runOk(s, win, res) && res.finished.length === 1) {
+		if (runOkFull(s, win, res)) {
 			detected++;
 			const delay = (res.finished[0] - (s.t0 + win.runEndIdx * s.stepMs)) / 1000;
 			delaySum += delay;
 			delayMax = Math.max(delayMax, delay);
+			delays.push(delay);
+		} else {
+			delays.push(Number.NaN);
 		}
 	}
 	await yieldFn?.();
@@ -172,6 +203,7 @@ export async function evaluate(
 		falseStarts,
 		endDelaySec: detected > 0 ? Math.round(delaySum / detected) : 0,
 		endDelayMaxSec: Math.round(delayMax),
+		delays,
 	};
 }
 

@@ -1,3 +1,4 @@
+import { TrailerFilter } from "../detector/trailer.js";
 import { LEVEL_SEP_W, median, quantile } from "./runs.js";
 export const GUARD_MIN_GAIN_SEC = 180;
 export function margin(d, pollSec) {
@@ -41,7 +42,66 @@ export function endCandidates(s, layout, minDeltaW) {
             out.push(c);
         }
     }
-    return out;
+    const bound = endBound(s, layout);
+    const kept = out.filter(e => e < bound);
+    return kept.length > 0 ? kept : out.slice(0, 1);
+}
+export function endBound(s, layout) {
+    let bound = Number.POSITIVE_INFINITY;
+    for (const r of layout.runs) {
+        if (r.bursts.length > 0) {
+            bound = Math.min(bound, 0.5 * r.burstP10W);
+        }
+        const vals = [];
+        for (let i = r.from; i <= r.coreEnd; i++) {
+            if (s.last[i] > layout.runLimit) {
+                vals.push(s.last[i]);
+            }
+        }
+        if (vals.length > 0) {
+            bound = Math.min(bound, 0.5 * median(vals));
+        }
+    }
+    return bound;
+}
+export function suppressBursts(s, layout, p, endVal, pollSec) {
+    const last = Float64Array.from(s.last);
+    const min = Float64Array.from(s.min);
+    const max = Float64Array.from(s.max);
+    for (const w of layout.windows) {
+        if (w.run === null) {
+            continue;
+        }
+        const r = layout.runs[w.run];
+        let started = false;
+        const probe = {
+            get started() {
+                return started;
+            },
+            tick(power, now) {
+                const i = Math.round((now - s.t0) / s.stepMs);
+                const events = [];
+                if (!started && i >= r.from) {
+                    started = true;
+                    events.push("started");
+                }
+                if (power !== s.last[i]) {
+                    last[i] = power;
+                    min[i] = power;
+                    max[i] = power;
+                }
+                return { events, status: null, average: null, started };
+            },
+            reset() {
+                started = false;
+            },
+        };
+        const filter = new TrailerFilter(probe, { ...p, endVal, standby: 0, pollSec });
+        for (let i = w.fromIdx; i <= w.toIdx; i++) {
+            filter.tick(s.last[i], s.t0 + i * s.stepMs);
+        }
+    }
+    return { ...s, last, min, max };
 }
 export function runTable(s, r, e, run) {
     const stepSec = s.stepMs / 1000;

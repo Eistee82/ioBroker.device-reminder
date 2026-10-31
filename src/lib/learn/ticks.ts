@@ -213,3 +213,143 @@ export function fromPoints(points: readonly HistoryPoint[], stepMs: number, exte
 	finalize(series);
 	return series;
 }
+
+/** One poll cell of a recording (unit of the state). */
+export interface TickCell {
+	/** Smallest value since the previous cell. */
+	min: number;
+	/** Largest value since the previous cell. */
+	max: number;
+	/** Value at the poll. */
+	last: number;
+	/** False for a cell without data (adapter restart). */
+	valid: boolean;
+}
+
+/** One RLE entry: count, last, min, max (min/max left out when equal to last; null = invalid). */
+type RleEntry = [number, number | null, number?, number?];
+
+/**
+ * Quantisation factor of stored values.
+ *
+ * @param unitFactor - Factor from the unit of the state to W
+ */
+export function quantOf(unitFactor: number): number {
+	return unitFactor >= 1000 ? 100_000 : 100;
+}
+
+/**
+ * Encode cells (unit of the state) as run-length encoded JSON of integers (value × q).
+ *
+ * @param cells - Cells
+ * @param q - Quantisation factor
+ */
+export function encodeCells(cells: readonly TickCell[], q: number): string {
+	const out: RleEntry[] = [];
+	let prev = "";
+	for (const c of cells) {
+		let entry: RleEntry;
+		if (!c.valid || !Number.isFinite(c.last)) {
+			entry = [1, null];
+		} else {
+			const last = Math.round(c.last * q);
+			const min = Math.round(Math.min(c.min, c.last) * q);
+			const max = Math.round(Math.max(c.max, c.last) * q);
+			entry = min === last && max === last ? [1, last] : [1, last, min, max];
+		}
+		const key = JSON.stringify(entry.slice(1));
+		const top = out.at(-1);
+		if (top && key === prev) {
+			top[0]++;
+		} else {
+			out.push(entry);
+			prev = key;
+		}
+	}
+	return JSON.stringify(out);
+}
+
+/**
+ * Decode cells written by `encodeCells`.
+ *
+ * @param data - Encoded cells
+ * @param q - Quantisation factor
+ */
+export function decodeCells(data: string, q: number): TickCell[] {
+	const parsed: unknown = JSON.parse(data);
+	if (!Array.isArray(parsed)) {
+		throw new Error("invalid cell data");
+	}
+	const out: TickCell[] = [];
+	for (const raw of parsed) {
+		if (!Array.isArray(raw) || typeof raw[0] !== "number" || raw[0] < 1) {
+			throw new Error("invalid cell entry");
+		}
+		const [n, last, min, max] = raw as RleEntry;
+		for (let k = 0; k < n; k++) {
+			if (last === null || typeof last !== "number") {
+				out.push({ min: 0, max: 0, last: 0, valid: false });
+			} else {
+				out.push({ last: last / q, min: (min ?? last) / q, max: (max ?? last) / q, valid: true });
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * Series from cells (unit of the cells); invalid cells keep the last valid value and are unknown.
+ *
+ * @param cells - Cells
+ * @param t0 - Time of cell 0 in ms
+ * @param stepMs - Poll interval in ms
+ * @param factor - Factor applied to every value (for example to W)
+ */
+export function fromCells(cells: readonly TickCell[], t0: number, stepMs: number, factor = 1): TickSeries {
+	const s = createSeries(t0, stepMs, cells.length);
+	let value = 0;
+	let first = -1;
+	cells.forEach((c, i) => {
+		if (c.valid) {
+			value = c.last * factor;
+			s.last[i] = value;
+			s.min[i] = Math.min(c.min, c.last) * factor;
+			s.max[i] = Math.max(c.max, c.last) * factor;
+			s.has[i] = 1;
+			s.points++;
+			if (first < 0) {
+				first = i;
+			}
+		} else {
+			s.last[i] = value;
+			s.min[i] = value;
+			s.max[i] = value;
+			s.valid[i] = 0;
+		}
+	});
+	s.lastTs = null;
+	s.firstIdx = first < 0 ? cells.length : first;
+	return s;
+}
+
+/** Fields of a stored run that `fromStored` needs. */
+export interface StoredCells {
+	/** Time of cell 0 in ms. */
+	ts: number;
+	/** Poll interval in ms. */
+	step: number;
+	/** Quantisation factor. */
+	q: number;
+	/** Encoded cells. */
+	data: string;
+}
+
+/**
+ * Series of a stored run in the unit of the state (multiply by `factor` for W).
+ *
+ * @param run - Stored run
+ * @param factor - Factor applied to every value
+ */
+export function fromStored(run: StoredCells, factor = 1): TickSeries {
+	return fromCells(decodeCells(run.data, run.q), run.ts, run.step, factor);
+}

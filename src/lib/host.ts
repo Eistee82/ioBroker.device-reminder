@@ -10,6 +10,8 @@ export interface DeviceHost {
 	setForeignValue(id: string, val: ioBroker.StateValue): Promise<void>;
 	/** Common type of a foreign object; `null` means the object does not exist. */
 	getForeignObjectCommonType(id: string): Promise<ioBroker.CommonType | null>;
+	/** Unit of a foreign state (`common.unit`); optional, missing means W. */
+	getForeignObjectUnit?(id: string): Promise<string | null>;
 	/** Adapter-managed timeout (never the global one). */
 	setTimeout(cb: () => void, ms: number): unknown;
 	/** Clear a timeout created with `setTimeout`. */
@@ -39,4 +41,14 @@ export interface RuntimeListener {
 export interface NotifierHost extends DeviceHost {
 	/** Send a message to another adapter instance. */
 	sendTo(instance: string, command: string, message: unknown): void;
+}
+
+/** Files of the adapter (learning data of the automatic optimisation). */
+export interface FileIO {
+	/** Read a file; null if it does not exist. */
+	read(name: string): Promise<string | null>;
+	/** Write a file. */
+	write(name: string, data: string): Promise<void>;
+	/** Delete a file (no error if it does not exist). */
+	remove(name: string): Promise<void>;
 }

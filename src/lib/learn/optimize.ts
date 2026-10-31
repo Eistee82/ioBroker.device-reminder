@@ -1,6 +1,22 @@
+import { TrailerFilter } from "../detector/trailer.js";
+import type { Detector, TickResult } from "../detector/types.js";
 import type { Layout, RunInfo } from "./runs.js";
 import { LEVEL_SEP_W, median, quantile } from "./runs.js";
 import type { TickSeries } from "./ticks.js";
+
+/** Settings of the anti-crease filter (s, W; 0 = unused). */
+export interface TrailerParams {
+	/** Longest drum burst in s. */
+	trailerBurstSec: number;
+	/** Minimum quiet time before a burst in s. */
+	trailerGapSec: number;
+	/** Bursts are held only this many seconds after the start. */
+	trailerAfterSec: number;
+	/** Bursts are held only after a block of at least this mean power (W). */
+	trailerBlockVal: number;
+	/** Length of the anti-crease phase after the end in s. */
+	trailerMaxSec: number;
+}
 
 /** Minimum mean gain per run (s) for the pause protection to be suggested. */
 export const GUARD_MIN_GAIN_SEC = 180;
@@ -129,7 +145,91 @@ export function endCandidates(s: TickSeries, layout: Layout, minDeltaW: number):
 			out.push(c);
 		}
 	}
-	return out;
+	// an end threshold near the drum bursts or the run power would let the bursts keep the run going
+	const bound = endBound(s, layout);
+	const kept = out.filter(e => e < bound);
+	return kept.length > 0 ? kept : out.slice(0, 1);
+}
+
+/**
+ * Upper bound of the end threshold: half the p10 of the burst maxima and half the median run power.
+ *
+ * @param s - Series
+ * @param layout - Runs and levels
+ */
+export function endBound(s: TickSeries, layout: Layout): number {
+	let bound = Number.POSITIVE_INFINITY;
+	for (const r of layout.runs) {
+		if (r.bursts.length > 0) {
+			bound = Math.min(bound, 0.5 * r.burstP10W);
+		}
+		const vals: number[] = [];
+		for (let i = r.from; i <= r.coreEnd; i++) {
+			if (s.last[i] > layout.runLimit) {
+				vals.push(s.last[i]);
+			}
+		}
+		if (vals.length > 0) {
+			bound = Math.min(bound, 0.5 * median(vals));
+		}
+	}
+	return bound;
+}
+
+/**
+ * Copy of a series as the inner detector would see it behind the anti-crease filter, assuming a run
+ * in progress from the start of each run window (planning only; the real filter decides at replay).
+ *
+ * @param s - Series in W
+ * @param layout - Runs and windows
+ * @param p - Filter settings
+ * @param endVal - End threshold in W
+ * @param pollSec - Poll interval in s
+ */
+export function suppressBursts(
+	s: TickSeries,
+	layout: Layout,
+	p: TrailerParams,
+	endVal: number,
+	pollSec: number,
+): TickSeries {
+	const last = Float64Array.from(s.last);
+	const min = Float64Array.from(s.min);
+	const max = Float64Array.from(s.max);
+	for (const w of layout.windows) {
+		if (w.run === null) {
+			continue;
+		}
+		const r = layout.runs[w.run];
+		let started = false;
+		const probe: Detector = {
+			get started(): boolean {
+				return started;
+			},
+			tick(power: number, now: number): TickResult {
+				const i = Math.round((now - s.t0) / s.stepMs);
+				const events: TickResult["events"] = [];
+				if (!started && i >= r.from) {
+					started = true;
+					events.push("started");
+				}
+				if (power !== s.last[i]) {
+					last[i] = power;
+					min[i] = power;
+					max[i] = power;
+				}
+				return { events, status: null, average: null, started };
+			},
+			reset(): void {
+				started = false;
+			},
+		};
+		const filter = new TrailerFilter(probe, { ...p, endVal, standby: 0, pollSec });
+		for (let i = w.fromIdx; i <= w.toIdx; i++) {
+			filter.tick(s.last[i], s.t0 + i * s.stepMs);
+		}
+	}
+	return { ...s, last, min, max };
 }
 
 /**

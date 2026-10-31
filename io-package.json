@@ -496,6 +496,27 @@
   "objects": [],
   "instanceObjects": [
     {
+      "_id": "learn",
+      "type": "meta",
+      "common": {
+        "name": {
+          "en": "Learning data",
+          "de": "Anlerndaten",
+          "ru": "Данные обучения",
+          "pt": "Dados de aprendizagem",
+          "nl": "Leergegevens",
+          "fr": "Données d'apprentissage",
+          "it": "Dati di apprendimento",
+          "es": "Datos de aprendizaje",
+          "pl": "Dane uczenia",
+          "uk": "Дані навчання",
+          "zh-cn": "学习数据"
+        },
+        "type": "meta.user"
+      },
+      "native": {}
+    },
+    {
       "_id": "info",
       "type": "channel",
       "common": {

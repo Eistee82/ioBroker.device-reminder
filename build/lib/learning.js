@@ -42,7 +42,8 @@ export async function suggestType(samples, pollIntervalSec, opts = {}) {
         return { error: "tooFewSamples" };
     }
     const poll = Math.max(pollIntervalSec, 1);
-    const series = fromPoints(samples.map(s => ({ ts: s.t, val: s.p })), poll * 1000, PAD_AFTER_MS);
+    const factor = opts.unitFactor && opts.unitFactor > 0 ? opts.unitFactor : 1;
+    const series = fromPoints(samples.map(s => ({ ts: s.t, val: s.p * factor })), poll * 1000, PAD_AFTER_MS);
     const result = await analyzeTicks(series, poll, { ...opts, minRuns: 1, recording: true });
     if ("error" in result || !result.evaluation.some(e => e.detected > 0)) {
         return { error: "noRun" };

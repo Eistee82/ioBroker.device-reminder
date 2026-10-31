@@ -29,6 +29,16 @@ describe("detector behaviour of 3.1.2 (golden fixture of commit cd5e67f)", () =>
 		assert.deepStrictEqual(differences({ pauseHoldSec: 600, pauseUntilSec: 0, pauseBelowVal: 0 }), []);
 	});
 
+	it("is unchanged with all anti-crease fields 0 (no filter is built)", () => {
+		const zero = { trailerBurstSec: 0, trailerGapSec: 0, trailerAfterSec: 0, trailerBlockVal: 0, trailerMaxSec: 0 };
+		assert.deepStrictEqual(differences(zero), []);
+		assert.deepStrictEqual(differences({ ...zero, trailerGapSec: 60, trailerMaxSec: 3600 }), []);
+	});
+
+	it("notices an active anti-crease filter (the fixture is sensitive)", () => {
+		assert.ok(differences({ trailerBurstSec: 60 }).length > 0);
+	});
+
 	it("notices an active pause protection (the fixture is sensitive)", () => {
 		assert.ok(differences({ pauseHoldSec: 600, pauseUntilSec: 0, pauseBelowVal: 100 }).length > 0);
 	});

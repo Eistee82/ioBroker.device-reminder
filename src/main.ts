@@ -9,7 +9,7 @@ import { DeviceRegistry } from "./lib/deviceRegistry.js";
 import type { ObjectWriter } from "./lib/deviceObjects.js";
 import { DeviceSync } from "./lib/deviceSync.js";
 import { ensureDeviceObjects } from "./lib/deviceObjects.js";
-import type { NotifierHost } from "./lib/host.js";
+import type { FileIO, NotifierHost } from "./lib/host.js";
 import type { LegacyStateIo } from "./lib/migration.js";
 import { isLegacyConfig, migrateLegacyConfig, migrateLegacyStates } from "./lib/migration.js";
 import { Notifier } from "./lib/notifier.js";
@@ -56,7 +56,8 @@ class DeviceReminder extends utils.Adapter {
 
 			const host = this.createHost();
 			this.notifier = new Notifier(host, () => this.instanceConfig.recipients);
-			const registry = new DeviceRegistry(host, this.notifier, () => this.instanceConfig);
+			await this.ensureLearnObject();
+			const registry = new DeviceRegistry(host, this.notifier, () => this.instanceConfig, this.learnFiles());
 			this.registry = registry;
 			const sync = new DeviceSync(registry, this.objectWriter(), () => this.instanceConfig, this.log);
 			this.sync = sync;
@@ -367,6 +368,48 @@ class DeviceReminder extends utils.Adapter {
 		}
 	}
 
+	/** Meta object holding the learning data files of the automatic optimisation. */
+	private async ensureLearnObject(): Promise<void> {
+		try {
+			await this.setObjectNotExistsAsync("learn", {
+				type: "meta",
+				common: { name: "Learning data", type: "meta.user" },
+				native: {},
+			});
+		} catch (err) {
+			this.log.warn(`Cannot create the learning data object: ${errorMessage(err)}`);
+		}
+	}
+
+	/** Files of the automatic optimisation (below the meta object `<namespace>.learn`). */
+	private learnFiles(): FileIO {
+		const meta = `${this.namespace}.learn`;
+		return {
+			read: async name => {
+				try {
+					const res = await this.readFileAsync(meta, name);
+					const file: unknown = res.file;
+					return typeof file === "string" ? file : Buffer.isBuffer(file) ? file.toString("utf8") : null;
+				} catch {
+					return null;
+				}
+			},
+			write: async (name, data) => {
+				if (this.unloading) {
+					return;
+				}
+				await this.writeFileAsync(meta, name, data);
+			},
+			remove: async name => {
+				try {
+					await this.delFileAsync(meta, name);
+				} catch (err) {
+					this.log.debug(`Cannot delete ${name}: ${errorMessage(err)}`);
+				}
+			},
+		};
+	}
+
 	private objectWriter(): ObjectWriter {
 		return {
 			extendObject: (id, obj) => this.extendObjectAsync(id, obj),
@@ -406,6 +449,11 @@ class DeviceReminder extends utils.Adapter {
 					return null;
 				}
 				return (obj.common as Partial<ioBroker.StateCommon>).type ?? "mixed";
+			},
+			getForeignObjectUnit: async id => {
+				const obj = await this.getForeignObjectAsync(id);
+				const unit = (obj?.common as Partial<ioBroker.StateCommon> | undefined)?.unit;
+				return typeof unit === "string" ? unit : null;
 			},
 			setTimeout: (cb, ms) => this.setTimeout(cb, ms),
 			clearTimeout: handle => this.clearTimeout(handle as ioBroker.Timeout),

@@ -25,19 +25,25 @@ export function replay(points, s, o = {}) {
 			pauseHoldSec: s.pauseHoldSec,
 			pauseUntilSec: s.pauseUntilSec,
 			pauseBelowVal: s.pauseBelowVal,
+			trailerBurstSec: s.trailerBurstSec,
+			trailerGapSec: s.trailerGapSec,
+			trailerAfterSec: s.trailerAfterSec,
+			trailerBlockVal: s.trailerBlockVal,
+			trailerMaxSec: s.trailerMaxSec,
 		},
-		{ abort, abortFixed },
+		{ abort, abortFixed, pollSec: stepMs / 1000 },
 	);
 	const out = { started: 0, finished: 0, aborted: 0, finishedAt: [], startedAt: [] };
-	const count = (events, t) => {
-		for (const e of events) {
+	const count = (res, t) => {
+		res.events.forEach((e, k) => {
+			const at = res.times?.[k] ?? t;
 			out[e] = (out[e] ?? 0) + 1;
 			if (e === "finished") {
-				out.finishedAt.push(t);
+				out.finishedAt.push(at);
 			} else if (e === "started") {
-				out.startedAt.push(t);
+				out.startedAt.push(at);
 			}
-		}
+		});
 	};
 	let idx = 0;
 	let value = points[0].val;
@@ -45,11 +51,11 @@ export function replay(points, s, o = {}) {
 		while (idx < points.length && points[idx].ts <= t) {
 			value = points[idx].val;
 			if (s.mode === "timed") {
-				count(detector.feed(value, points[idx].ts).events, points[idx].ts);
+				count(detector.feed(value, points[idx].ts), points[idx].ts);
 			}
 			idx++;
 		}
-		count(detector.tick(value, t, { switchOff: switchOff(t) }).events, t);
+		count(detector.tick(value, t, { switchOff: switchOff(t) }), t);
 	}
 	delete out.running;
 	return out;
