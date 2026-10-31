@@ -208,7 +208,7 @@ Beim Anlernen werden Schwellwerte aus echten Läufen abgeleitet: aus der History
 
 ### Aus der History
 
-Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, InfluxDB oder jeder andere Adapter, der `getHistory` beantwortet), bietet **Anlernen** auf der Gerätekarte zuerst die History an. Die Standard-History aus den Systemeinstellungen wird bevorzugt. Du musst kein Programm wählen: Der Adapter unterscheidet keine Programme, der Gerätetyp muss **jeden** Lauf erkennen.
+Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, InfluxDB oder jeder andere Adapter, der `getHistory` beantwortet), wertet **Anlernen** auf der Gerätekarte zuerst die History aus. Nur wenn sie mindestens 2 vollständige Läufe enthält, fragt ein Dialog (mit der Zahl der gefundenen Läufe), ob aus der History angelernt oder ein neuer Lauf aufgezeichnet werden soll; sonst sagt der Dialog, warum, und zeichnet einen neuen Lauf auf. Die Standard-History aus den Systemeinstellungen wird bevorzugt. Du musst kein Programm wählen: Der Adapter unterscheidet keine Programme, der Gerätetyp muss **jeden** Lauf erkennen.
 
 **Laden**
 

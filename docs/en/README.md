@@ -208,7 +208,7 @@ Learning derives thresholds from real runs: from the history of the power state 
 
 ### From the history
 
-If the power state is logged by a history adapter (history, SQL, InfluxDB or any other adapter that answers `getHistory`), **Learn** on the device card first offers to use the history. The default history of the system settings is preferred. You never choose a programme: the adapter does not tell programmes apart, the device type has to detect **every** run.
+If the power state is logged by a history adapter (history, SQL, InfluxDB or any other adapter that answers `getHistory`), **Learn** on the device card first analyses the history. Only if it holds at least 2 complete runs, a dialog (showing the number of runs found) asks whether to learn from the history or to record a new run; otherwise the dialog says why and a new run is recorded. The default history of the system settings is preferred. You never choose a programme: the adapter does not tell programmes apart, the device type has to detect **every** run.
 
 **Loading**
 

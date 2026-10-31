@@ -727,6 +727,7 @@ describe("deviceManagement", () => {
 			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, learned] });
 			await actionOf(info, "learn").handler("trockner", action);
 			assert.strictEqual(action.forms[0].options.data.instance, "history.0");
+			assert.strictEqual(action.forms[0].options.data.runs, 3, "the source dialog shows the runs found");
 			assert.strictEqual(ctx.historyQuery.options.instance, "history.0");
 			assert.strictEqual(action.forms.progress.closed, true);
 			const dialog = action.forms[1];
@@ -806,13 +807,26 @@ describe("deviceManagement", () => {
 			assert.strictEqual(ctx.host.own("trockner.learning.active"), true);
 		});
 
+		it("does not offer an empty history and records a new run", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner");
+			withHistory(ctx, []);
+			const [info] = await load(ctx);
+			const action = fakeAction();
+			await actionOf(info, "learn").handler("trockner", action);
+			assert.strictEqual(action.forms.length, 0, "the history is not offered");
+			assert.ok(action.forms.progress.closed);
+			assert.strictEqual(ctx.host.own("trockner.learning.active"), true);
+		});
+
 		it("records a new run when the history holds fewer than two runs", async () => {
 			const ctx = setup();
 			await addDevice(ctx, "trockner");
 			withHistory(ctx, historyOf([washingMachine]));
 			const [info] = await load(ctx);
-			const action = fakeAction({ forms: [{ source: "history" }] });
+			const action = fakeAction();
 			await actionOf(info, "learn").handler("trockner", action);
+			assert.strictEqual(action.forms.length, 0, "the history is not offered");
 			assert.ok(action.messages[0].en.includes("Fewer than 2"));
 			assert.strictEqual(ctx.host.own("trockner.learning.active"), true);
 		});
@@ -825,8 +839,9 @@ describe("deviceManagement", () => {
 				throw new Error("connection lost");
 			};
 			const [info] = await load(ctx);
-			const action = fakeAction({ forms: [{ source: "history" }] });
+			const action = fakeAction();
 			await actionOf(info, "learn").handler("trockner", action);
+			assert.strictEqual(action.forms.length, 0, "the history is not offered");
 			assert.ok(action.messages[0].en.includes("could not be read"), JSON.stringify(action.messages[0]));
 			assert.ok(ctx.host.logs.warn.some(m => m.includes("connection lost")));
 			assert.strictEqual(ctx.host.own("trockner.learning.active"), true);

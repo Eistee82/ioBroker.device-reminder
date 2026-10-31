@@ -744,7 +744,8 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	}
 
 	/**
-	 * Offer to learn from the stored history of the power state instead of recording a run.
+	 * Learn from the stored history of the power state instead of recording a run. The history is
+	 * analysed first; only if it holds enough runs the user is asked whether to use it.
 	 *
 	 * @param id - Device id
 	 * @param ctx - Action context
@@ -760,16 +761,6 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			this.adapter.log.debug(`No history for ${powerId}: ${errorMessage(err)}`);
 		}
 		if (!powerId || !instance) {
-			return false;
-		}
-		const choice = await ctx.showForm(buildLearnSourceSchema(), {
-			data: { source: "history", instance },
-			title: TEXT.learnTitle,
-		});
-		if (!choice) {
-			return true;
-		}
-		if (choice.source !== "history") {
 			return false;
 		}
 		const progress = await ctx.openProgress(TEXT.learnAnalysing, { value: 0, label: TEXT.learnReading });
@@ -828,6 +819,16 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 				return true;
 			}
 			await ctx.showMessage(unreadable ? TEXT.learnHistoryUnreadable : TEXT.learnHistoryTooFewRuns);
+			return false;
+		}
+		const choice = await ctx.showForm(buildLearnSourceSchema(), {
+			data: { source: "history", instance, runs: result.runs },
+			title: TEXT.learnTitle,
+		});
+		if (!choice) {
+			return true;
+		}
+		if (choice.source !== "history") {
 			return false;
 		}
 		await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);
@@ -984,15 +985,16 @@ export function buildLearnSourceSchema(): JsonFormSchema {
 				],
 				newLine: true,
 				xs: 12,
-				sm: 8,
+				sm: 6,
 			},
 			instance: {
 				type: "text",
 				label: I18n.getTranslatedObject("dm_learnHistoryInstance"),
 				disabled: true,
 				xs: 12,
-				sm: 4,
+				sm: 3,
 			},
+			runs: { type: "number", label: I18n.getTranslatedObject("dm_learnRuns"), disabled: true, xs: 12, sm: 3 },
 		},
 	};
 }

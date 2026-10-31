@@ -599,16 +599,6 @@ export class ReminderDeviceManagement extends DeviceManagement {
         if (!powerId || !instance) {
             return false;
         }
-        const choice = await ctx.showForm(buildLearnSourceSchema(), {
-            data: { source: "history", instance },
-            title: TEXT.learnTitle,
-        });
-        if (!choice) {
-            return true;
-        }
-        if (choice.source !== "history") {
-            return false;
-        }
         const progress = await ctx.openProgress(TEXT.learnAnalysing, { value: 0, label: TEXT.learnReading });
         let sent = 0;
         let updates = Promise.resolve();
@@ -663,6 +653,16 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 return true;
             }
             await ctx.showMessage(unreadable ? TEXT.learnHistoryUnreadable : TEXT.learnHistoryTooFewRuns);
+            return false;
+        }
+        const choice = await ctx.showForm(buildLearnSourceSchema(), {
+            data: { source: "history", instance, runs: result.runs },
+            title: TEXT.learnTitle,
+        });
+        if (!choice) {
+            return true;
+        }
+        if (choice.source !== "history") {
             return false;
         }
         await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);
@@ -774,15 +774,16 @@ export function buildLearnSourceSchema() {
                 ],
                 newLine: true,
                 xs: 12,
-                sm: 8,
+                sm: 6,
             },
             instance: {
                 type: "text",
                 label: I18n.getTranslatedObject("dm_learnHistoryInstance"),
                 disabled: true,
                 xs: 12,
-                sm: 4,
+                sm: 3,
             },
+            runs: { type: "number", label: I18n.getTranslatedObject("dm_learnRuns"), disabled: true, xs: 12, sm: 3 },
         },
     };
 }
