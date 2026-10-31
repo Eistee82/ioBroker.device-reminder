@@ -61,6 +61,7 @@ Every device uses a device type. A type holds the thresholds and the detection m
 | Pause hold (s) | Pause protection: how long a pause below the end value has to last before it counts as the end (0 = off) |
 | Pause if it starts before (s) | Pause protection: a phase below the end value that begins this early after the start is a pause (0 = unused) |
 | Pause if power below (W) | Pause protection: a phase below the end value whose power stays below this value is a pause (0 = unused) |
+| Anti-crease: max. burst / min. gap / only after / min. block power / max. duration | [Anti-crease filter](#anti-crease-phase) (max. burst 0 = off) |
 
 ### Detection modes
 
@@ -264,19 +265,23 @@ The optional **anti-crease filter** of a device type (off by default) holds back
 | `trailerBlockVal` | Drum movements are held only after a block of at least 2 minutes whose power in its last 2 minutes is at least this value (0 = unused), e.g. the spinning at the end of a programme |
 | `trailerMaxSec` | Length of the anti-crease phase after the end in s (900–14400); it also ends after 20 minutes without a drum movement |
 
+The fields are columns of the device type table (shown once "Anti-crease: max. burst" is above 0), part of the learn dialog when learning suggests the filter, and are shown in the device details. While the filter holds drum movements, the state `antiCrease` of the device is true.
+
 Learning finds anti-crease phases (at least 2 short bursts, also 1 minute apart, after a sustained block; one longer gap for a door opened in between is allowed), measures the end delay from the end of the programme and sets the fields when at least 2 runs have such a phase and the filter reports the end at least a minute earlier. End values near the burst power are never suggested. Inside a programme a phase can look exactly like the anti-crease phase (soaking with drum movements). The filter variants with `trailerBlockVal` and `trailerAfterSec` tell them apart; if no variant detects every run, the dialog shows "not separable" and the end stays after the anti-crease phase (it is never reported too early).
 
 ### Automatic optimisation
 
-The device option **Automatic optimisation** (off by default) checks the detection after every run and improves it without restarting the instance and without changing the device type:
+The device option **Automatic optimisation** (off by default, device dialog → **Advanced**) checks the detection after every run and improves it without restarting the instance and without changing the device type:
 
 - The power around every run (30 minutes before to 30 minutes of quiet after the end, at most 3 hours after it) is stored compactly in the file storage of the adapter (`<namespace>.learn/<device>.a.json` / `.b.json`, at most 20 runs of all programmes and 10 false starts, at most 400 KB). No history adapter is needed.
+- If the power state is logged by a history adapter, the runs and false starts of its last 30 days are taken over once when the option is switched on for the first time (replayed with the current values, as the runtime would have seen them); then the optimisation runs right away. Without a history adapter it starts with the first run.
 - Every candidate is replayed with the real detection over **all** stored runs and false starts; a change is applied only if every run is detected exactly once, no false start starts a run and the end is never reported before the programme end. Programmes that occurred before can therefore not be broken.
 - **Repair** (looser values) right after one run that was not detected correctly (end reported too early, false start, e.g. by anti-crease bursts). Afterwards no tightening for 5 runs and 14 days.
 - **Tightening** (end reported earlier, e.g. the anti-crease filter on) only with at least 4 runs, 2 new runs and 24 hours since the last change, with values changing by at most 25 % (thresholds 30 %) per step, a cross-check without each programme group, slightly changed input (±10 % power, one poll later, missing values) and limits from the longest pause and burst ever seen. It needs a gain of at least one minute (or fewer false starts).
 - The optimised values are stored per device and apply only while the option is on; switching it off means the values of the device type again (3.1.2 behaviour). If the device type is edited, the optimised values are discarded.
 - If no setting detects all stored runs, nothing changes (warning in the log); after 3 such runs in a row the optimisation pauses until the learning data is cleared.
-- States: `learning.optimized`, `learning.parameters`, `learning.lastChange`, `learning.optimizeInfo`, `learning.lastEndDelay`; `learning.undo` undoes the last change, `learning.reset` goes back to the values of the device type (both lock the tightening for 14 days). With the option "Report changes as a message" every change is also sent to the recipients of the device.
+- States: `learning.optimized`, `learning.parameters`, `learning.lastChange`, `learning.optimizeInfo`, `learning.lastEndDelay`; `learning.undo` undoes the last change, `learning.reset` goes back to the values of the device type (both lock the tightening for 14 days). With the option "Report changes as a message" every change is also sent to the recipients of the device, in the language of the installation (the log is in English).
+- The action **Optimisation** on the device card (shown while the option is on or learning data exists) shows the status, the anti-crease handling, every value of the device type next to the value in use (changed values are marked with `*`), the stored runs (date, duration, programme group, end delay, classification and whether the current values detect it) and the last changes. Under **Action** you can undo the last change, reset to the values of the device type, discard one stored run (e.g. a run that was no normal use; the limits of all runs ever seen stay), clear the learning data (after a confirmation) or save the values in use as a new device type (this restarts the instance). While the option is off, only clearing is offered.
 
 Limits: a restart of the adapter during a run loses that run (a restart after the end is resumed); a programme never seen before is only protected by the limits and margins and is repaired after one faulty run; changing the poll interval or the unit of the power state discards the stored runs.
 

@@ -57,7 +57,16 @@ class DeviceReminder extends utils.Adapter {
 			const host = this.createHost();
 			this.notifier = new Notifier(host, () => this.instanceConfig.recipients);
 			await this.ensureLearnObject();
-			const registry = new DeviceRegistry(host, this.notifier, () => this.instanceConfig, this.learnFiles());
+			const language = await this.systemLanguage();
+			const registry = new DeviceRegistry(host, this.notifier, () => this.instanceConfig, this.learnFiles(), {
+				language: () => language,
+				history: {
+					object: id => this.getForeignObjectAsync(id),
+					alive: async instance =>
+						(await this.getForeignStateAsync(`system.adapter.${instance}.alive`))?.val === true,
+					getHistory: (id, options) => this.getHistoryAsync(id, options),
+				},
+			});
 			this.registry = registry;
 			const sync = new DeviceSync(registry, this.objectWriter(), () => this.instanceConfig, this.log);
 			this.sync = sync;
@@ -365,6 +374,17 @@ class DeviceReminder extends utils.Adapter {
 				await this.subscribeForeignStatesAsync(id);
 				this.subscribed.add(id);
 			}
+		}
+	}
+
+	/** Language of the installation (system.config), the adapter property is not set in every js-controller. */
+	private async systemLanguage(): Promise<string> {
+		try {
+			const lang = (await this.getForeignObjectAsync("system.config"))?.common?.language;
+			return (typeof lang === "string" && lang) || this.language || "en";
+		} catch (err) {
+			this.log.debug(`Cannot read the system language: ${errorMessage(err)}`);
+			return this.language || "en";
 		}
 	}
 

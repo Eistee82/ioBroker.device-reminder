@@ -214,6 +214,60 @@
 							"width": "8%",
 							"min": 0,
 							"step": 0.05
+						},
+						{
+							"type": "number",
+							"attr": "trailerBurstSec",
+							"title": "typeTrailerBurst",
+							"tooltip": "typeTrailerBurstTooltip",
+							"width": "7%",
+							"min": 0,
+							"max": 180,
+							"step": 1
+						},
+						{
+							"type": "number",
+							"attr": "trailerGapSec",
+							"title": "typeTrailerGap",
+							"tooltip": "typeTrailerGapTooltip",
+							"width": "7%",
+							"min": 0,
+							"max": 600,
+							"step": 1,
+							"hidden": "!data.trailerBurstSec"
+						},
+						{
+							"type": "number",
+							"attr": "trailerAfterSec",
+							"title": "typeTrailerAfter",
+							"tooltip": "typeTrailerAfterTooltip",
+							"width": "7%",
+							"min": 0,
+							"max": 21600,
+							"step": 1,
+							"hidden": "!data.trailerBurstSec"
+						},
+						{
+							"type": "number",
+							"attr": "trailerBlockVal",
+							"title": "typeTrailerBlock",
+							"tooltip": "typeTrailerBlockTooltip",
+							"width": "7%",
+							"min": 0,
+							"max": 10000,
+							"step": 0.05,
+							"hidden": "!data.trailerBurstSec"
+						},
+						{
+							"type": "number",
+							"attr": "trailerMaxSec",
+							"title": "typeTrailerMax",
+							"tooltip": "typeTrailerMaxTooltip",
+							"width": "7%",
+							"min": 0,
+							"max": 14400,
+							"step": 1,
+							"hidden": "!data.trailerBurstSec"
 						}
 					]
 				}

@@ -163,6 +163,22 @@ describe("deviceForm", () => {
 			assert.deepStrictEqual(deviceConfigToForm(config), form);
 		});
 
+		it("stores the automatic optimisation only when it is on", () => {
+			const off = formToDeviceConfig(validForm({ optimizeNotify: true })).config;
+			assert.ok(!("autoOptimize" in off) && !("optimizeNotify" in off), "off: 3.1.2 configuration unchanged");
+			assert.ok(!("autoOptimize" in deviceConfigToForm(off)));
+			const on = formToDeviceConfig(validForm({ autoOptimize: true, optimizeNotify: true })).config;
+			assert.strictEqual(on.autoOptimize, true);
+			assert.strictEqual(on.optimizeNotify, true);
+			const back = deviceConfigToForm(on);
+			assert.strictEqual(back.autoOptimize, true);
+			assert.strictEqual(back.optimizeNotify, true);
+			const items = buildDeviceSchema(instanceConfig()).items.advancedSection.items;
+			assert.strictEqual(items.autoOptimize.type, "checkbox");
+			assert.strictEqual(items.optimizeNotify.hidden, "!data.autoOptimize");
+			assert.ok(!items.autoOptimize.label.en.startsWith("dm_"), "translated");
+		});
+
 		it("omits empty optional ids", () => {
 			const { config } = formToDeviceConfig(validForm({ sourceId: " ", switchId: "" }));
 			assert.ok(config);

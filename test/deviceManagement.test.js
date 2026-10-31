@@ -1,13 +1,21 @@
 import assert from "node:assert";
 import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
-import { buildLearnSchema, parseLearnForm, ReminderDeviceManagement } from "../build/lib/deviceManagement.js";
+import {
+	buildLearnSchema,
+	buildOptimizationView,
+	parseLearnForm,
+	ReminderDeviceManagement,
+	suggestionOf,
+} from "../build/lib/deviceManagement.js";
 import { ensureDeviceObjects } from "../build/lib/deviceObjects.js";
 import * as I18n from "@iobroker/adapter-core/i18n";
 import { Notifier } from "../build/lib/notifier.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { washingMachine } from "./helpers/curves.js";
 import { historyOf, longPause } from "./helpers/history.js";
+import { memoryFiles } from "./helpers/files.js";
+import { runOf } from "./helpers/programmes.js";
 
 const NS = "device-reminder.0";
 const POWER = "plug.0.power";
@@ -156,7 +164,7 @@ function setup(opts = {}) {
 		pollIntervalSec: 10,
 	}).config;
 	const notifier = new Notifier(host, () => inst.recipients);
-	const registry = new DeviceRegistry(host, notifier, () => inst);
+	const registry = new DeviceRegistry(host, notifier, () => inst, opts.files);
 	const adapter = createFakeAdapter(host, inst);
 	adapter.registry = registry;
 	adapter.notifier = notifier;
@@ -797,6 +805,53 @@ describe("deviceManagement", () => {
 			assert.ok(parseLearnForm({ ...form, pauseHoldSec: -1 }).error);
 		});
 
+		it("offers and takes the anti-crease filter only when it is on", () => {
+			const off = buildLearnSchema(true).items;
+			assert.strictEqual(off.trailerBurstSec, undefined);
+			assert.strictEqual(off.trailerNotSeparable, undefined);
+			const on = buildLearnSchema(true, "W", false, true, true, true).items;
+			for (const key of [
+				"trailerBurstSec",
+				"trailerGapSec",
+				"trailerAfterSec",
+				"trailerBlockVal",
+				"trailerMaxSec",
+			]) {
+				assert.ok(on[key], key);
+			}
+			assert.strictEqual(on.trailerNotSeparable.boxType, "warning");
+			assert.strictEqual(
+				buildLearnSchema(false, "W", false, false, false, false, false).items.samples,
+				undefined,
+			);
+			const form = {
+				name: "T",
+				startVal: 20,
+				endVal: 3,
+				standby: 1,
+				startCount: 2,
+				endCount: 4,
+				startDurationSec: 1,
+				endDurationSec: 1,
+			};
+			const plainType = parseLearnForm({ ...form, trailerBurstSec: 0, trailerGapSec: 40 }).type;
+			assert.ok(!("trailerBurstSec" in plainType) && !("trailerGapSec" in plainType), "off: no trailer fields");
+			const withFilter = parseLearnForm({
+				...form,
+				trailerBurstSec: "45",
+				trailerGapSec: 40,
+				trailerAfterSec: 0,
+				trailerBlockVal: 0,
+				trailerMaxSec: 7200,
+			}).type;
+			assert.deepStrictEqual(
+				[withFilter.trailerBurstSec, withFilter.trailerGapSec, withFilter.trailerMaxSec],
+				[45, 40, 7200],
+			);
+			assert.ok(parseLearnForm({ ...form, trailerBurstSec: 45, trailerGapSec: -1 }).error);
+			assert.ok(parseLearnForm({ ...form, trailerBurstSec: -1 }).error);
+		});
+
 		it("records a new run when chosen instead of the history", async () => {
 			const ctx = setup();
 			await addDevice(ctx, "trockner");
@@ -954,6 +1009,176 @@ describe("texts of the device manager forms", () => {
 		for (const text of [schema.items.info.text, schema.items.source.label, schema.items.source.options[0].label]) {
 			assert.deepStrictEqual(Object.keys(text).sort(), [...keys].sort());
 			assert.ok(!text.en.startsWith("dm_"), `translated: ${text.en}`);
+		}
+	});
+});
+
+describe("optimisation in the device manager", function () {
+	this.timeout(120_000);
+	const dryerType = normalizeInstanceConfig({}).config.types.find(t => t.id === "dryer");
+
+	/**
+	 * Device manager with a dryer that has the automatic optimisation on.
+	 *
+	 * @param {object} [over] device options
+	 * @param {boolean} [withRun] play one run with anti-crease bursts (repaired after the run)
+	 * @returns {Promise<object>} context
+	 */
+	async function optSetup(over = {}, withRun = true) {
+		const ctx = setup({ types: [{ ...dryerType, builtin: false }], files: memoryFiles() });
+		await addDevice(ctx, "trockner", deviceCfg({ typeId: "dryer", autoOptimize: true, ...over }));
+		if (withRun) {
+			const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 3, after: 400 });
+			for (const v of run.values) {
+				await ctx.registry.routeForeignState(POWER, v);
+				ctx.host.tickClock(10_000);
+				await ctx.registry.tickAll();
+			}
+			let done = false;
+			void ctx.registry.whenOptimized().then(() => (done = true));
+			for (let i = 0; i < 100_000 && !done; i++) {
+				await ctx.host.advance(0);
+				await new Promise(resolve => setImmediate(resolve));
+			}
+		}
+		return ctx;
+	}
+
+	async function openDialog(ctx, answer, confirm = true) {
+		const [info] = await load(ctx);
+		const action = fakeAction({ forms: [answer], confirm });
+		await actionOf(info, "optimization").handler("trockner", action);
+		return action;
+	}
+
+	it("shows the action only with the automatic optimisation or stored learning data", async () => {
+		const plain = setup({ files: memoryFiles() });
+		await addDevice(plain, "trockner");
+		assert.ok(!(await load(plain))[0].actions.some(a => a.id === "optimization"));
+		const ctx = await optSetup({}, false);
+		const action = (await load(ctx))[0].actions.find(a => a.id === "optimization");
+		assert.ok(action);
+		assert.ok(!action.description.en.startsWith("dm_"));
+	});
+
+	it("shows status, values, runs and changes and does nothing without an action", async () => {
+		const ctx = await optSetup();
+		const action = await openDialog(ctx, { operation: "" });
+		const { schema, options } = action.forms[0];
+		assert.ok(!schema.items.status.data.en.startsWith("dm_"), "status translated");
+		assert.ok(options.data.params.some(r => r.name === "trailerBurstSec"));
+		assert.ok(
+			options.data.params.some(r => r.effective.endsWith("*")),
+			"optimised values are marked",
+		);
+		assert.ok(options.data.runs.length >= 1);
+		assert.ok(
+			options.data.runs.every(r => r.gate === "✓"),
+			"every stored run passes after the repair",
+		);
+		assert.ok(options.data.changes[0].kind.length > 0);
+		assert.deepStrictEqual(
+			schema.items.operation.options.map(o => o.value),
+			["", "undo", "reset", "discard", "clear", "saveType"],
+		);
+		assert.ok(schema.items.discardRun.options.length >= 1);
+		assert.deepStrictEqual(action.messages, []);
+	});
+
+	it("undoes, resets, discards and clears", async () => {
+		const ctx = await optSetup();
+		assert.ok(ctx.registry.get("trockner").currentOverride !== null, "the repair is active");
+		let action = await openDialog(ctx, { operation: "undo" });
+		assert.ok(action.messages[0].en.includes("undone"));
+		assert.strictEqual(ctx.registry.get("trockner").currentOverride, null);
+		action = await openDialog(ctx, { operation: "reset" });
+		assert.ok(action.messages[0].en.includes("device type"));
+		assert.strictEqual(ctx.registry.learningData("trockner").changes.at(-1).kind, "reset");
+
+		action = await openDialog(ctx, { operation: "discard" });
+		assert.ok(action.messages[0].en.includes("Select"));
+		const store = ctx.registry.learningData("trockner");
+		const id = [...store.runs, ...store.spikes][0].id;
+		const count = store.runs.length + store.spikes.length;
+		action = await openDialog(ctx, { operation: "discard", discardRun: id });
+		assert.ok(action.messages[0].en.includes("discarded"));
+		const left = ctx.registry.learningData("trockner");
+		assert.strictEqual(left.runs.length + left.spikes.length, count - 1);
+
+		action = await openDialog(ctx, { operation: "clear" }, false);
+		assert.strictEqual(action.messages.length, 0, "cancelled");
+		action = await openDialog(ctx, { operation: "clear" });
+		assert.ok(!action.confirmations[0].en.startsWith("dm_"));
+		assert.ok(action.messages[0].en.includes("cleared"));
+		assert.strictEqual(ctx.registry.learningData("trockner").runs.length, 0);
+		assert.strictEqual(ctx.registry.learningData("trockner").spikes.length, 0);
+	});
+
+	it("saves the values in use as a new device type", async () => {
+		const ctx = await optSetup();
+		const eff = ctx.registry.get("trockner").effective;
+		const [info] = await load(ctx);
+		const action = fakeAction();
+		action.showForm = async (schema, options) => {
+			action.forms.push({ schema, options });
+			return action.forms.length === 1 ? { operation: "saveType" } : options.data;
+		};
+		await actionOf(info, "optimization").handler("trockner", action);
+		const learn = action.forms[1];
+		assert.strictEqual(learn.options.data.endCount, eff.endCount);
+		assert.strictEqual(learn.schema.items.samples, undefined);
+		assert.strictEqual(learn.options.data.trailerBurstSec, eff.trailerBurstSec);
+		const saved = ctx.adapter.extendedForeign.at(-1).obj.native.types.at(-1);
+		assert.strictEqual(saved.endCount, eff.endCount);
+		assert.strictEqual(saved.trailerBurstSec, eff.trailerBurstSec);
+		assert.strictEqual(saved.builtin, false);
+	});
+
+	it("explains that the optimisation is off when there is no learning data", async () => {
+		const ctx = await optSetup({}, false);
+		await ctx.registry.deleteLearningData("trockner");
+		await ctx.registry.upsert("trockner", deviceCfg({ typeId: "dryer" }));
+		const action = fakeAction();
+		await ctx.dm.optimization("trockner", action);
+		assert.ok(action.messages[0].en.includes("off"));
+	});
+
+	it("offers only clearing while the optimisation is off", () => {
+		const store = { runs: [], spikes: [], changes: [], info: { status: "ok", trailer: "none" } };
+		const view = buildOptimizationView(store, null, dryerType, dryerType, false);
+		assert.deepStrictEqual(
+			view.schema.items.operation.options.map(o => o.value),
+			["", "clear"],
+		);
+		assert.ok(view.schema.items.none);
+		assert.strictEqual(view.schema.items.status.data.en, "Off");
+		assert.strictEqual(suggestionOf(dryerType).trailerBurstSec, undefined);
+	});
+
+	it("has all texts of the optimisation in every language", () => {
+		const keys = ["en", "de", "ru", "pt", "nl", "fr", "it", "es", "pl", "uk", "zh-cn"];
+		const ids = [
+			"dm_autoOptimize",
+			"dm_autoOptimizeHelp",
+			"dm_optimizeNotify",
+			"dm_optimization",
+			"dm_optClearConfirm",
+			"dm_optSaveType",
+			"dm_optNone",
+			"dm_optStatus_drift",
+			"dm_optTrailer_notSeparable",
+			"dm_optLabel_split",
+			"dm_optKind_tighten",
+			"dm_learnTrailerNotSeparable",
+			"typeTrailerBurst",
+			"typeTrailerMaxTooltip",
+		];
+		for (const id of ids) {
+			const text = I18n.getTranslatedObject(id);
+			assert.deepStrictEqual(Object.keys(text).sort(), [...keys].sort(), id);
+			for (const lang of keys) {
+				assert.ok(text[lang] && text[lang] !== id, `${id}.${lang}`);
+			}
 		}
 	});
 });

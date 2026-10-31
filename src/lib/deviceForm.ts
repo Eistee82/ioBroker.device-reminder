@@ -48,6 +48,10 @@ export interface DeviceFormData {
 	rooms?: string[];
 	/** Functions (enum ids) the device object belongs to; not part of the device configuration. */
 	functions?: string[];
+	/** Automatic optimisation of the detection. */
+	autoOptimize?: boolean;
+	/** Report changes of the automatic optimisation as a message. */
+	optimizeNotify?: boolean;
 }
 
 const ACTION_EVENT_KEYS: Record<ActionEvent, string> = {
@@ -316,6 +320,22 @@ export function buildDeviceSchema(
 				help: I18n.getTranslatedObject("dev_abortFixedHelp"),
 				xs: 12,
 			},
+			autoOptimize: {
+				type: "checkbox",
+				label: I18n.getTranslatedObject("dm_autoOptimize"),
+				help: I18n.getTranslatedObject("dm_autoOptimizeHelp"),
+				newLine: true,
+				xs: 12,
+				sm: 6,
+			},
+			optimizeNotify: {
+				type: "checkbox",
+				label: I18n.getTranslatedObject("dm_optimizeNotify"),
+				help: I18n.getTranslatedObject("dm_optimizeNotifyHelp"),
+				hidden: "!data.autoOptimize",
+				xs: 12,
+				sm: 6,
+			},
 		},
 	};
 
@@ -422,6 +442,13 @@ export function formToDeviceConfig(f: DeviceFormData): { config: DeviceConfig | 
 	if (switchId !== "") {
 		config.switchId = switchId;
 	}
+	// set only when on, so that the device configuration of 3.1.2 behaviour stays unchanged
+	if (f.autoOptimize === true) {
+		config.autoOptimize = true;
+		if (f.optimizeNotify === true) {
+			config.optimizeNotify = true;
+		}
+	}
 	return { config, errors };
 }
 
@@ -447,5 +474,7 @@ export function deviceConfigToForm(c: DeviceConfig): DeviceFormData {
 		recipients: [...c.recipients],
 		reminder: { ...c.reminder },
 		actions: c.actions.map(a => ({ ...a })),
+		...(c.autoOptimize ? { autoOptimize: true } : {}),
+		...(c.optimizeNotify ? { optimizeNotify: true } : {}),
 	};
 }

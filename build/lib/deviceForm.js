@@ -243,6 +243,22 @@ export function buildDeviceSchema(cfg, detection, enums) {
                 help: I18n.getTranslatedObject("dev_abortFixedHelp"),
                 xs: 12,
             },
+            autoOptimize: {
+                type: "checkbox",
+                label: I18n.getTranslatedObject("dm_autoOptimize"),
+                help: I18n.getTranslatedObject("dm_autoOptimizeHelp"),
+                newLine: true,
+                xs: 12,
+                sm: 6,
+            },
+            optimizeNotify: {
+                type: "checkbox",
+                label: I18n.getTranslatedObject("dm_optimizeNotify"),
+                help: I18n.getTranslatedObject("dm_optimizeNotifyHelp"),
+                hidden: "!data.autoOptimize",
+                xs: 12,
+                sm: 6,
+            },
         },
     };
     return { type: "panel", items };
@@ -331,6 +347,12 @@ export function formToDeviceConfig(f) {
     if (switchId !== "") {
         config.switchId = switchId;
     }
+    if (f.autoOptimize === true) {
+        config.autoOptimize = true;
+        if (f.optimizeNotify === true) {
+            config.optimizeNotify = true;
+        }
+    }
     return { config, errors };
 }
 export function deviceConfigToForm(c) {
@@ -350,6 +372,8 @@ export function deviceConfigToForm(c) {
         recipients: [...c.recipients],
         reminder: { ...c.reminder },
         actions: c.actions.map(a => ({ ...a })),
+        ...(c.autoOptimize ? { autoOptimize: true } : {}),
+        ...(c.optimizeNotify ? { optimizeNotify: true } : {}),
     };
 }
 //# sourceMappingURL=deviceForm.js.map

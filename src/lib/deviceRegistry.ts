@@ -2,9 +2,15 @@ import { runActions } from "./actions.js";
 import type { DeviceConfig, InstanceConfig } from "./config.js";
 import { findType } from "./config.js";
 import { DeviceRuntime } from "./deviceRuntime.js";
+import { fill, TEXT } from "./dmTexts.js";
+import type { HistoryEnv } from "./historySource.js";
+import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import type { FileIO, MessageSink, NotifierHost, RuntimeEvent, RuntimeListener } from "./host.js";
-import type { OptimizeContext, OptimizeOutcome } from "./learn/autoOptimize.js";
+import type { GateResult, OptimizeContext, OptimizeOutcome } from "./learn/autoOptimize.js";
 import { effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
+import { simulate } from "./learn/replay.js";
+import { buildLayout } from "./learn/runs.js";
+import { scaled } from "./learn/ticks.js";
 import type { LearningSuggestion } from "./learning.js";
 import { LearningRecorder, suggestType } from "./learning.js";
 import type { Notifier } from "./notifier.js";
@@ -58,6 +64,14 @@ interface OptEntry {
 /** Time budget of one optimisation job. */
 const OPTIMIZE_BUDGET_MS = 30_000;
 
+/** Optional parts of the registry. */
+export interface RegistryOptions {
+	/** Language of the installation for messages (default English). */
+	language?: () => string;
+	/** History adapters: runs of the history are taken over when the automatic optimisation starts. */
+	history?: HistoryEnv;
+}
+
 function isTrue(val: unknown): boolean {
 	return val === true || val === 1 || val === "true" || val === "1";
 }
@@ -75,13 +89,20 @@ export class DeviceRegistry implements RuntimeListener {
 	 * @param notifier - Notifier used for all messages
 	 * @param getConfig - Returns the current instance configuration
 	 * @param files - Files for the learning data of the automatic optimisation (without: optimisation off)
+	 * @param opts - Language and history access
 	 */
 	public constructor(
 		private readonly host: NotifierHost,
 		private readonly notifier: Notifier,
 		private readonly getConfig: () => InstanceConfig,
 		private readonly files?: FileIO,
+		private readonly opts: RegistryOptions = {},
 	) {}
+
+	/** Language of the messages. */
+	private lang(): string {
+		return this.opts.language?.() || "en";
+	}
 
 	/**
 	 * Add a device, replace it, or apply a changed configuration while keeping its state
@@ -404,6 +425,64 @@ export class DeviceRegistry implements RuntimeListener {
 	}
 
 	/**
+	 * Learning data of a device, also while the automatic optimisation is off (read from the file).
+	 *
+	 * @param deviceId - Device id
+	 */
+	public async readLearningData(deviceId: string): Promise<StoreFile | null> {
+		const inMemory = this.learningData(deviceId);
+		if (inMemory || !this.files) {
+			return inMemory;
+		}
+		try {
+			return await loadStore(this.files, deviceId, this.host.log);
+		} catch (err) {
+			this.host.log.debug(`Cannot read the learning data of ${deviceId}: ${errorMessage(err)}`);
+			return null;
+		}
+	}
+
+	/**
+	 * Replay all stored runs with the current values (result per run for the Device Manager).
+	 *
+	 * @param deviceId - Device id
+	 */
+	public async checkStoredRuns(deviceId: string): Promise<GateResult | null> {
+		const entry = this.devices.get(deviceId);
+		const store = entry?.opt?.store;
+		if (!entry || !store) {
+			return null;
+		}
+		return gate(store, entry.runtime.effective, this.optimizeContext(entry));
+	}
+
+	/**
+	 * Remove one stored run or false start (e.g. a run that was no normal use of the device).
+	 * The extremes of all runs ever seen stay.
+	 *
+	 * @param deviceId - Device id
+	 * @param runId - Id of the stored run
+	 */
+	public async discardRun(deviceId: string, runId: string): Promise<boolean> {
+		const entry = this.devices.get(deviceId);
+		const store = entry?.opt?.store;
+		if (!entry || !store) {
+			return false;
+		}
+		const before = store.runs.length + store.spikes.length;
+		store.runs = store.runs.filter(r => r.id !== runId);
+		store.spikes = store.spikes.filter(r => r.id !== runId);
+		if (store.runs.length + store.spikes.length === before) {
+			return false;
+		}
+		refreshInfo(store);
+		await this.saveOpt(entry);
+		await this.writeOptStates(deviceId, entry);
+		this.host.log.info(`${entry.runtime.config.name}: stored run ${runId} discarded`);
+		return true;
+	}
+
+	/**
 	 * Delete the learning data of a device (device deleted, or "Clear learning data").
 	 *
 	 * @param deviceId - Device id
@@ -420,6 +499,7 @@ export class DeviceRegistry implements RuntimeListener {
 				entry.opt.store.step,
 				entry.opt.store.unitFactor,
 			);
+			this.driftReported.delete(entry);
 			await this.writeOptStates(deviceId, entry);
 		}
 		if (this.files) {
@@ -548,11 +628,14 @@ export class DeviceRegistry implements RuntimeListener {
 		const unitFactor = await this.unitFactorOf(cfg.powerId);
 		const type = entry.runtime.deviceType;
 		const now = this.host.now();
-		const store =
-			(await loadStore(this.files, deviceId, this.host.log)) ??
-			emptyStore(deviceId, cfg.typeId, typeHash(type), step, unitFactor);
+		const loaded = await loadStore(this.files, deviceId, this.host.log);
+		const store = loaded ?? emptyStore(deviceId, cfg.typeId, typeHash(type), step, unitFactor);
+		const hadOverride = store.override !== null;
 		for (const msg of reconcileStore(store, cfg.typeId, typeHash(type), step, unitFactor, now)) {
 			this.host.log.info(`${cfg.name}: ${msg}`);
+		}
+		if (hadOverride && store.override === null) {
+			await this.notifyOptimization(entry, TEXT.optTypeChanged, {});
 		}
 		const recorder = new RunRecorder(step, unitFactor);
 		entry.opt = { store, recorder };
@@ -575,6 +658,110 @@ export class DeviceRegistry implements RuntimeListener {
 			}
 		}
 		await this.writeOptStates(deviceId, entry);
+		if (!loaded && this.opts.history) {
+			this.enqueue(deviceId, () => this.bootstrapFromHistory(deviceId));
+		}
+	}
+
+	/**
+	 * Take over the runs of the history when the automatic optimisation starts without learning data:
+	 * every run and false start of the history is replayed with the current values to get the events
+	 * the runtime would have seen, then labelled and stored like a recorded run.
+	 *
+	 * @param deviceId - Device id
+	 */
+	private async bootstrapFromHistory(deviceId: string): Promise<void> {
+		const entry = this.devices.get(deviceId);
+		const opt = entry?.opt;
+		const env = this.opts.history;
+		if (!entry || !opt || !env) {
+			return;
+		}
+		const cfg = entry.runtime.config;
+		let instance: string | undefined;
+		try {
+			instance = await findHistoryInstance(env, cfg.powerId);
+		} catch (err) {
+			this.host.log.debug(`${cfg.name}: no history for the automatic optimisation: ${errorMessage(err)}`);
+		}
+		if (!instance) {
+			return;
+		}
+		const poll = this.getConfig().pollIntervalSec;
+		let loadedHistory: Awaited<ReturnType<typeof loadHistorySeries>>;
+		try {
+			loadedHistory = await loadHistorySeries(env, instance, cfg.powerId, this.host.now(), poll);
+		} catch (err) {
+			this.host.log.warn(`${cfg.name}: reading the history from ${instance} failed: ${errorMessage(err)}`);
+			return;
+		}
+		const { series, meta } = loadedHistory;
+		const store = opt.store;
+		if (
+			entry.opt !== opt ||
+			meta.energyCounter ||
+			meta.unitFactor !== store.unitFactor ||
+			series.stepMs !== store.step
+		) {
+			return;
+		}
+		const eff = entry.runtime.effective;
+		const factor = store.unitFactor;
+		const layout = buildLayout(series, { keepAbove: eff.endVal * factor });
+		const sim = factor === 1 ? series : scaled(series, 1 / factor);
+		let runs = 0;
+		let spikes = 0;
+		for (const w of [...layout.windows].sort((a, b) => a.fromIdx - b.fromIdx)) {
+			const cells = [];
+			for (let i = w.fromIdx; i <= w.toIdx; i++) {
+				cells.push({ min: sim.min[i], max: sim.max[i], last: sim.last[i], valid: sim.valid[i] === 1 });
+			}
+			const r = simulate(sim, w, eff, { abort: cfg.abort, abortFixed: cfg.abortFixed, pollSec: poll });
+			const ev: Capture["ev"] = [
+				...r.startedAt.map((t): [number, "s"] => [t, "s"]),
+				...r.finished.map((t): [number, "f"] => [t, "f"]),
+			];
+			ev.sort((a, b) => a[0] - b[0]);
+			const cap: Capture = {
+				t0: series.t0 + w.fromIdx * series.stepMs,
+				stepMs: series.stepMs,
+				unitFactor: factor,
+				cells,
+				ev,
+				postTruncated: false,
+			};
+			const res = labelCapture(cap, eff.endVal * factor, "history");
+			if (res.run) {
+				addRun(store, res.run);
+				if (res.label === "spike") {
+					spikes++;
+				} else {
+					runs++;
+				}
+			}
+			await this.yieldNow();
+		}
+		if (entry.opt !== opt) {
+			return;
+		}
+		if (runs + spikes === 0) {
+			// the file marks the history as read, so it is not loaded again at every start
+			await this.saveOpt(entry);
+			return;
+		}
+		refreshInfo(store);
+		this.host.log.info(
+			`${cfg.name}: ${runs} runs and ${spikes} false starts taken over from the history (${instance})`,
+		);
+		await this.saveOpt(entry);
+		await this.runOptimize(deviceId);
+	}
+
+	/** Let other work run. */
+	private yieldNow(): Promise<void> {
+		return new Promise<void>(resolve => {
+			this.host.setTimeout(resolve, 0);
+		});
 	}
 
 	/**
@@ -672,8 +859,18 @@ export class DeviceRegistry implements RuntimeListener {
 	 * @param deviceId - Device id
 	 */
 	private enqueueOptimize(deviceId: string): void {
+		this.enqueue(deviceId, () => this.runOptimize(deviceId));
+	}
+
+	/**
+	 * Queue a job of the automatic optimisation (devices one after another).
+	 *
+	 * @param deviceId - Device id
+	 * @param job - Job
+	 */
+	private enqueue(deviceId: string, job: () => Promise<void>): void {
 		this.optQueue = this.optQueue
-			.then(() => this.runOptimize(deviceId))
+			.then(job)
 			.catch(err => this.host.log.error(`Optimisation of ${deviceId} failed: ${errorMessage(err)}`));
 	}
 
@@ -688,6 +885,7 @@ export class DeviceRegistry implements RuntimeListener {
 		if (!entry || !opt) {
 			return;
 		}
+		const trailerBefore = opt.store.info.trailer;
 		const outcome = await optimize(opt.store, this.optimizeContext(entry));
 		if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
 			return;
@@ -696,6 +894,9 @@ export class DeviceRegistry implements RuntimeListener {
 		await this.saveOpt(entry);
 		await this.writeOptStates(deviceId, entry);
 		await this.reportOutcome(entry, outcome);
+		if (opt.store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
+			await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
+		}
 	}
 
 	/**
@@ -705,42 +906,69 @@ export class DeviceRegistry implements RuntimeListener {
 	 * @param outcome - Result
 	 */
 	private async reportOutcome(entry: Entry, outcome: OptimizeOutcome): Promise<void> {
-		const cfg = entry.runtime.config;
-		let text: string | null = null;
 		const c = outcome.change;
-		const runs = (entry.opt?.store.runs.length ?? 0) + (entry.opt?.store.spikes.length ?? 0);
+		const store = entry.opt?.store;
+		const runs = (store?.runs.length ?? 0) + (store?.spikes.length ?? 0);
 		switch (outcome.kind) {
 			case "tighten":
-				text = `${cfg.name}: detection optimised (${c?.reason ?? ""}), ${runs} runs checked, end on average ${formatMinutes(c?.gainSec ?? 0)} earlier.`;
-				this.host.log.info(text);
+				await this.notifyOptimization(entry, TEXT.optChanged, {
+					changes: c?.reason ?? "",
+					runs,
+					gain: formatMinutes(c?.gainSec ?? 0),
+				});
 				break;
-			case "repair":
-				text = `${cfg.name}: detection made safer after the last run (${c?.reason ?? ""}).`;
-				this.host.log.info(text);
+			case "repair": {
+				const last = store ? Math.max(0, ...[...store.runs, ...store.spikes].map(r => r.ts)) : 0;
+				await this.notifyOptimization(entry, TEXT.optRepaired, {
+					changes: c?.reason ?? "",
+					date: formatDate(last || this.host.now()),
+				});
 				break;
+			}
 			case "cannotCover":
-				text = `${cfg.name}: no setting detects all stored runs correctly; values unchanged.`;
-				this.host.log.warn(text);
+				await this.notifyOptimization(entry, TEXT.optCannotCover, {}, "warn");
 				break;
 			case "drift":
 				if (!this.driftReported.has(entry)) {
 					this.driftReported.add(entry);
-					text = `${cfg.name}: the device behaves differently than before; automatic optimisation paused. Clear the learning data to start again.`;
-					this.host.log.warn(text);
+					await this.notifyOptimization(entry, TEXT.optDrift, {}, "warn");
 				}
 				break;
 			case "budget":
-				this.host.log.debug(`${cfg.name}: optimisation stopped (time budget)`);
+				this.host.log.debug(`${entry.runtime.config.name}: optimisation stopped (time budget)`);
 				break;
 			default:
 				break;
 		}
-		if (text && cfg.optimizeNotify) {
-			try {
-				await this.notifier.notify(cfg.recipients, text, { doNotDisturb: entry.runtime.doNotDisturb });
-			} catch (err) {
-				this.host.log.warn(`Message of device ${cfg.name} failed: ${errorMessage(err)}`);
-			}
+	}
+
+	/**
+	 * Log a message of the automatic optimisation (English) and, if the device wants it, send it to its
+	 * recipients in the language of the installation.
+	 *
+	 * @param entry - Entry
+	 * @param text - Text with the placeholders `{device}` and `vars`
+	 * @param vars - Values of the placeholders
+	 * @param level - Log level
+	 */
+	private async notifyOptimization(
+		entry: Entry,
+		text: ioBroker.Translated,
+		vars: Record<string, string | number>,
+		level: "info" | "warn" = "info",
+	): Promise<void> {
+		const cfg = entry.runtime.config;
+		const all = { device: cfg.name, ...vars };
+		this.host.log[level](fill(text, "en", all));
+		if (!cfg.optimizeNotify) {
+			return;
+		}
+		try {
+			await this.notifier.notify(cfg.recipients, fill(text, this.lang(), all), {
+				doNotDisturb: entry.runtime.doNotDisturb,
+			});
+		} catch (err) {
+			this.host.log.warn(`Message of device ${cfg.name} failed: ${errorMessage(err)}`);
 		}
 	}
 
@@ -791,4 +1019,15 @@ export class DeviceRegistry implements RuntimeListener {
  */
 function formatMinutes(sec: number): string {
 	return `${Math.round(sec / 6) / 10} min`;
+}
+
+/**
+ * Local date and time as `YYYY-MM-DD HH:MM`.
+ *
+ * @param ts - Time in ms
+ */
+export function formatDate(ts: number): string {
+	const d = new Date(ts);
+	const p = (n: number): string => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }

@@ -4,10 +4,12 @@ import { DEFAULT_REMINDER, findType, normalizeDeviceConfig } from "./config.js";
 import { buildDeviceSchema, buildSourceSchema, deviceConfigToForm, formToDeviceConfig } from "./deviceForm.js";
 import { ensureDeviceObjects } from "./deviceObjects.js";
 import { enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
+import { formatDate } from "./deviceRegistry.js";
 import { plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import { analyzeHistory } from "./historyLearning.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
+import { DETECTION_KEYS } from "./runStore.js";
 import { detectFromHost } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
 const RESERVED_IDS = ["info"];
@@ -129,6 +131,9 @@ export class ReminderDeviceManagement extends DeviceManagement {
             if (type.pauseHoldSec > 0) {
                 rows.push([I18n.getTranslatedObject("dm_detailsPauseHold"), type.pauseHoldSec, "s"], [I18n.getTranslatedObject("dm_detailsPauseUntil"), type.pauseUntilSec, "s"], [I18n.getTranslatedObject("dm_detailsPauseBelow"), type.pauseBelowVal, "W"]);
             }
+            if ((type.trailerBurstSec ?? 0) > 0) {
+                rows.push([I18n.getTranslatedObject("dm_learnTrailerBurst"), type.trailerBurstSec ?? 0, "s"], [I18n.getTranslatedObject("dm_learnTrailerGap"), type.trailerGapSec ?? 0, "s"], [I18n.getTranslatedObject("dm_learnTrailerAfter"), type.trailerAfterSec ?? 0, "s"], [I18n.getTranslatedObject("dm_learnTrailerBlock"), type.trailerBlockVal ?? 0, "W"], [I18n.getTranslatedObject("dm_learnTrailerMax"), type.trailerMaxSec ?? 0, "s"]);
+            }
             rows.forEach(([label, value, unit], i) => {
                 items[`type${i}`] = {
                     type: "staticInfo",
@@ -140,6 +145,14 @@ export class ReminderDeviceManagement extends DeviceManagement {
                     sm: 6,
                 };
             });
+            items.autoOptimize = {
+                type: "staticInfo",
+                label: I18n.getTranslatedObject("dm_autoOptimize"),
+                data: cfg.autoOptimize ? TEXT.on : TEXT.off,
+                newLine: true,
+                xs: 12,
+                sm: 6,
+            };
         }
         else {
             items.typeUnknown = {
@@ -274,7 +287,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 id,
                 name: nameOf(obj?.common?.name, id),
                 icon: GENERIC_ICON,
-                actions: this.deviceActions(id, false, false, false),
+                actions: this.deviceActions(id, false, false, false, false),
             };
         }
         const inst = this.adapter.instanceConfig;
@@ -292,6 +305,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
         }
         const learning = (await this.adapter.getStateAsync(`${id}.learning.active`))?.val === true;
         const dnd = runtime?.doNotDisturb ?? false;
+        const optimize = cfg.autoOptimize === true || (await this.adapter.registry.readLearningData(id)) !== null;
         const indicators = [
             {
                 id: "running",
@@ -349,11 +363,11 @@ export class ReminderDeviceManagement extends DeviceManagement {
             status: { warning },
             indicators,
             hasDetails: true,
-            actions: this.deviceActions(id, cfg.enabled, dnd, learning),
+            actions: this.deviceActions(id, cfg.enabled, dnd, learning, optimize),
         };
     }
-    deviceActions(id, enabled, dnd, learning) {
-        return [
+    deviceActions(id, enabled, dnd, learning, optimize) {
+        const actions = [
             { id: "edit", icon: "edit", description: TEXT.edit, handler: (_id, ctx) => this.editDevice(id, ctx) },
             {
                 id: "delete",
@@ -386,6 +400,15 @@ export class ReminderDeviceManagement extends DeviceManagement {
             },
             { id: "test", icon: "send", description: TEXT.test, handler: (_id, ctx) => this.sendTest(id, ctx) },
         ];
+        if (optimize) {
+            actions.push({
+                id: "optimization",
+                icon: "lines",
+                description: I18n.getTranslatedObject("dm_optimization"),
+                handler: (_id, ctx) => this.optimization(id, ctx),
+            });
+        }
+        return actions;
     }
     async loadEnums() {
         const members = {};
@@ -564,6 +587,58 @@ export class ReminderDeviceManagement extends DeviceManagement {
         await ctx.showMessage(res.sent.length > 0 ? TEXT.testSent : TEXT.testNobody);
         return { refresh: "none" };
     }
+    async optimization(id, ctx) {
+        const registry = this.adapter.registry;
+        const runtime = registry.get(id);
+        if (!runtime) {
+            await ctx.showMessage(TEXT.notFound);
+            return { refresh: "none" };
+        }
+        const store = await registry.readLearningData(id);
+        const active = registry.learningData(id) !== null;
+        if (!store) {
+            await ctx.showMessage(TEXT.optOff);
+            return this.updateOf(id);
+        }
+        const check = active ? await registry.checkStoredRuns(id) : null;
+        const view = buildOptimizationView(store, check, detectionSettingsOf(runtime.deviceType), runtime.effective, active);
+        const result = await ctx.showForm(view.schema, {
+            data: view.data,
+            title: I18n.getTranslatedObject("dm_optimization"),
+            maxWidth: "lg",
+        });
+        const op = textOf(result?.operation);
+        switch (op) {
+            case "undo":
+                await ctx.showMessage((await registry.undoOptimization(id)) ? TEXT.optUndone : TEXT.optNothingToUndo);
+                break;
+            case "reset":
+                await registry.resetOptimization(id);
+                await ctx.showMessage(TEXT.optResetDone);
+                break;
+            case "discard": {
+                const runId = textOf(result?.discardRun);
+                if (runId === "" || !(await registry.discardRun(id, runId))) {
+                    await ctx.showMessage(TEXT.optNoRunSelected);
+                    break;
+                }
+                await ctx.showMessage(TEXT.optDiscarded);
+                break;
+            }
+            case "clear":
+                if (await ctx.showConfirmation(I18n.getTranslatedObject("dm_optClearConfirm"))) {
+                    await registry.deleteLearningData(id);
+                    await ctx.showMessage(TEXT.optCleared);
+                }
+                break;
+            case "saveType":
+                await this.saveLearnedType(id, suggestionOf(runtime.effective), ctx);
+                break;
+            default:
+                break;
+        }
+        return this.updateOf(id);
+    }
     async learn(id, ctx) {
         const registry = this.adapter.registry;
         if (!registry.get(id)) {
@@ -679,6 +754,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
     }
     async saveLearnedType(id, suggestion, ctx, unit = "W") {
         const deviceName = this.adapter.registry.get(id)?.config.name ?? id;
+        const withTrailer = (suggestion.trailerBurstSec ?? 0) > 0;
         let data = {
             name: `${deviceName} (learned)`,
             startVal: suggestion.thresholds.startVal,
@@ -702,9 +778,18 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 ? { longestPauseMin: Math.round(suggestion.longestPauseSec / 60) }
                 : {}),
             ...(suggestion.current ? { eval_current: evaluationText(suggestion.current) } : {}),
+            ...(withTrailer
+                ? {
+                    trailerBurstSec: suggestion.trailerBurstSec,
+                    trailerGapSec: suggestion.trailerGapSec ?? 0,
+                    trailerAfterSec: suggestion.trailerAfterSec ?? 0,
+                    trailerBlockVal: suggestion.trailerBlockVal ?? 0,
+                    trailerMaxSec: suggestion.trailerMaxSec ?? 0,
+                }
+                : {}),
         };
         const fromHistory = suggestion.looDetected !== undefined;
-        const schema = buildLearnSchema(fromHistory, unit, suggestion.current !== undefined, suggestion.evaluation !== undefined);
+        const schema = buildLearnSchema(fromHistory, unit, suggestion.current !== undefined, suggestion.evaluation !== undefined, withTrailer, suggestion.trailer === "notSeparable", suggestion.samples > 0);
         let type = null;
         const inst = this.adapter.instanceConfig;
         while (!type) {
@@ -759,7 +844,204 @@ function detectionSettingsOf(t) {
         pauseHoldSec: t.pauseHoldSec,
         pauseUntilSec: t.pauseUntilSec,
         pauseBelowVal: t.pauseBelowVal,
+        ...((t.trailerBurstSec ?? 0) > 0
+            ? {
+                trailerBurstSec: t.trailerBurstSec,
+                trailerGapSec: t.trailerGapSec ?? 0,
+                trailerAfterSec: t.trailerAfterSec ?? 0,
+                trailerBlockVal: t.trailerBlockVal ?? 0,
+                trailerMaxSec: t.trailerMaxSec ?? 0,
+            }
+            : {}),
     };
+}
+export function suggestionOf(p) {
+    return {
+        thresholds: {
+            startVal: p.startVal,
+            endVal: p.endVal,
+            standby: p.standby,
+            startCount: p.startCount,
+            endCount: p.endCount,
+        },
+        mode: p.mode,
+        startDurationSec: p.startDurationSec,
+        endDurationSec: p.endDurationSec,
+        durationSec: 0,
+        samples: 0,
+        pauseHoldSec: p.pauseHoldSec ?? 0,
+        pauseUntilSec: p.pauseUntilSec ?? 0,
+        pauseBelowVal: p.pauseBelowVal ?? 0,
+        ...((p.trailerBurstSec ?? 0) > 0
+            ? {
+                trailerBurstSec: p.trailerBurstSec,
+                trailerGapSec: p.trailerGapSec ?? 0,
+                trailerAfterSec: p.trailerAfterSec ?? 0,
+                trailerBlockVal: p.trailerBlockVal ?? 0,
+                trailerMaxSec: p.trailerMaxSec ?? 0,
+            }
+            : {}),
+    };
+}
+const OPT_KINDS = ["repair", "tighten", "undo", "reset", "typeChanged"];
+function fieldText(p, key) {
+    const v = p[key];
+    return v === undefined ? "0" : String(v);
+}
+function changeText(c) {
+    return (c.reason ||
+        Object.entries(c.to ?? {})
+            .map(([k, v]) => `${k} ${String(v)}`)
+            .join(", "));
+}
+export function buildOptimizationView(store, check, type, effective, active) {
+    const items = {};
+    const data = {};
+    const tr = (key) => I18n.translate(key);
+    items.info = { type: "staticText", text: I18n.getTranslatedObject("dm_optInfo"), xs: 12 };
+    items.status = {
+        type: "staticInfo",
+        label: I18n.getTranslatedObject("dm_optStatus"),
+        data: I18n.getTranslatedObject(`dm_optStatus_${active ? store.info.status : "off"}`),
+        newLine: true,
+        xs: 12,
+        sm: 6,
+    };
+    items.trailer = {
+        type: "staticInfo",
+        label: I18n.getTranslatedObject("dm_optTrailer"),
+        data: I18n.getTranslatedObject(`dm_optTrailer_${store.info.trailer}`),
+        xs: 12,
+        sm: 6,
+    };
+    items.paramsHeader = {
+        type: "header",
+        text: I18n.getTranslatedObject("dm_optParameter"),
+        size: 4,
+        newLine: true,
+        xs: 12,
+    };
+    items.params = {
+        type: "table",
+        label: I18n.getTranslatedObject("dm_optParameter"),
+        disabled: true,
+        noDelete: true,
+        xs: 12,
+        items: [
+            { type: "text", attr: "name", title: tr("dm_optParameter"), width: "40%" },
+            { type: "text", attr: "type", title: tr("dm_optTypeValue"), width: "30%" },
+            { type: "text", attr: "effective", title: tr("dm_optEffective"), width: "30%" },
+        ],
+    };
+    data.params = DETECTION_KEYS.map(key => {
+        const a = fieldText(type, key);
+        const b = fieldText(effective, key);
+        return { name: key, type: a, effective: a === b ? b : `${b} *` };
+    });
+    items.runsHeader = { type: "header", text: I18n.getTranslatedObject("dm_optRuns"), size: 4, newLine: true, xs: 12 };
+    const all = [...store.runs, ...store.spikes].sort((x, y) => x.ts - y.ts);
+    if (all.length === 0) {
+        items.none = { type: "staticText", text: I18n.getTranslatedObject("dm_optNone"), newLine: true, xs: 12 };
+    }
+    else {
+        items.runs = {
+            type: "table",
+            label: I18n.getTranslatedObject("dm_optRuns"),
+            disabled: true,
+            noDelete: true,
+            xs: 12,
+            items: [
+                { type: "text", attr: "date", title: tr("dm_optRunDate"), width: "22%" },
+                { type: "text", attr: "duration", title: tr("dm_optRunDuration"), width: "13%" },
+                { type: "text", attr: "family", title: tr("dm_optRunFamily"), width: "13%" },
+                { type: "text", attr: "delay", title: tr("dm_optRunDelay"), width: "13%" },
+                { type: "text", attr: "label", title: tr("dm_optRunLabel"), width: "27%" },
+                { type: "text", attr: "gate", title: tr("dm_optRunGate"), width: "12%" },
+            ],
+        };
+        data.runs = all.map(r => {
+            const k = store.runs.indexOf(r);
+            const res = k >= 0 ? check?.perRun[k] : undefined;
+            const spike = r.label === "spike";
+            const minutes = ((r.seg.runEndIdx - r.seg.startIdx + 1) * r.step) / 60_000;
+            let gateText = "";
+            if (check) {
+                const ok = spike ? check.spikesOk : res?.ok === true;
+                gateText = ok ? "\u2713" : "\u2717";
+            }
+            return {
+                date: formatDate(r.ts + r.seg.startIdx * r.step),
+                duration: spike ? "" : `${Math.round(minutes)} min`,
+                family: spike || r.family < 0 ? "" : String(r.family + 1),
+                delay: res && Number.isFinite(res.delaySec) ? `${Math.round(res.delaySec / 6) / 10} min` : "",
+                label: tr(`dm_optLabel_${r.label}`),
+                gate: gateText,
+            };
+        });
+    }
+    if (store.changes.length > 0) {
+        items.changesHeader = {
+            type: "header",
+            text: I18n.getTranslatedObject("dm_optChanges"),
+            size: 4,
+            newLine: true,
+            xs: 12,
+        };
+        items.changes = {
+            type: "table",
+            label: I18n.getTranslatedObject("dm_optChanges"),
+            disabled: true,
+            noDelete: true,
+            xs: 12,
+            items: [
+                { type: "text", attr: "date", title: tr("dm_optRunDate"), width: "22%" },
+                { type: "text", attr: "kind", title: tr("dm_optChangeKind"), width: "20%" },
+                { type: "text", attr: "reason", title: tr("dm_optChangeReason"), width: "58%" },
+            ],
+        };
+        data.changes = [...store.changes].reverse().map(c => ({
+            date: formatDate(c.ts),
+            kind: OPT_KINDS.includes(c.kind) ? tr(`dm_optKind_${c.kind}`) : c.kind,
+            reason: changeText(c),
+        }));
+    }
+    const ops = [
+        { label: I18n.getTranslatedObject("dm_optOpNone"), value: "" },
+    ];
+    if (active) {
+        ops.push({ label: I18n.getTranslatedObject("dm_optUndo"), value: "undo" }, { label: I18n.getTranslatedObject("dm_optReset"), value: "reset" });
+        if (all.length > 0) {
+            ops.push({ label: I18n.getTranslatedObject("dm_optDiscard"), value: "discard" });
+        }
+    }
+    ops.push({ label: I18n.getTranslatedObject("dm_optClear"), value: "clear" });
+    if (active) {
+        ops.push({ label: I18n.getTranslatedObject("dm_optSaveType"), value: "saveType" });
+    }
+    items.operation = {
+        type: "select",
+        label: I18n.getTranslatedObject("dm_optOperation"),
+        options: ops,
+        newLine: true,
+        xs: 12,
+        sm: 6,
+    };
+    data.operation = "";
+    if (active && all.length > 0) {
+        items.discardRun = {
+            type: "select",
+            label: I18n.getTranslatedObject("dm_optDiscardRun"),
+            options: all.map(r => ({
+                label: `${formatDate(r.ts + r.seg.startIdx * r.step)} \u00b7 ${tr(`dm_optLabel_${r.label}`)}`,
+                value: r.id,
+            })),
+            hidden: "data.operation !== 'discard'",
+            xs: 12,
+            sm: 6,
+        };
+        data.discardRun = "";
+    }
+    return { schema: { type: "panel", items }, data };
 }
 export function buildLearnSourceSchema() {
     return {
@@ -788,7 +1070,7 @@ export function buildLearnSourceSchema() {
         },
     };
 }
-export function buildLearnSchema(fromHistory = false, unit = "W", withCurrent = false, withEval = fromHistory) {
+export function buildLearnSchema(fromHistory = false, unit = "W", withCurrent = false, withEval = fromHistory, withTrailer = false, notSeparable = false, withSamples = true) {
     const num = (label, step, min, unit) => ({
         type: "number",
         label,
@@ -826,26 +1108,57 @@ export function buildLearnSchema(fromHistory = false, unit = "W", withCurrent = 
             pauseHoldSec: { ...num(I18n.getTranslatedObject("dm_learnPauseHold"), 1, 0, "s"), newLine: true },
             pauseUntilSec: num(I18n.getTranslatedObject("dm_learnPauseUntil"), 1, 0, "s"),
             pauseBelowVal: num(I18n.getTranslatedObject("dm_learnPauseBelow"), 0.05, 0, unit),
-            durationSec: {
-                type: "number",
-                label: I18n.getTranslatedObject("dm_learnDuration"),
-                unit: "s",
-                disabled: true,
-                newLine: true,
-                xs: 12,
-                sm: 4,
-            },
-            samples: {
-                type: "number",
-                label: fromHistory
-                    ? I18n.getTranslatedObject("dm_learnHistorySamples")
-                    : I18n.getTranslatedObject("dm_learnSamples"),
-                disabled: true,
-                xs: 12,
-                sm: 4,
-            },
+            ...(withTrailer ? trailerItems(unit, num) : {}),
+            ...(notSeparable
+                ? {
+                    trailerNotSeparable: {
+                        type: "infoBox",
+                        boxType: "warning",
+                        text: I18n.getTranslatedObject("dm_learnTrailerNotSeparable"),
+                        newLine: true,
+                        xs: 12,
+                    },
+                }
+                : {}),
+            ...(withSamples
+                ? {
+                    durationSec: {
+                        type: "number",
+                        label: I18n.getTranslatedObject("dm_learnDuration"),
+                        unit: "s",
+                        disabled: true,
+                        newLine: true,
+                        xs: 12,
+                        sm: 4,
+                    },
+                    samples: {
+                        type: "number",
+                        label: fromHistory
+                            ? I18n.getTranslatedObject("dm_learnHistorySamples")
+                            : I18n.getTranslatedObject("dm_learnSamples"),
+                        disabled: true,
+                        xs: 12,
+                        sm: 4,
+                    },
+                }
+                : {}),
             ...(withEval ? historyItems(fromHistory, withCurrent) : {}),
         },
+    };
+}
+function trailerItems(unit, num) {
+    return {
+        trailerInfo: {
+            type: "staticText",
+            text: I18n.getTranslatedObject("dm_learnTrailerInfo"),
+            newLine: true,
+            xs: 12,
+        },
+        trailerBurstSec: { ...num(I18n.getTranslatedObject("dm_learnTrailerBurst"), 1, 0, "s"), newLine: true },
+        trailerGapSec: num(I18n.getTranslatedObject("dm_learnTrailerGap"), 1, 0, "s"),
+        trailerMaxSec: num(I18n.getTranslatedObject("dm_learnTrailerMax"), 1, 0, "s"),
+        trailerAfterSec: { ...num(I18n.getTranslatedObject("dm_learnTrailerAfter"), 1, 0, "s"), newLine: true },
+        trailerBlockVal: num(I18n.getTranslatedObject("dm_learnTrailerBlock"), 0.05, 0, unit),
     };
 }
 function historyItems(fromHistory, withCurrent) {
@@ -893,6 +1206,13 @@ function historyItems(fromHistory, withCurrent) {
     }
     return items;
 }
+const TRAILER_FIELDS = [
+    "trailerBurstSec",
+    "trailerGapSec",
+    "trailerAfterSec",
+    "trailerBlockVal",
+    "trailerMaxSec",
+];
 export function parseLearnForm(data) {
     const name = textOf(data.name).trim();
     const n = (key) => parseNumber(data[key]) ?? Number.NaN;
@@ -918,6 +1238,19 @@ export function parseLearnForm(data) {
         };
     }
     const mode = DETECTION_MODES.find(m => m === data.mode) ?? "count";
-    return { type: { name, mode, ...parsed } };
+    const type = { name, mode, ...parsed };
+    if (optional("trailerBurstSec") > 0) {
+        for (const key of TRAILER_FIELDS) {
+            const v = optional(key);
+            if (!Number.isFinite(v) || v < 0) {
+                return { error: TEXT.typeValuesInvalid };
+            }
+            type[key] = v;
+        }
+    }
+    else if (!Number.isFinite(optional("trailerBurstSec")) || optional("trailerBurstSec") < 0) {
+        return { error: TEXT.typeValuesInvalid };
+    }
+    return { type };
 }
 //# sourceMappingURL=deviceManagement.js.map
