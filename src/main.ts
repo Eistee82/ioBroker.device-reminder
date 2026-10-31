@@ -39,6 +39,8 @@ class DeviceReminder extends utils.Adapter {
 
 	private async onReady(): Promise<void> {
 		try {
+			// texts of the device manager forms (admin/i18n)
+			await utils.I18n.init(fileURLToPath(new URL("../admin", import.meta.url)), this);
 			await this.initMigration();
 
 			const { config, warnings, generatedIds, idPatch } = normalizeInstanceConfig(

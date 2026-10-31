@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import * as I18n from "@iobroker/adapter-core/i18n";
 import { DEFAULT_REMINDER, DEFAULT_TYPES, normalizeInstanceConfig } from "../build/lib/config.js";
 import {
 	buildDeviceSchema,
@@ -107,7 +108,7 @@ describe("deviceForm", () => {
 
 			const notFound = buildDeviceSchema(cfg, { type: null, powerId: null, switchId: null, hint: "notFound" });
 			assert.strictEqual(notFound.items.hint.type, "infoBox");
-			assert.strictEqual(notFound.items.hint.text, "dev_hintNotFound");
+			assert.deepStrictEqual(notFound.items.hint.text, I18n.getTranslatedObject("dev_hintNotFound"));
 
 			const noPattern = buildDeviceSchema(cfg, {
 				type: "electricity",
@@ -115,7 +116,7 @@ describe("deviceForm", () => {
 				switchId: null,
 				hint: "noPattern",
 			});
-			assert.strictEqual(noPattern.items.hint.text, "dev_hintNoPattern");
+			assert.deepStrictEqual(noPattern.items.hint.text, I18n.getTranslatedObject("dev_hintNoPattern"));
 		});
 
 		it("has collapsed reminder, actions and advanced sections", () => {

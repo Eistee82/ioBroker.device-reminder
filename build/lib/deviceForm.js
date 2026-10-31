@@ -1,3 +1,4 @@
+import * as I18n from "@iobroker/adapter-core/i18n";
 import { DEFAULT_REMINDER, } from "./config.js";
 import { parseNumber } from "./utils.js";
 const ACTION_EVENT_KEYS = {
@@ -11,17 +12,16 @@ const HINT_KEYS = { notFound: "dev_hintNotFound", noPattern: "dev_hintNoPattern"
 export function buildSourceSchema() {
     return {
         type: "panel",
-        i18n: true,
         items: {
             sourceInfo: {
                 type: "staticText",
-                text: "dev_sourceInfo",
+                text: I18n.getTranslatedObject("dev_sourceInfo"),
                 newLine: true,
                 xs: 12,
             },
             sourceId: {
                 type: "objectId",
-                label: "dev_sourceId",
+                label: I18n.getTranslatedObject("dev_sourceId"),
                 types: ["state", "channel", "device"],
                 hidden: "data.manual === true",
                 newLine: true,
@@ -31,7 +31,7 @@ export function buildSourceSchema() {
             },
             manual: {
                 type: "checkbox",
-                label: "dev_manual",
+                label: I18n.getTranslatedObject("dev_manual"),
                 newLine: true,
                 xs: 12,
             },
@@ -44,24 +44,31 @@ export function buildDeviceSchema(cfg, detection, enums) {
         items.hint = {
             type: "infoBox",
             boxType: "warning",
-            text: HINT_KEYS[detection.hint],
+            text: I18n.getTranslatedObject(HINT_KEYS[detection.hint]),
             newLine: true,
             xs: 12,
         };
     }
-    items.enabled = { type: "checkbox", label: "dev_enabled", newLine: true, xs: 12, sm: 4, md: 3 };
+    items.enabled = {
+        type: "checkbox",
+        label: I18n.getTranslatedObject("dev_enabled"),
+        newLine: true,
+        xs: 12,
+        sm: 4,
+        md: 3,
+    };
     items.name = {
         type: "text",
-        label: "dev_name",
+        label: I18n.getTranslatedObject("dev_name"),
         validator: "data.name && String(data.name).trim() !== ''",
-        validatorErrorText: "dev_required",
+        validatorErrorText: I18n.translate("dev_required"),
         xs: 12,
         sm: 8,
         md: 5,
     };
     items.typeId = {
         type: "select",
-        label: "dev_typeId",
+        label: I18n.getTranslatedObject("dev_typeId"),
         options: cfg.types.map(t => ({ label: t.name, value: t.id })),
         xs: 12,
         sm: 6,
@@ -69,34 +76,47 @@ export function buildDeviceSchema(cfg, detection, enums) {
     };
     items.sourceId = {
         type: "objectId",
-        label: "dev_sourceId",
+        label: I18n.getTranslatedObject("dev_sourceId"),
         types: ["state", "channel", "device"],
         newLine: true,
         xs: 12,
     };
     items.powerId = {
         type: "objectId",
-        label: "dev_powerId",
+        label: I18n.getTranslatedObject("dev_powerId"),
         validator: "data.powerId && String(data.powerId).trim() !== ''",
-        validatorErrorText: "dev_required",
+        validatorErrorText: I18n.translate("dev_required"),
         newLine: true,
         xs: 12,
         sm: 6,
     };
     items.switchId = {
         type: "objectId",
-        label: "dev_switchId",
-        help: "dev_switchIdHelp",
+        label: I18n.getTranslatedObject("dev_switchId"),
+        help: I18n.getTranslatedObject("dev_switchIdHelp"),
         xs: 12,
         sm: 6,
     };
-    items.startText = { type: "text", label: "dev_startText", newLine: true, xs: 12, sm: 6 };
-    items.endText = { type: "text", label: "dev_endText", xs: 12, sm: 6 };
-    items.abort = { type: "checkbox", label: "dev_abort", help: "dev_abortHelp", newLine: true, xs: 12, sm: 6 };
-    items.autoOff = { type: "checkbox", label: "dev_autoOff", help: "dev_autoOffHelp", xs: 12, sm: 3 };
+    items.startText = { type: "text", label: I18n.getTranslatedObject("dev_startText"), newLine: true, xs: 12, sm: 6 };
+    items.endText = { type: "text", label: I18n.getTranslatedObject("dev_endText"), xs: 12, sm: 6 };
+    items.abort = {
+        type: "checkbox",
+        label: I18n.getTranslatedObject("dev_abort"),
+        help: I18n.getTranslatedObject("dev_abortHelp"),
+        newLine: true,
+        xs: 12,
+        sm: 6,
+    };
+    items.autoOff = {
+        type: "checkbox",
+        label: I18n.getTranslatedObject("dev_autoOff"),
+        help: I18n.getTranslatedObject("dev_autoOffHelp"),
+        xs: 12,
+        sm: 3,
+    };
     items.autoOffMinutes = {
         type: "number",
-        label: "dev_autoOffMinutes",
+        label: I18n.getTranslatedObject("dev_autoOffMinutes"),
         min: 0,
         unit: "min",
         hidden: "!data.autoOff",
@@ -105,8 +125,8 @@ export function buildDeviceSchema(cfg, detection, enums) {
     };
     items.recipients = {
         type: "select",
-        label: "dev_recipients",
-        help: "dev_recipientsHelp",
+        label: I18n.getTranslatedObject("dev_recipients"),
+        help: I18n.getTranslatedObject("dev_recipientsHelp"),
         multiple: true,
         options: cfg.recipients.map(r => ({ label: r.name, value: r.id })),
         newLine: true,
@@ -115,8 +135,8 @@ export function buildDeviceSchema(cfg, detection, enums) {
     if (enums) {
         items.rooms = {
             type: "select",
-            label: "dev_rooms",
-            help: "dev_enumsHelp",
+            label: I18n.getTranslatedObject("dev_rooms"),
+            help: I18n.getTranslatedObject("dev_enumsHelp"),
             multiple: true,
             options: enums.rooms,
             newLine: true,
@@ -125,7 +145,7 @@ export function buildDeviceSchema(cfg, detection, enums) {
         };
         items.functions = {
             type: "select",
-            label: "dev_functions",
+            label: I18n.getTranslatedObject("dev_functions"),
             multiple: true,
             options: enums.functions,
             xs: 12,
@@ -134,16 +154,21 @@ export function buildDeviceSchema(cfg, detection, enums) {
     }
     items.reminderSection = {
         type: "panel",
-        label: "dev_reminderSection",
+        label: I18n.getTranslatedObject("dev_reminderSection"),
         collapsable: true,
         color: "secondary",
         newLine: true,
         xs: 12,
         items: {
-            "reminder.enabled": { type: "checkbox", label: "dev_reminderEnabled", help: "dev_reminderHelp", xs: 12 },
+            "reminder.enabled": {
+                type: "checkbox",
+                label: I18n.getTranslatedObject("dev_reminderEnabled"),
+                help: I18n.getTranslatedObject("dev_reminderHelp"),
+                xs: 12,
+            },
             "reminder.intervalMin": {
                 type: "number",
-                label: "dev_reminderInterval",
+                label: I18n.getTranslatedObject("dev_reminderInterval"),
                 min: 1,
                 unit: "min",
                 newLine: true,
@@ -152,16 +177,21 @@ export function buildDeviceSchema(cfg, detection, enums) {
             },
             "reminder.maxCount": {
                 type: "number",
-                label: "dev_reminderMaxCount",
+                label: I18n.getTranslatedObject("dev_reminderMaxCount"),
                 min: 1,
                 xs: 12,
                 sm: 6,
             },
-            "reminder.text": { type: "text", label: "dev_reminderText", newLine: true, xs: 12 },
+            "reminder.text": {
+                type: "text",
+                label: I18n.getTranslatedObject("dev_reminderText"),
+                newLine: true,
+                xs: 12,
+            },
             "reminder.ackStateId": {
                 type: "objectId",
-                label: "dev_reminderAckState",
-                help: "dev_reminderAckStateHelp",
+                label: I18n.getTranslatedObject("dev_reminderAckState"),
+                help: I18n.getTranslatedObject("dev_reminderAckStateHelp"),
                 newLine: true,
                 xs: 12,
             },
@@ -169,7 +199,7 @@ export function buildDeviceSchema(cfg, detection, enums) {
     };
     items.actionsSection = {
         type: "panel",
-        label: "dev_actionsSection",
+        label: I18n.getTranslatedObject("dev_actionsSection"),
         collapsable: true,
         color: "secondary",
         newLine: true,
@@ -177,37 +207,45 @@ export function buildDeviceSchema(cfg, detection, enums) {
         items: {
             actions: {
                 type: "table",
-                label: "dev_actionsTable",
+                label: I18n.getTranslatedObject("dev_actionsTable"),
                 xs: 12,
                 noDelete: false,
                 items: [
                     {
                         type: "select",
                         attr: "event",
-                        title: "dev_actionEvent",
+                        title: I18n.translate("dev_actionEvent"),
                         noTranslation: false,
-                        options: ACTION_EVENTS.map(event => ({ label: ACTION_EVENT_KEYS[event], value: event })),
+                        options: ACTION_EVENTS.map(event => ({
+                            label: I18n.translate(ACTION_EVENT_KEYS[event]),
+                            value: event,
+                        })),
                         default: "end",
                         width: "20%",
                     },
-                    { type: "objectId", attr: "stateId", title: "dev_actionState", width: "55%" },
-                    { type: "text", attr: "value", title: "dev_actionValue", width: "25%" },
+                    { type: "objectId", attr: "stateId", title: I18n.translate("dev_actionState"), width: "55%" },
+                    { type: "text", attr: "value", title: I18n.translate("dev_actionValue"), width: "25%" },
                 ],
             },
         },
     };
     items.advancedSection = {
         type: "panel",
-        label: "dev_advancedSection",
+        label: I18n.getTranslatedObject("dev_advancedSection"),
         collapsable: true,
         color: "secondary",
         newLine: true,
         xs: 12,
         items: {
-            abortFixed: { type: "checkbox", label: "dev_abortFixed", help: "dev_abortFixedHelp", xs: 12 },
+            abortFixed: {
+                type: "checkbox",
+                label: I18n.getTranslatedObject("dev_abortFixed"),
+                help: I18n.getTranslatedObject("dev_abortFixedHelp"),
+                xs: 12,
+            },
         },
     };
-    return { type: "panel", i18n: true, items };
+    return { type: "panel", items };
 }
 function toNumber(val) {
     if (typeof val === "number") {

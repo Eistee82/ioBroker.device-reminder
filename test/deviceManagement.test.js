@@ -3,6 +3,7 @@ import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.j
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import { buildLearnSchema, parseLearnForm, ReminderDeviceManagement } from "../build/lib/deviceManagement.js";
 import { ensureDeviceObjects } from "../build/lib/deviceObjects.js";
+import * as I18n from "@iobroker/adapter-core/i18n";
 import { Notifier } from "../build/lib/notifier.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { washingMachine } from "./helpers/curves.js";
@@ -879,10 +880,26 @@ describe("deviceManagement", () => {
 			);
 			assert.strictEqual(details.schema.items.lastOperations.type, "table");
 			const values = Object.values(details.schema.items).filter(i => i.type === "staticInfo");
-			assert.ok(values.some(i => i.label === "dm_detailsStartVal" && i.data === 30 && i.unit === "W"));
-			assert.ok(values.some(i => i.label === "dm_detailsReminderInterval" && i.data === 15));
-			assert.ok(values.some(i => i.label === "dm_detailsReminderMax" && i.data === 4));
-			assert.ok(!values.some(i => i.label === "dm_detailsPauseHold"), "no pause protection rows when off");
+			assert.ok(
+				values.some(
+					i =>
+						i.label.de === I18n.getTranslatedObject("dm_detailsStartVal").de &&
+						i.data === 30 &&
+						i.unit === "W",
+				),
+			);
+			assert.ok(
+				values.some(
+					i => i.label.de === I18n.getTranslatedObject("dm_detailsReminderInterval").de && i.data === 15,
+				),
+			);
+			assert.ok(
+				values.some(i => i.label.de === I18n.getTranslatedObject("dm_detailsReminderMax").de && i.data === 4),
+			);
+			assert.ok(
+				!values.some(i => i.label.de === I18n.getTranslatedObject("dm_detailsPauseHold").de),
+				"no pause protection rows when off",
+			);
 		});
 
 		it("shows the pause protection of the type when it is on", async () => {
@@ -890,8 +907,12 @@ describe("deviceManagement", () => {
 			await addDevice(ctx, "trockner");
 			const details = await ctx.dm.getDeviceDetails("trockner");
 			const values = Object.values(details.schema.items).filter(i => i.type === "staticInfo");
-			assert.ok(values.some(i => i.label === "dm_detailsPauseHold" && i.data === 1700));
-			assert.ok(values.some(i => i.label === "dm_detailsPauseBelow" && i.data === 0.25));
+			assert.ok(
+				values.some(i => i.label.de === I18n.getTranslatedObject("dm_detailsPauseHold").de && i.data === 1700),
+			);
+			assert.ok(
+				values.some(i => i.label.de === I18n.getTranslatedObject("dm_detailsPauseBelow").de && i.data === 0.25),
+			);
 		});
 
 		it("tolerates a broken lastOperations state and an unknown type", async () => {
@@ -907,5 +928,17 @@ describe("deviceManagement", () => {
 			const ctx = setup();
 			assert.deepStrictEqual(await ctx.dm.getDeviceDetails("nope"), { error: "unknownDevice" });
 		});
+	});
+});
+
+describe("texts of the device manager forms", () => {
+	it("come from the admin translations in every language", async () => {
+		const { buildLearnSourceSchema } = await import("../build/lib/deviceManagement.js");
+		const schema = buildLearnSourceSchema();
+		const keys = ["en", "de", "ru", "pt", "nl", "fr", "it", "es", "pl", "uk", "zh-cn"];
+		for (const text of [schema.items.info.text, schema.items.source.label, schema.items.source.options[0].label]) {
+			assert.deepStrictEqual(Object.keys(text).sort(), [...keys].sort());
+			assert.ok(!text.en.startsWith("dm_"), `translated: ${text.en}`);
+		}
 	});
 });

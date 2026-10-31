@@ -29,6 +29,7 @@ class DeviceReminder extends utils.Adapter {
     }
     async onReady() {
         try {
+            await utils.I18n.init(fileURLToPath(new URL("../admin", import.meta.url)), this);
             await this.initMigration();
             const { config, warnings, generatedIds, idPatch } = normalizeInstanceConfig(this.config);
             for (const w of warnings) {

@@ -1,3 +1,4 @@
+import * as I18n from "@iobroker/adapter-core/i18n";
 import { ACTIONS, DeviceManagement } from "@iobroker/dm-utils";
 import { DEFAULT_REMINDER, findType, normalizeDeviceConfig } from "./config.js";
 import { buildDeviceSchema, buildSourceSchema, deviceConfigToForm, formToDeviceConfig } from "./deviceForm.js";
@@ -85,36 +86,48 @@ export class ReminderDeviceManagement extends DeviceManagement {
         const type = findType(inst, cfg.typeId);
         const items = {};
         const data = {};
-        items.opsHeader = { type: "header", text: "dm_detailsOperations", size: 4, newLine: true, xs: 12 };
+        items.opsHeader = {
+            type: "header",
+            text: I18n.getTranslatedObject("dm_detailsOperations"),
+            size: 4,
+            newLine: true,
+            xs: 12,
+        };
         items.lastOperations = {
             type: "table",
-            label: "dm_detailsOperations",
+            label: I18n.getTranslatedObject("dm_detailsOperations"),
             disabled: true,
             noDelete: true,
             xs: 12,
             items: [
-                { type: "text", attr: "start", title: "dm_detailsStart", width: "35%" },
-                { type: "text", attr: "end", title: "dm_detailsEnd", width: "35%" },
-                { type: "text", attr: "runtime", title: "dm_detailsRuntime", width: "30%" },
+                { type: "text", attr: "start", title: I18n.translate("dm_detailsStart"), width: "35%" },
+                { type: "text", attr: "end", title: I18n.translate("dm_detailsEnd"), width: "35%" },
+                { type: "text", attr: "runtime", title: I18n.translate("dm_detailsRuntime"), width: "30%" },
             ],
         };
         data.lastOperations = await this.readOperations(id);
-        items.typeHeader = { type: "header", text: "dm_detailsType", size: 4, newLine: true, xs: 12 };
+        items.typeHeader = {
+            type: "header",
+            text: I18n.getTranslatedObject("dm_detailsType"),
+            size: 4,
+            newLine: true,
+            xs: 12,
+        };
         if (type) {
             const rows = [
-                ["dm_detailsTypeName", type.name],
-                ["dm_detailsStartVal", type.startVal, "W"],
-                ["dm_detailsEndVal", type.endVal, "W"],
-                ["dm_detailsStandby", type.standby, "W"],
-                ["dm_detailsStartCount", type.startCount],
-                ["dm_detailsEndCount", type.endCount],
-                ["dm_detailsMode", type.mode],
+                [I18n.getTranslatedObject("dm_detailsTypeName"), type.name],
+                [I18n.getTranslatedObject("dm_detailsStartVal"), type.startVal, "W"],
+                [I18n.getTranslatedObject("dm_detailsEndVal"), type.endVal, "W"],
+                [I18n.getTranslatedObject("dm_detailsStandby"), type.standby, "W"],
+                [I18n.getTranslatedObject("dm_detailsStartCount"), type.startCount],
+                [I18n.getTranslatedObject("dm_detailsEndCount"), type.endCount],
+                [I18n.getTranslatedObject("dm_detailsMode"), type.mode],
             ];
             if (type.mode !== "count") {
-                rows.push(["dm_detailsStartDuration", type.startDurationSec, "s"], ["dm_detailsEndDuration", type.endDurationSec, "s"]);
+                rows.push([I18n.getTranslatedObject("dm_detailsStartDuration"), type.startDurationSec, "s"], [I18n.getTranslatedObject("dm_detailsEndDuration"), type.endDurationSec, "s"]);
             }
             if (type.pauseHoldSec > 0) {
-                rows.push(["dm_detailsPauseHold", type.pauseHoldSec, "s"], ["dm_detailsPauseUntil", type.pauseUntilSec, "s"], ["dm_detailsPauseBelow", type.pauseBelowVal, "W"]);
+                rows.push([I18n.getTranslatedObject("dm_detailsPauseHold"), type.pauseHoldSec, "s"], [I18n.getTranslatedObject("dm_detailsPauseUntil"), type.pauseUntilSec, "s"], [I18n.getTranslatedObject("dm_detailsPauseBelow"), type.pauseBelowVal, "W"]);
             }
             rows.forEach(([label, value, unit], i) => {
                 items[`type${i}`] = {
@@ -132,16 +145,22 @@ export class ReminderDeviceManagement extends DeviceManagement {
             items.typeUnknown = {
                 type: "infoBox",
                 boxType: "warning",
-                text: "dm_detailsTypeUnknown",
+                text: I18n.getTranslatedObject("dm_detailsTypeUnknown"),
                 newLine: true,
                 xs: 12,
             };
         }
-        items.reminderHeader = { type: "header", text: "dm_detailsReminder", size: 4, newLine: true, xs: 12 };
+        items.reminderHeader = {
+            type: "header",
+            text: I18n.getTranslatedObject("dm_detailsReminder"),
+            size: 4,
+            newLine: true,
+            xs: 12,
+        };
         const finished = await this.adapter.getStateAsync(`${id}.finished`);
         items.reminderState = {
             type: "staticInfo",
-            label: "dm_detailsReminderState",
+            label: I18n.getTranslatedObject("dm_detailsReminderState"),
             data: cfg.reminder.enabled ? TEXT.on : TEXT.off,
             newLine: true,
             xs: 12,
@@ -150,7 +169,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
         if (cfg.reminder.enabled) {
             items.reminderInterval = {
                 type: "staticInfo",
-                label: "dm_detailsReminderInterval",
+                label: I18n.getTranslatedObject("dm_detailsReminderInterval"),
                 data: cfg.reminder.intervalMin,
                 unit: "min",
                 xs: 12,
@@ -158,7 +177,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             };
             items.reminderMax = {
                 type: "staticInfo",
-                label: "dm_detailsReminderMax",
+                label: I18n.getTranslatedObject("dm_detailsReminderMax"),
                 data: cfg.reminder.maxCount,
                 xs: 12,
                 sm: 6,
@@ -166,12 +185,12 @@ export class ReminderDeviceManagement extends DeviceManagement {
         }
         items.reminderPending = {
             type: "staticInfo",
-            label: "dm_detailsReminderPending",
+            label: I18n.getTranslatedObject("dm_detailsReminderPending"),
             data: finished?.val === true ? TEXT.yes : TEXT.no,
             xs: 12,
             sm: 6,
         };
-        return { id, schema: { type: "panel", i18n: true, items }, data };
+        return { id, schema: { type: "panel", items }, data };
     }
     async deviceObjects() {
         const prefix = `${this.adapter.namespace}.`;
@@ -744,21 +763,26 @@ function detectionSettingsOf(t) {
 export function buildLearnSourceSchema() {
     return {
         type: "panel",
-        i18n: true,
         items: {
-            info: { type: "infoBox", boxType: "info", text: "dm_learnSourceInfo", xs: 12 },
+            info: { type: "infoBox", boxType: "info", text: I18n.getTranslatedObject("dm_learnSourceInfo"), xs: 12 },
             source: {
                 type: "select",
-                label: "dm_learnSource",
+                label: I18n.getTranslatedObject("dm_learnSource"),
                 options: [
-                    { label: "dm_learnSourceHistory", value: "history" },
-                    { label: "dm_learnSourceRecord", value: "record" },
+                    { label: I18n.getTranslatedObject("dm_learnSourceHistory"), value: "history" },
+                    { label: I18n.getTranslatedObject("dm_learnSourceRecord"), value: "record" },
                 ],
                 newLine: true,
                 xs: 12,
                 sm: 8,
             },
-            instance: { type: "text", label: "dm_learnHistoryInstance", disabled: true, xs: 12, sm: 4 },
+            instance: {
+                type: "text",
+                label: I18n.getTranslatedObject("dm_learnHistoryInstance"),
+                disabled: true,
+                xs: 12,
+                sm: 4,
+            },
         },
     };
 }
@@ -774,31 +798,35 @@ export function buildLearnSchema(fromHistory = false, unit = "W", withCurrent = 
     });
     return {
         type: "panel",
-        i18n: true,
         items: {
-            info: { type: "infoBox", boxType: "info", text: "dm_learnInfo", xs: 12 },
+            info: { type: "infoBox", boxType: "info", text: I18n.getTranslatedObject("dm_learnInfo"), xs: 12 },
             name: {
                 type: "text",
-                label: "dm_learnName",
+                label: I18n.getTranslatedObject("dm_learnName"),
                 validator: "data.name && String(data.name).trim() !== ''",
-                validatorErrorText: "dev_required",
+                validatorErrorText: I18n.translate("dev_required"),
                 newLine: true,
                 xs: 12,
             },
-            startVal: { ...num("dm_learnStartVal", 0.05, 0, unit), newLine: true },
-            endVal: num("dm_learnEndVal", 0.05, 0, unit),
-            standby: num("dm_learnStandby", 0.05, 0, unit),
-            startCount: { ...num("dm_learnStartCount", 0.5, 1), newLine: true },
-            endCount: num("dm_learnEndCount", 1, 2),
-            startDurationSec: { ...num("dm_learnStartDuration", 1, 0, "s"), newLine: true },
-            endDurationSec: num("dm_learnEndDuration", 1, 0, "s"),
-            pauseInfo: { type: "staticText", text: "dm_learnPauseInfo", newLine: true, xs: 12 },
-            pauseHoldSec: { ...num("dm_learnPauseHold", 1, 0, "s"), newLine: true },
-            pauseUntilSec: num("dm_learnPauseUntil", 1, 0, "s"),
-            pauseBelowVal: num("dm_learnPauseBelow", 0.05, 0, unit),
+            startVal: { ...num(I18n.getTranslatedObject("dm_learnStartVal"), 0.05, 0, unit), newLine: true },
+            endVal: num(I18n.getTranslatedObject("dm_learnEndVal"), 0.05, 0, unit),
+            standby: num(I18n.getTranslatedObject("dm_learnStandby"), 0.05, 0, unit),
+            startCount: { ...num(I18n.getTranslatedObject("dm_learnStartCount"), 0.5, 1), newLine: true },
+            endCount: num(I18n.getTranslatedObject("dm_learnEndCount"), 1, 2),
+            startDurationSec: { ...num(I18n.getTranslatedObject("dm_learnStartDuration"), 1, 0, "s"), newLine: true },
+            endDurationSec: num(I18n.getTranslatedObject("dm_learnEndDuration"), 1, 0, "s"),
+            pauseInfo: {
+                type: "staticText",
+                text: I18n.getTranslatedObject("dm_learnPauseInfo"),
+                newLine: true,
+                xs: 12,
+            },
+            pauseHoldSec: { ...num(I18n.getTranslatedObject("dm_learnPauseHold"), 1, 0, "s"), newLine: true },
+            pauseUntilSec: num(I18n.getTranslatedObject("dm_learnPauseUntil"), 1, 0, "s"),
+            pauseBelowVal: num(I18n.getTranslatedObject("dm_learnPauseBelow"), 0.05, 0, unit),
             durationSec: {
                 type: "number",
-                label: "dm_learnDuration",
+                label: I18n.getTranslatedObject("dm_learnDuration"),
                 unit: "s",
                 disabled: true,
                 newLine: true,
@@ -807,7 +835,9 @@ export function buildLearnSchema(fromHistory = false, unit = "W", withCurrent = 
             },
             samples: {
                 type: "number",
-                label: fromHistory ? "dm_learnHistorySamples" : "dm_learnSamples",
+                label: fromHistory
+                    ? I18n.getTranslatedObject("dm_learnHistorySamples")
+                    : I18n.getTranslatedObject("dm_learnSamples"),
                 disabled: true,
                 xs: 12,
                 sm: 4,
@@ -819,26 +849,45 @@ export function buildLearnSchema(fromHistory = false, unit = "W", withCurrent = 
 function historyItems(fromHistory, withCurrent) {
     const items = {};
     if (fromHistory) {
-        items.runs = { type: "number", label: "dm_learnRuns", disabled: true, xs: 12, sm: 4 };
-        items.longestPauseMin = { type: "number", label: "dm_learnLongestPause", disabled: true, xs: 12, sm: 4 };
+        items.runs = { type: "number", label: I18n.getTranslatedObject("dm_learnRuns"), disabled: true, xs: 12, sm: 4 };
+        items.longestPauseMin = {
+            type: "number",
+            label: I18n.getTranslatedObject("dm_learnLongestPause"),
+            disabled: true,
+            xs: 12,
+            sm: 4,
+        };
     }
     items.mode = {
         type: "select",
-        label: "dm_detailsMode",
+        label: I18n.getTranslatedObject("dm_detailsMode"),
         options: DETECTION_MODES.map(m => ({ label: MODE_LABELS[m], value: m })),
         newLine: true,
         xs: 12,
         sm: 4,
     };
-    items.evalInfo = { type: "staticText", text: "dm_learnEvalInfo", newLine: true, xs: 12 };
+    items.evalInfo = { type: "staticText", text: I18n.getTranslatedObject("dm_learnEvalInfo"), newLine: true, xs: 12 };
     for (const m of DETECTION_MODES) {
         items[`eval_${m}`] = { type: "text", label: MODE_LABELS[m], disabled: true, xs: 12, sm: 4 };
     }
     if (fromHistory) {
-        items.looText = { type: "text", label: "dm_learnLoo", disabled: true, newLine: true, xs: 12, sm: 4 };
+        items.looText = {
+            type: "text",
+            label: I18n.getTranslatedObject("dm_learnLoo"),
+            disabled: true,
+            newLine: true,
+            xs: 12,
+            sm: 4,
+        };
     }
     if (withCurrent) {
-        items.eval_current = { type: "text", label: "dm_learnCurrentType", disabled: true, xs: 12, sm: 4 };
+        items.eval_current = {
+            type: "text",
+            label: I18n.getTranslatedObject("dm_learnCurrentType"),
+            disabled: true,
+            xs: 12,
+            sm: 4,
+        };
     }
     return items;
 }
