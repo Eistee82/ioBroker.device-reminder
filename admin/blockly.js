@@ -7,135 +7,70 @@
 
 	Blockly.Words = Blockly.Words || {};
 
-	Blockly.Words["device_reminder_status"] = {
-		en: "status of device",
-		de: "Status von Gerät",
-		ru: "статус устройства",
-		pt: "estado do dispositivo",
-		nl: "status van apparaat",
-		fr: "état de l'appareil",
-		it: "stato del dispositivo",
-		es: "estado del dispositivo",
-		pl: "status urządzenia",
-		uk: "стан пристрою",
-		"zh-cn": "设备状态",
+	Blockly.Words["device_reminder_send"] = {
+		en: "send message via",
+		de: "Nachricht senden über",
+		ru: "отправить сообщение через",
+		pt: "enviar mensagem via",
+		nl: "bericht sturen via",
+		fr: "envoyer un message via",
+		it: "invia messaggio tramite",
+		es: "enviar mensaje mediante",
+		pl: "wyślij wiadomość przez",
+		uk: "надіслати повідомлення через",
+		"zh-cn": "发送消息，通过",
 	};
-	Blockly.Words["device_reminder_status_tooltip"] = {
-		en: "Reads the status text of a device (e.g. Off, Running, Finished)",
-		de: "Liest den Status-Text eines Geräts (z. B. Aus, Läuft, Fertig)",
-		ru: "Читает текст статуса устройства (например, выкл., работает, завершено)",
-		pt: "Lê o texto de estado de um dispositivo (p. ex. desligado, em execução, concluído)",
-		nl: "Leest de statustekst van een apparaat (bijv. uit, actief, klaar)",
-		fr: "Lit le texte d'état d'un appareil (p. ex. arrêté, en marche, terminé)",
-		it: "Legge il testo di stato di un dispositivo (ad es. spento, in funzione, terminato)",
-		es: "Lee el texto de estado de un dispositivo (p. ej. apagado, en marcha, terminado)",
-		pl: "Odczytuje tekst statusu urządzenia (np. wyłączone, działa, zakończone)",
-		uk: "Зчитує текст стану пристрою (наприклад, вимкнено, працює, завершено)",
-		"zh-cn": "读取设备的状态文本（例如 关闭、运行中、已完成）",
+	Blockly.Words["device_reminder_send_tooltip"] = {
+		en: "Sends a text to recipients of device-reminder (all messengers, time windows of the recipients are respected)",
+		de: "Sendet einen Text an Empfänger von device-reminder (alle Messenger, die Zeitfenster der Empfänger gelten)",
+		ru: "Отправляет текст получателям device-reminder (все мессенджеры, временные окна получателей учитываются)",
+		pt: "Envia um texto aos destinatários do device-reminder (todos os mensageiros, as janelas de tempo dos destinatários são respeitadas)",
+		nl: "Stuurt een tekst naar ontvangers van device-reminder (alle messengers, de tijdvensters van de ontvangers gelden)",
+		fr: "Envoie un texte aux destinataires de device-reminder (toutes les messageries, les plages horaires des destinataires sont respectées)",
+		it: "Invia un testo ai destinatari di device-reminder (tutti i messenger, le fasce orarie dei destinatari sono rispettate)",
+		es: "Envía un texto a los destinatarios de device-reminder (todos los mensajeros, se respetan las franjas horarias de los destinatarios)",
+		pl: "Wysyła tekst do odbiorców device-reminder (wszystkie komunikatory, okna czasowe odbiorców są uwzględniane)",
+		uk: "Надсилає текст одержувачам device-reminder (усі месенджери, часові вікна одержувачів враховуються)",
+		"zh-cn": "向 device-reminder 的收件人发送文本（所有消息服务，遵守收件人的时间窗口）",
 	};
-	Blockly.Words["device_reminder_acknowledge"] = {
-		en: "acknowledge reminder of device",
-		de: "Erinnerung quittieren von Gerät",
-		ru: "подтвердить напоминание устройства",
-		pt: "confirmar lembrete do dispositivo",
-		nl: "herinnering bevestigen van apparaat",
-		fr: "acquitter le rappel de l'appareil",
-		it: "conferma promemoria del dispositivo",
-		es: "confirmar recordatorio del dispositivo",
-		pl: "potwierdź przypomnienie urządzenia",
-		uk: "підтвердити нагадування пристрою",
-		"zh-cn": "确认设备提醒",
+	Blockly.Words["device_reminder_to"] = {
+		en: "to",
+		de: "an",
+		ru: "кому",
+		pt: "para",
+		nl: "aan",
+		fr: "à",
+		it: "a",
+		es: "a",
+		pl: "do",
+		uk: "кому",
+		"zh-cn": "发送给",
 	};
-	Blockly.Words["device_reminder_acknowledge_tooltip"] = {
-		en: "Acknowledges the finished device and stops its reminders",
-		de: "Quittiert das fertige Gerät und beendet die Erinnerungen",
-		ru: "Подтверждает завершение работы устройства и останавливает напоминания",
-		pt: "Confirma o dispositivo concluído e interrompe os lembretes",
-		nl: "Bevestigt het klare apparaat en stopt de herinneringen",
-		fr: "Acquitte l'appareil terminé et arrête les rappels",
-		it: "Conferma il dispositivo terminato e interrompe i promemoria",
-		es: "Confirma el dispositivo terminado y detiene los recordatorios",
-		pl: "Potwierdza zakończone urządzenie i zatrzymuje przypomnienia",
-		uk: "Підтверджує завершений пристрій і зупиняє нагадування",
-		"zh-cn": "确认设备已完成并停止提醒",
+	Blockly.Words["device_reminder_all_recipients"] = {
+		en: "all recipients",
+		de: "alle Empfänger",
+		ru: "все получатели",
+		pt: "todos os destinatários",
+		nl: "alle ontvangers",
+		fr: "tous les destinataires",
+		it: "tutti i destinatari",
+		es: "todos los destinatarios",
+		pl: "wszyscy odbiorcy",
+		uk: "усі одержувачі",
+		"zh-cn": "所有收件人",
 	};
-	Blockly.Words["device_reminder_dnd"] = {
-		en: "set do not disturb for device",
-		de: "Nicht stören setzen für Gerät",
-		ru: "установить «не беспокоить» для устройства",
-		pt: "definir não perturbar para o dispositivo",
-		nl: "niet storen instellen voor apparaat",
-		fr: "régler ne pas déranger pour l'appareil",
-		it: "imposta non disturbare per il dispositivo",
-		es: "establecer no molestar para el dispositivo",
-		pl: "ustaw nie przeszkadzać dla urządzenia",
-		uk: "встановити «не турбувати» для пристрою",
-		"zh-cn": "设置设备勿扰",
-	};
-	Blockly.Words["device_reminder_dnd_tooltip"] = {
-		en: "Switches do not disturb on or off for a device",
-		de: "Schaltet Nicht stören für ein Gerät ein oder aus",
-		ru: "Включает или выключает режим «не беспокоить» для устройства",
-		pt: "Ativa ou desativa o modo não perturbar para um dispositivo",
-		nl: "Schakelt niet storen in of uit voor een apparaat",
-		fr: "Active ou désactive ne pas déranger pour un appareil",
-		it: "Attiva o disattiva non disturbare per un dispositivo",
-		es: "Activa o desactiva no molestar para un dispositivo",
-		pl: "Włącza lub wyłącza tryb nie przeszkadzać dla urządzenia",
-		uk: "Вмикає або вимикає режим «не турбувати» для пристрою",
-		"zh-cn": "为设备开启或关闭勿扰",
-	};
-	Blockly.Words["device_reminder_test"] = {
-		en: "send test message to recipient",
-		de: "Testnachricht senden an Empfänger",
-		ru: "отправить тестовое сообщение получателю",
-		pt: "enviar mensagem de teste ao destinatário",
-		nl: "testbericht sturen naar ontvanger",
-		fr: "envoyer un message de test au destinataire",
-		it: "invia messaggio di prova al destinatario",
-		es: "enviar mensaje de prueba al destinatario",
-		pl: "wyślij wiadomość testową do odbiorcy",
-		uk: "надіслати тестове повідомлення одержувачу",
-		"zh-cn": "向收件人发送测试消息",
-	};
-	Blockly.Words["device_reminder_test_tooltip"] = {
-		en: "Sends a test message to a configured recipient (recipient ID)",
-		de: "Sendet eine Testnachricht an einen konfigurierten Empfänger (Empfänger-ID)",
-		ru: "Отправляет тестовое сообщение настроенному получателю (ID получателя)",
-		pt: "Envia uma mensagem de teste a um destinatário configurado (ID do destinatário)",
-		nl: "Stuurt een testbericht naar een ingestelde ontvanger (ontvanger-ID)",
-		fr: "Envoie un message de test à un destinataire configuré (ID du destinataire)",
-		it: "Invia un messaggio di prova a un destinatario configurato (ID destinatario)",
-		es: "Envía un mensaje de prueba a un destinatario configurado (ID del destinatario)",
-		pl: "Wysyła wiadomość testową do skonfigurowanego odbiorcy (ID odbiorcy)",
-		uk: "Надсилає тестове повідомлення налаштованому одержувачу (ID одержувача)",
-		"zh-cn": "向已配置的收件人发送测试消息（收件人 ID）",
-	};
-	Blockly.Words["device_reminder_device_id"] = {
-		en: "device ID",
-		de: "Geräte-ID",
-		ru: "ID устройства",
-		pt: "ID do dispositivo",
-		nl: "apparaat-ID",
-		fr: "ID de l'appareil",
-		it: "ID dispositivo",
-		es: "ID del dispositivo",
-		pl: "ID urządzenia",
-		uk: "ID пристрою",
-		"zh-cn": "设备 ID",
-	};
-	Blockly.Words["device_reminder_recipient_id"] = {
-		en: "recipient ID",
-		de: "Empfänger-ID",
-		ru: "ID получателя",
-		pt: "ID do destinatário",
-		nl: "ontvanger-ID",
-		fr: "ID du destinataire",
-		it: "ID destinatario",
-		es: "ID del destinatario",
-		pl: "ID odbiorcy",
-		uk: "ID одержувача",
-		"zh-cn": "收件人 ID",
+	Blockly.Words["device_reminder_text"] = {
+		en: "text",
+		de: "Text",
+		ru: "текст",
+		pt: "texto",
+		nl: "tekst",
+		fr: "texte",
+		it: "testo",
+		es: "texto",
+		pl: "tekst",
+		uk: "текст",
+		"zh-cn": "文本",
 	};
 
 	function tr(key) {
@@ -165,7 +100,7 @@
 	 * (the block editor only provides instance objects in `main.objects`).
 	 */
 	function recipientOptions(block) {
-		var options = [];
+		var options = [[tr("device_reminder_all_recipients"), "*"]];
 		var objects = typeof main !== "undefined" && main && main.objects ? main.objects : {};
 		var inst = block && block.getFieldValue ? block.getFieldValue("INSTANCE") : "0";
 		var obj = objects["system.adapter." + ADAPTER + "." + inst];
@@ -176,32 +111,13 @@
 				options.push([rcp.name ? rcp.name + " (" + rcp.id + ")" : String(rcp.id), String(rcp.id)]);
 			}
 		}
-		return options.length ? options : [["-", ""]];
-	}
-
-	/**
-	 * Device ID from the value of the device field. The field takes either the plain device ID or any
-	 * object ID picked with the ID dialog (`device-reminder.<n>.<deviceId>[.state]`).
-	 */
-	function deviceIdOf(block) {
-		var value = String(block.getFieldValue("DEVICE") || "").trim();
-		value = value.replace(new RegExp("^" + ADAPTER + "\\.\\d+\\."), "");
-		return value.split(".")[0];
+		return options;
 	}
 
 	function appendHead(block, labelKey) {
 		var input = block.appendDummyInput().appendField(tr(labelKey));
 		input.appendField(new Blockly.FieldDropdown(instanceOptions), "INSTANCE");
 		return input;
-	}
-
-	function appendDevice(block, labelKey) {
-		var input = appendHead(block, labelKey);
-		input.appendField(tr("device_reminder_device_id"));
-		// The ID dialog of the editor lets the user pick a state of the device; fall back to plain text.
-		var field =
-			typeof Blockly.FieldOID === "function" ? new Blockly.FieldOID("", "all") : new Blockly.FieldTextInput("");
-		input.appendField(field, "DEVICE");
 	}
 
 	function getGenerator() {
@@ -237,81 +153,37 @@
 		return JSON.stringify(String(value));
 	}
 
-	Blockly.Blocks["device_reminder_status"] = {
-		init: function () {
-			appendDevice(this, "device_reminder_status");
-			this.setOutput(true, "String");
-			this.setColour(HUE);
-			this.setTooltip(tr("device_reminder_status_tooltip"));
-		},
-	};
-	register("device_reminder_status", function (block, generator) {
-		var gen = generator || getGenerator();
-		var id = target(block) + "." + deviceIdOf(block) + ".status";
-		var order = gen && gen.ORDER_MEMBER !== undefined ? gen.ORDER_MEMBER : 0;
-		return ["getState(" + JSON.stringify(id) + ").val", order];
-	});
-
-	Blockly.Blocks["device_reminder_acknowledge"] = {
-		init: function () {
-			appendDevice(this, "device_reminder_acknowledge");
-			this.setPreviousStatement(true, null);
-			this.setNextStatement(true, null);
-			this.setColour(HUE);
-			this.setTooltip(tr("device_reminder_acknowledge_tooltip"));
-		},
-	};
-	register("device_reminder_acknowledge", function (block) {
-		return sendToCode(block, "acknowledge", '{"deviceId": ' + jsonString(deviceIdOf(block)) + "}");
-	});
-
-	Blockly.Blocks["device_reminder_dnd"] = {
-		init: function () {
-			appendDevice(this, "device_reminder_dnd");
-			this.appendValueInput("VALUE").setCheck("Boolean");
-			this.setPreviousStatement(true, null);
-			this.setNextStatement(true, null);
-			this.setColour(HUE);
-			this.setTooltip(tr("device_reminder_dnd_tooltip"));
-		},
-	};
-	register("device_reminder_dnd", function (block, generator) {
-		var gen = generator || getGenerator();
-		var order = gen && gen.ORDER_ATOMIC !== undefined ? gen.ORDER_ATOMIC : 0;
-		var value = (gen && gen.valueToCode(block, "VALUE", order)) || "false";
-		return sendToCode(
-			block,
-			"setDnd",
-			'{"deviceId": ' + jsonString(deviceIdOf(block)) + ', "value": ' + value + "}",
-		);
-	});
-
-	Blockly.Blocks["device_reminder_test"] = {
+	Blockly.Blocks["device_reminder_send"] = {
 		init: function () {
 			var block = this;
-			var input = appendHead(this, "device_reminder_test");
-			input.appendField(tr("device_reminder_recipient_id"));
+			var input = appendHead(this, "device_reminder_send");
+			input.appendField(tr("device_reminder_to"));
 			input.appendField(
 				new Blockly.FieldDropdown(function () {
 					return recipientOptions(block);
 				}),
 				"RECIPIENT",
 			);
+			this.appendValueInput("TEXT").setCheck("String").appendField(tr("device_reminder_text"));
 			this.setPreviousStatement(true, null);
 			this.setNextStatement(true, null);
 			this.setColour(HUE);
-			this.setTooltip(tr("device_reminder_test_tooltip"));
+			this.setTooltip(tr("device_reminder_send_tooltip"));
 		},
 	};
-	register("device_reminder_test", function (block) {
-		return sendToCode(block, "testRecipient", '{"id": ' + jsonString(block.getFieldValue("RECIPIENT")) + "}");
+	register("device_reminder_send", function (block, generator) {
+		var gen = generator || getGenerator();
+		var order = gen && gen.ORDER_ATOMIC !== undefined ? gen.ORDER_ATOMIC : 0;
+		var text = (gen && gen.valueToCode(block, "TEXT", order)) || '""';
+		return sendToCode(
+			block,
+			"send",
+			'{"recipients": ' + jsonString(block.getFieldValue("RECIPIENT")) + ', "text": ' + text + "}",
+		);
 	});
 
 	if (Blockly.Sendto && Blockly.Sendto.blocks) {
-		Blockly.Sendto.blocks["device_reminder_status"] = '<block type="device_reminder_status"></block>';
-		Blockly.Sendto.blocks["device_reminder_acknowledge"] = '<block type="device_reminder_acknowledge"></block>';
-		Blockly.Sendto.blocks["device_reminder_dnd"] =
-			'<block type="device_reminder_dnd"><value name="VALUE"><shadow type="logic_boolean"><field name="BOOL">TRUE</field></shadow></value></block>';
-		Blockly.Sendto.blocks["device_reminder_test"] = '<block type="device_reminder_test"></block>';
+		Blockly.Sendto.blocks["device_reminder_send"] =
+			'<block type="device_reminder_send"><value name="TEXT"><shadow type="text"><field name="TEXT"></field></shadow></value></block>';
 	}
 })();

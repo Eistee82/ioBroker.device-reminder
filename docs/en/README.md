@@ -341,14 +341,14 @@ Example: a device "Wäsche Keller" had the state `device-reminder.0.Wäsche Kell
 | `<name>.Status` | `<deviceId>.status` | string, text | – | status texts of 3.1.2 |
 | `<name>.live consumption` | `<deviceId>.consumption` | number, value.power (W) | – | live value |
 | `<name>.average consumption` | `<deviceId>.averageConsumption` | number, value.power (W) | – | live value |
-| `<name>.runtime` | `<deviceId>.runtime` | string, text | – | `hh:mm:ss` |
 | `<name>.runtime in ms` | `<deviceId>.runtimeMs` | number, value (ms) | – | |
-| `<name>.lastRuntime` | `<deviceId>.lastRuntime` | string, text | yes | `hh:mm:ss` |
 | `<name>.messageDP` | `<deviceId>.message` | string, text | – | last text sent |
 | `<name>.alert runtime` | `<deviceId>.alertRuntime` | boolean, indicator.alarm | – | |
 | `<name>.last operations` | `<deviceId>.lastOperations` | string, json | yes | same JSON format |
 | `<name>.config.do not disturb` | `<deviceId>.config.doNotDisturb` | boolean, switch.enable | yes | writable |
 | `<name>.config.runtime max` | `<deviceId>.config.runtimeMax` | number, level (min) | yes | writable |
+
+`runtime` and `lastRuntime` keep their names (the value of `lastRuntime` is taken over). They only move below the new device object.
 
 New in version 4 (see [States reference](#13-states-reference)):
 
@@ -361,21 +361,25 @@ New in version 4 (see [States reference](#13-states-reference)):
 
 ## 10. Blockly
 
-The adapter adds Blockly blocks (11 languages):
+The standard blocks of the JavaScript adapter are enough for the states of a device, so there are no own blocks for them:
 
-- **Status of device**: returns the status text of the device.
-- **Acknowledge device**: acknowledges the finished message.
-- **Do not disturb for device**: switches do-not-disturb on or off.
-- **Send test message**: sends a test message to a recipient. The block offers the recipients of the instance as a list (name and recipient ID).
+| Task | Standard block | State |
+| --- | --- | --- |
+| react when finished | trigger "if object" | `<deviceId>.finished` (true) |
+| read the status | "get value of object ID" | `<deviceId>.status` |
+| acknowledge | "control" with true | `<deviceId>.acknowledge` |
+| do not disturb | "control" with true/false | `<deviceId>.config.doNotDisturb` |
 
-The device blocks use the ID picker: select any state of the device (for example its `status`); the device ID is taken from the object ID. You can also type the plain device ID.
+The adapter adds one block of its own (11 languages):
+
+- **send message via device-reminder to … text …**: sends any text to a recipient set up here or to **all recipients**. The settings of the recipients apply (messenger, time window, volume of the voice output). The block offers the recipients of the instance as a list.
 
 Script example: react when a device has finished (JavaScript adapter):
 
 ```js
 on({ id: "device-reminder.0.washing-machine.finished", change: "ne" }, obj => {
 	if (obj.state.val === true) {
-		log("Washing machine is finished");
+		sendTo("device-reminder.0", "send", { recipients: "*", text: "Washing machine is finished" });
 		setState("device-reminder.0.washing-machine.acknowledge", true);
 	}
 });
@@ -384,16 +388,16 @@ on({ id: "device-reminder.0.washing-machine.finished", change: "ne" }, obj => {
 ## 11. sendTo API
 
 ```js
-sendTo("device-reminder.0", "status", { deviceId: "washing-machine" }, result => log(JSON.stringify(result)));
+sendTo("device-reminder.0", "send", { recipients: ["telegram-abc1"], text: "Hello" }, result => log(JSON.stringify(result)));
 ```
 
 | Command | Message | Answer |
 | --- | --- | --- |
 | `list` | none | `[{ id, name }]` of all devices |
-| `status` | `{ deviceId }` | `{ status, running, finished, consumption, runtime }` or `{ error: "unknownDevice" }` |
-| `acknowledge` | `{ deviceId }` | `{ ok: true }` or `{ error: "unknownDevice" }` |
-| `setDnd` | `{ deviceId, value }` | `{ ok: true }` or `{ error: "unknownDevice" }` |
+| `send` | `{ recipients, text, doNotDisturb? }`: `recipients` is one recipient ID, a list of IDs or `"*"` for all enabled recipients; `doNotDisturb: true` suppresses voice outputs | `{ ok, sent, skippedWindow, unknown }` (sent, skipped because of the time window, unknown IDs) or `{ ok: false, error: "missingText" \| "missingRecipient" }` |
 | `testRecipient` | `{ id }` (recipient ID) | result of the test message or `{ ok: false, error: "missingRecipient" }` |
+
+Status, acknowledging and do not disturb use the states of the device (see [States reference](#13-states-reference)).
 
 ## 12. vis-2 widgets
 

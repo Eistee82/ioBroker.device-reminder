@@ -7,12 +7,10 @@ function text(msg, key) {
     const v = field(msg, key);
     return typeof v === "string" ? v : "";
 }
-function deviceIdOf(msg) {
-    const id = field(msg, "deviceId");
-    return typeof id === "string" ? id : "";
-}
-function toBool(val) {
-    return val === true || val === 1 || val === "true" || val === "1";
+function recipientIdsOf(msg, all) {
+    const raw = field(msg, "recipients");
+    const ids = (Array.isArray(raw) ? raw : [raw]).filter((id) => typeof id === "string" && id !== "");
+    return ids.includes("*") ? all.filter(r => r.enabled !== false).map(r => r.id) : ids;
 }
 export async function handleCommand(reg, notifier, cmd, msg, env) {
     switch (cmd) {
@@ -36,25 +34,19 @@ export async function handleCommand(reg, notifier, cmd, msg, env) {
             }
             return notifier.sendTest(id);
         }
-        case "status": {
-            const snapshot = await reg.status(deviceIdOf(msg));
-            return snapshot ?? { error: "unknownDevice" };
-        }
-        case "acknowledge": {
-            const id = deviceIdOf(msg);
-            if (!reg.get(id)) {
-                return { error: "unknownDevice" };
+        case "send": {
+            const msgText = text(msg, "text").trim();
+            if (msgText === "") {
+                return { ok: false, error: "missingText" };
             }
-            await reg.acknowledge(id);
-            return { ok: true };
-        }
-        case "setDnd": {
-            const id = deviceIdOf(msg);
-            if (!reg.get(id)) {
-                return { error: "unknownDevice" };
+            const all = notifier.recipients();
+            const ids = recipientIdsOf(msg, all);
+            if (ids.length === 0) {
+                return { ok: false, error: "missingRecipient" };
             }
-            await reg.routeOwnState(`${id}.config.doNotDisturb`, toBool(field(msg, "value")), false);
-            return { ok: true };
+            const unknown = ids.filter(id => !all.some(r => r.id === id));
+            const res = await notifier.notify(ids, msgText, { doNotDisturb: field(msg, "doNotDisturb") === true });
+            return { ok: res.sent.length > 0, ...res, unknown };
         }
         default:
             return { error: "unknownCommand" };

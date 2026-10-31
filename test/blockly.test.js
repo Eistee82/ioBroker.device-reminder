@@ -4,7 +4,7 @@ import path from "node:path";
 import vm from "node:vm";
 
 const LANGS = ["en", "de", "ru", "pt", "nl", "fr", "it", "es", "pl", "uk", "zh-cn"];
-const BLOCKS = ["device_reminder_status", "device_reminder_acknowledge", "device_reminder_dnd", "device_reminder_test"];
+const BLOCKS = ["device_reminder_send"];
 const source = fs.readFileSync(path.join(process.cwd(), "admin", "blockly.js"), "utf8");
 
 function load(generatorStyle, { withOid = true, objects = {} } = {}) {
@@ -89,7 +89,7 @@ function fakeBlock(fields, values) {
 describe("blockly blocks", () => {
 	for (const style of ["legacy", "modern"]) {
 		describe(`generator ${style}`, () => {
-			it("registers 4 blocks and generators", () => {
+			it("registers the send block and its generator", () => {
 				const { Blockly, generator } = load(style);
 				assert.deepStrictEqual(Object.keys(Blockly.Blocks).sort(), [...BLOCKS].sort());
 				for (const name of BLOCKS) {
@@ -98,82 +98,23 @@ describe("blockly blocks", () => {
 				}
 			});
 
-			it("acknowledge generates sendTo", () => {
+			it("send generates sendTo with recipient and text", () => {
 				const { generator } = load(style);
-				const block = fakeBlock({ INSTANCE: "0", DEVICE: "trockner" });
+				const block = fakeBlock({ INSTANCE: "1", RECIPIENT: "r1" }, { TEXT: '"Hallo"' });
 				assert.strictEqual(
-					generator.forBlock.device_reminder_acknowledge(block, generator).trim(),
-					'sendTo("device-reminder.0", "acknowledge", {"deviceId": "trockner"});',
+					generator.forBlock.device_reminder_send(block, generator).trim(),
+					'sendTo("device-reminder.1", "send", {"recipients": "r1", "text": "Hallo"});',
 				);
-			});
-
-			it("dnd generates sendTo with value", () => {
-				const { generator } = load(style);
-				const block = fakeBlock({ INSTANCE: "1", DEVICE: "a" }, { VALUE: "true" });
+				const empty = fakeBlock({ INSTANCE: "0", RECIPIENT: "*" });
 				assert.strictEqual(
-					generator.forBlock.device_reminder_dnd(block, generator).trim(),
-					'sendTo("device-reminder.1", "setDnd", {"deviceId": "a", "value": true});',
+					generator.forBlock.device_reminder_send(empty, generator).trim(),
+					'sendTo("device-reminder.0", "send", {"recipients": "*", "text": ""});',
 				);
-			});
-
-			it("test generates sendTo with recipient id", () => {
-				const { generator } = load(style);
-				const block = fakeBlock({ INSTANCE: "0", RECIPIENT: "r1" });
-				assert.strictEqual(
-					generator.forBlock.device_reminder_test(block, generator).trim(),
-					'sendTo("device-reminder.0", "testRecipient", {"id": "r1"});',
-				);
-			});
-
-			it("status reads the status state", () => {
-				const { generator } = load(style);
-				const block = fakeBlock({ INSTANCE: "0", DEVICE: "trockner" });
-				const [code] = generator.forBlock.device_reminder_status(block, generator);
-				assert.strictEqual(code, 'getState("device-reminder.0.trockner.status").val');
 			});
 		});
 	}
 
-	describe("device and recipient fields", () => {
-		it("the device field is an ID picker and works without any device object in main.objects", () => {
-			const { Blockly } = load("modern", { objects: {} });
-			for (const name of ["device_reminder_status", "device_reminder_acknowledge", "device_reminder_dnd"]) {
-				const block = initBlock(Blockly, name);
-				assert.strictEqual(block.fields.DEVICE.kind, "oid", name);
-				assert.strictEqual(block.fields.DEVICE.filter, "all", name);
-			}
-		});
-
-		it("falls back to a text input without the ID picker", () => {
-			const { Blockly } = load("modern", { withOid: false });
-			assert.strictEqual(initBlock(Blockly, "device_reminder_status").fields.DEVICE.kind, "text");
-		});
-
-		it("cuts the device ID out of an object ID picked with the ID dialog", () => {
-			const { generator } = load("modern");
-			const pick = DEVICE => fakeBlock({ INSTANCE: "0", DEVICE });
-			assert.strictEqual(
-				generator.forBlock
-					.device_reminder_acknowledge(pick("device-reminder.0.trockner.status"), generator)
-					.trim(),
-				'sendTo("device-reminder.0", "acknowledge", {"deviceId": "trockner"});',
-			);
-			assert.strictEqual(
-				generator.forBlock.device_reminder_acknowledge(pick("device-reminder.0.trockner"), generator).trim(),
-				'sendTo("device-reminder.0", "acknowledge", {"deviceId": "trockner"});',
-			);
-			assert.strictEqual(
-				generator.forBlock
-					.device_reminder_dnd(pick("device-reminder.0.waschmaschine.config.doNotDisturb"), generator)
-					.trim(),
-				'sendTo("device-reminder.0", "setDnd", {"deviceId": "waschmaschine", "value": false});',
-			);
-			assert.strictEqual(
-				generator.forBlock.device_reminder_status(pick("device-reminder.0.trockner.finished"), generator)[0],
-				'getState("device-reminder.0.trockner.status").val',
-			);
-		});
-
+	describe("recipient fields", () => {
 		it("lists the recipients of the instance object as [name, id] pairs", () => {
 			const objects = {
 				"system.adapter.device-reminder.0": {
@@ -186,26 +127,30 @@ describe("blockly blocks", () => {
 				},
 			};
 			const { Blockly } = load("modern", { objects });
-			const block = initBlock(Blockly, "device_reminder_test");
+			const block = initBlock(Blockly, "device_reminder_send");
 			assert.strictEqual(block.fields.RECIPIENT.kind, "dropdown");
 			assert.deepStrictEqual(JSON.parse(JSON.stringify(block.fields.RECIPIENT.options())), [
+				["all recipients", "*"],
 				["Anna (telegram-abc1)", "telegram-abc1"],
 				["pushover-def2", "pushover-def2"],
 			]);
 		});
 
-		it("shows a placeholder without recipients", () => {
+		it("offers only all recipients without configured recipients", () => {
 			const { Blockly } = load("modern");
-			const block = initBlock(Blockly, "device_reminder_test");
-			assert.deepStrictEqual(JSON.parse(JSON.stringify(block.fields.RECIPIENT.options())), [["-", ""]]);
+			const block = initBlock(Blockly, "device_reminder_send");
+			assert.deepStrictEqual(JSON.parse(JSON.stringify(block.fields.RECIPIENT.options())), [
+				["all recipients", "*"],
+			]);
 		});
 	});
 
 	it("has texts in 11 languages for every block", () => {
 		const { Blockly } = load("legacy");
 		const keys = BLOCKS.flatMap(name => [name, `${name}_tooltip`]).concat(
-			"device_reminder_recipient_id",
-			"device_reminder_device_id",
+			"device_reminder_to",
+			"device_reminder_all_recipients",
+			"device_reminder_text",
 		);
 		for (const key of keys) {
 			assert.ok(Blockly.Words[key], key);

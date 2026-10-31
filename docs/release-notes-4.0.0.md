@@ -88,8 +88,8 @@ The README changelog stays short; the details and issue numbers of 4.0.0 are lis
 - New messengers: ntfy (#457), Pushsafer (#465) and Gotify (#367)
 - Voice output (Alexa/SayIt): the volume state is derived from the speech state; if it is missing, the text is still spoken (#407, #408)
 - Detection of sockets and power meters (switch and power state) through the type-detector
-- New sendTo commands: status, acknowledge, setDnd, list and testRecipient
+- New sendTo commands: send (any text to configured recipients), list and testRecipient
 - State definitions for devices (status, consumption, runtime, running, finished, acknowledge, config, learning) with roles and names in 11 languages
-- Blockly: new blocks for device status, acknowledging reminders, do-not-disturb and sending a test message (11 languages)
+- Blockly: new block to send a message to configured recipients (11 languages); device states are used with the standard blocks
 - vis-2 widgets "Device card" (status, live power, runtime, estimated progress and remaining time, acknowledge and do-not-disturb buttons, collapsible run history) and "Device overview" (compact list of all devices, click acknowledges)
 - Further reported issues taken into account: #400, #449, #397, #458, #471, #396, #581

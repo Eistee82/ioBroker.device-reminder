@@ -33,20 +33,6 @@ import {
 } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 
-/** Snapshot of the main states of a device (answer of the `status` command). */
-export interface DeviceStatusSnapshot {
-	/** Status text. */
-	status: ioBroker.StateValue | null;
-	/** Whether a run is in progress. */
-	running: boolean;
-	/** Whether the last run finished and was not acknowledged yet. */
-	finished: boolean;
-	/** Current power in W. */
-	consumption: ioBroker.StateValue | null;
-	/** Runtime of the current run. */
-	runtime: ioBroker.StateValue | null;
-}
-
 interface Entry {
 	runtime: DeviceRuntime;
 	reminder: ReminderScheduler;
@@ -362,26 +348,6 @@ export class DeviceRegistry implements RuntimeListener {
 		if (wasFinished) {
 			await runActions(this.host, entry.runtime.config.actions, "acknowledged");
 		}
-	}
-
-	/**
-	 * Read the main states of a device.
-	 *
-	 * @param deviceId - Device id
-	 */
-	public async status(deviceId: string): Promise<DeviceStatusSnapshot | null> {
-		const entry = this.devices.get(deviceId);
-		if (!entry) {
-			return null;
-		}
-		const read = (rel: string): Promise<ioBroker.StateValue | null> => this.host.getOwnState(`${deviceId}.${rel}`);
-		return {
-			status: await read("status"),
-			running: entry.runtime.isRunning,
-			finished: isTrue(await read("finished")),
-			consumption: entry.runtime.lastPower ?? (await read("consumption")),
-			runtime: await read("runtime"),
-		};
 	}
 
 	/**

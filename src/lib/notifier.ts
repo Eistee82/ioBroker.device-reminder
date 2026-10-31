@@ -39,6 +39,11 @@ export class Notifier {
 		this.voice = new VoiceOutput(host);
 	}
 
+	/** Configured recipients. */
+	public recipients(): RecipientConfig[] {
+		return this.getRecipients();
+	}
+
 	/**
 	 * Send a text to the given recipients.
 	 *

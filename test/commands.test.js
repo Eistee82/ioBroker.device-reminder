@@ -43,43 +43,44 @@ describe("handleCommand", () => {
 		assert.deepStrictEqual(await handleCommand(reg, notifier, "list", {}), [{ id: "washer", name: "Washer" }]);
 	});
 
-	it("status returns the main states", async () => {
-		const { reg, notifier, inst } = await setup();
-		assert.deepStrictEqual(await handleCommand(reg, notifier, "status", { deviceId: "washer" }), {
-			status: inst.statusTexts.off,
-			running: false,
-			finished: false,
-			consumption: 3,
-			runtime: "00:00:00",
-		});
-		assert.deepStrictEqual(await handleCommand(reg, notifier, "status", { deviceId: "nope" }), {
-			error: "unknownDevice",
-		});
-		assert.deepStrictEqual(await handleCommand(reg, notifier, "status", null), { error: "unknownDevice" });
+	it("send delivers a text to the chosen recipients", async () => {
+		const { reg, notifier, host } = await setup();
+		const res = await handleCommand(reg, notifier, "send", { recipients: "tg", text: "Hallo" });
+		assert.deepStrictEqual(res, { ok: true, sent: ["tg"], skippedWindow: [], unknown: [] });
+		assert.strictEqual(host.sent.at(-1).instance, "telegram.0");
+		assert.strictEqual(host.sent.at(-1).message.text, "Hallo");
 	});
 
-	it("acknowledge resets finished", async () => {
+	it("send to * reaches every enabled recipient and reports unknown ids", async () => {
 		const { reg, notifier, host } = await setup();
-		await host.setOwnState("washer.finished", true);
-		assert.deepStrictEqual(await handleCommand(reg, notifier, "acknowledge", { deviceId: "washer" }), { ok: true });
-		assert.strictEqual(host.own("washer.finished"), false);
-		assert.deepStrictEqual(await handleCommand(reg, notifier, "acknowledge", { deviceId: "x" }), {
-			error: "unknownDevice",
+		assert.strictEqual(
+			(await handleCommand(reg, notifier, "send", { recipients: ["*"], text: "x" })).sent[0],
+			"tg",
+		);
+		const res = await handleCommand(reg, notifier, "send", { recipients: ["nope"], text: "x" });
+		assert.deepStrictEqual([res.ok, res.unknown], [false, ["nope"]]);
+		assert.strictEqual(host.sent.length, 1);
+	});
+
+	it("send rejects a missing text or recipient", async () => {
+		const { reg, notifier } = await setup();
+		assert.deepStrictEqual(await handleCommand(reg, notifier, "send", { recipients: "tg", text: " " }), {
+			ok: false,
+			error: "missingText",
+		});
+		assert.deepStrictEqual(await handleCommand(reg, notifier, "send", { text: "x" }), {
+			ok: false,
+			error: "missingRecipient",
 		});
 	});
 
-	it("setDnd switches do-not-disturb", async () => {
-		const { reg, notifier, host } = await setup();
-		assert.deepStrictEqual(await handleCommand(reg, notifier, "setDnd", { deviceId: "washer", value: true }), {
-			ok: true,
-		});
-		assert.strictEqual(reg.get("washer").doNotDisturb, true);
-		assert.strictEqual(host.own("washer.config.doNotDisturb"), true);
-		await handleCommand(reg, notifier, "setDnd", { deviceId: "washer", value: false });
-		assert.strictEqual(reg.get("washer").doNotDisturb, false);
-		assert.deepStrictEqual(await handleCommand(reg, notifier, "setDnd", { deviceId: "x", value: true }), {
-			error: "unknownDevice",
-		});
+	it("the removed state commands are unknown", async () => {
+		const { reg, notifier } = await setup();
+		for (const cmd of ["status", "acknowledge", "setDnd"]) {
+			assert.deepStrictEqual(await handleCommand(reg, notifier, cmd, { deviceId: "washer" }), {
+				error: "unknownCommand",
+			});
+		}
 	});
 
 	it("testRecipient sends a test message", async () => {

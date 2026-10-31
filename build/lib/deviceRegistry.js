@@ -237,20 +237,6 @@ export class DeviceRegistry {
             await runActions(this.host, entry.runtime.config.actions, "acknowledged");
         }
     }
-    async status(deviceId) {
-        const entry = this.devices.get(deviceId);
-        if (!entry) {
-            return null;
-        }
-        const read = (rel) => this.host.getOwnState(`${deviceId}.${rel}`);
-        return {
-            status: await read("status"),
-            running: entry.runtime.isRunning,
-            finished: isTrue(await read("finished")),
-            consumption: entry.runtime.lastPower ?? (await read("consumption")),
-            runtime: await read("runtime"),
-        };
-    }
     onRuntimeEvent(deviceId, ev) {
         const entry = this.devices.get(deviceId);
         if (!entry) {

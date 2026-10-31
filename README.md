@@ -34,7 +34,7 @@ Detects when household devices such as washing machines, dryers and dishwashers 
 - (Eistee82) New detection modes (time-based, combined), corrected abort detection, pause protection for long soaking pauses and an anti-crease filter that reports the end when the programme finishes and starts no run on drum movements (all default off)
 - (Eistee82) Reminders until acknowledged, actions, learning from the history (history, SQL, InfluxDB) or a recorded run, and an optional automatic optimisation after every run, without a history adapter and without restart, that never breaks a programme seen before; a dialog in the device manager shows the stored runs and can undo, reset, discard a run or save the values as a device type
 - (Eistee82) New messengers ntfy, Pushsafer and Gotify, fixed messenger payloads and time windows for every recipient
-- (Eistee82) Blockly blocks and vis-2 widgets (device card and overview)
+- (Eistee82) Blockly block and sendTo command to send messages to the configured recipients, vis-2 widgets (device card and overview)
 
 ### 3.1.2 (2024-01-22)
 

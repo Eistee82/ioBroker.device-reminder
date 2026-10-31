@@ -1,3 +1,4 @@
+import type { RecipientConfig } from "./config.js";
 import { recipientFromRow } from "./config.js";
 import type { DeviceRegistry } from "./deviceRegistry.js";
 import {
@@ -10,14 +11,7 @@ import type { Notifier } from "./notifier.js";
 
 /** Commands accepted via `sendTo`. */
 export type Command =
-	| "testRecipient"
-	| "status"
-	| "acknowledge"
-	| "setDnd"
-	| "list"
-	| "getMessengerInstances"
-	| "getAlexaDevices"
-	| "getTelegramTargets";
+	"testRecipient" | "send" | "list" | "getMessengerInstances" | "getAlexaDevices" | "getTelegramTargets";
 
 /** Access to the ioBroker installation needed by the select commands of the admin UI. */
 export type CommandEnv = ChoiceEnv;
@@ -31,20 +25,23 @@ function text(msg: unknown, key: string): string {
 	return typeof v === "string" ? v : "";
 }
 
-function deviceIdOf(msg: unknown): string {
-	const id = field(msg, "deviceId");
-	return typeof id === "string" ? id : "";
-}
-
-function toBool(val: unknown): boolean {
-	return val === true || val === 1 || val === "true" || val === "1";
+/**
+ * Recipient ids of a message: one id, a list of ids, or `*` for all enabled recipients.
+ *
+ * @param msg - Message payload
+ * @param all - Configured recipients
+ */
+function recipientIdsOf(msg: unknown, all: readonly RecipientConfig[]): string[] {
+	const raw = field(msg, "recipients");
+	const ids = (Array.isArray(raw) ? raw : [raw]).filter((id): id is string => typeof id === "string" && id !== "");
+	return ids.includes("*") ? all.filter(r => r.enabled !== false).map(r => r.id) : ids;
 }
 
 /**
  * Handle a `sendTo` command and return the answer for the callback.
  *
  * @param reg - Device registry
- * @param notifier - Notifier (for test messages)
+ * @param notifier - Notifier (for messages and test messages)
  * @param cmd - Command name
  * @param msg - Message payload
  * @param env - Access to the installation (for the selects of the admin UI)
@@ -78,25 +75,19 @@ export async function handleCommand(
 			}
 			return notifier.sendTest(id);
 		}
-		case "status": {
-			const snapshot = await reg.status(deviceIdOf(msg));
-			return snapshot ?? { error: "unknownDevice" };
-		}
-		case "acknowledge": {
-			const id = deviceIdOf(msg);
-			if (!reg.get(id)) {
-				return { error: "unknownDevice" };
+		case "send": {
+			const msgText = text(msg, "text").trim();
+			if (msgText === "") {
+				return { ok: false, error: "missingText" };
 			}
-			await reg.acknowledge(id);
-			return { ok: true };
-		}
-		case "setDnd": {
-			const id = deviceIdOf(msg);
-			if (!reg.get(id)) {
-				return { error: "unknownDevice" };
+			const all = notifier.recipients();
+			const ids = recipientIdsOf(msg, all);
+			if (ids.length === 0) {
+				return { ok: false, error: "missingRecipient" };
 			}
-			await reg.routeOwnState(`${id}.config.doNotDisturb`, toBool(field(msg, "value")), false);
-			return { ok: true };
+			const unknown = ids.filter(id => !all.some(r => r.id === id));
+			const res = await notifier.notify(ids, msgText, { doNotDisturb: field(msg, "doNotDisturb") === true });
+			return { ok: res.sent.length > 0, ...res, unknown };
 		}
 		default:
 			return { error: "unknownCommand" };

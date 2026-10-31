@@ -10,6 +10,9 @@ export class Notifier {
         this.getRecipients = getRecipients;
         this.voice = new VoiceOutput(host);
     }
+    recipients() {
+        return this.getRecipients();
+    }
     async notify(recipientIds, text, ctx) {
         const result = { sent: [], skippedWindow: [] };
         const all = this.getRecipients();

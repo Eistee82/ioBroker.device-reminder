@@ -341,14 +341,14 @@ Beispiel: Ein Gerät „Wäsche Keller“ hatte in 3.1.2 den State `device-remin
 | `<Name>.Status` | `<deviceId>.status` | string, text | – | Statustexte aus 3.1.2 |
 | `<Name>.live consumption` | `<deviceId>.consumption` | number, value.power (W) | – | Livewert |
 | `<Name>.average consumption` | `<deviceId>.averageConsumption` | number, value.power (W) | – | Livewert |
-| `<Name>.runtime` | `<deviceId>.runtime` | string, text | – | `hh:mm:ss` |
 | `<Name>.runtime in ms` | `<deviceId>.runtimeMs` | number, value (ms) | – | |
-| `<Name>.lastRuntime` | `<deviceId>.lastRuntime` | string, text | ja | `hh:mm:ss` |
 | `<Name>.messageDP` | `<deviceId>.message` | string, text | – | letzter gesendeter Text |
 | `<Name>.alert runtime` | `<deviceId>.alertRuntime` | boolean, indicator.alarm | – | |
 | `<Name>.last operations` | `<deviceId>.lastOperations` | string, json | ja | gleiches JSON-Format |
 | `<Name>.config.do not disturb` | `<deviceId>.config.doNotDisturb` | boolean, switch.enable | ja | beschreibbar |
 | `<Name>.config.runtime max` | `<deviceId>.config.runtimeMax` | number, level (min) | ja | beschreibbar |
+
+Unverändert heißen `runtime` und `lastRuntime` (Wert von `lastRuntime` wird übernommen). Sie liegen nur unter dem neuen Geräteobjekt.
 
 Neu in Version 4 (siehe [State-Referenz](#13-state-referenz)):
 
@@ -361,21 +361,25 @@ Neu in Version 4 (siehe [State-Referenz](#13-state-referenz)):
 
 ## 10. Blockly
 
-Der Adapter bringt Blockly-Blöcke mit (11 Sprachen):
+Für die States des Geräts reichen die Standard-Blöcke des JavaScript-Adapters, eigene Blöcke dafür gibt es nicht:
 
-- **Status von Gerät**: liefert den Statustext des Geräts.
-- **Gerät quittieren**: quittiert die Fertig-Meldung.
-- **Nicht stören für Gerät**: schaltet Nicht stören ein oder aus.
-- **Testnachricht senden**: sendet eine Testnachricht an einen Empfänger. Der Block bietet die Empfänger der Instanz als Liste an (Name und Empfänger-ID).
+| Aufgabe | Standard-Block | State |
+| --- | --- | --- |
+| auf Fertig reagieren | Trigger „falls Objekt“ | `<deviceId>.finished` (true) |
+| Status lesen | „Wert von Objekt-ID“ | `<deviceId>.status` |
+| quittieren | „steuere“ mit true | `<deviceId>.acknowledge` |
+| Nicht stören | „steuere“ mit true/false | `<deviceId>.config.doNotDisturb` |
 
-Die Geräte-Blöcke nutzen den ID-Dialog: Wähle einen beliebigen State des Geräts (z. B. `status`); die Geräte-ID wird aus der Objekt-ID übernommen. Du kannst auch direkt die Geräte-ID eintragen.
+Der Adapter bringt einen eigenen Block mit (11 Sprachen):
+
+- **Nachricht senden über device-reminder an … Text …**: sendet einen beliebigen Text an einen hier eingerichteten Empfänger oder an **alle Empfänger**. Es gelten die Einstellungen der Empfänger (Messenger, Zeitfenster, Lautstärke der Sprachausgabe). Der Block bietet die Empfänger der Instanz als Liste an.
 
 Skript-Beispiel: reagieren, wenn ein Gerät fertig ist (JavaScript-Adapter):
 
 ```js
 on({ id: "device-reminder.0.waschmaschine.finished", change: "ne" }, obj => {
 	if (obj.state.val === true) {
-		log("Waschmaschine ist fertig");
+		sendTo("device-reminder.0", "send", { recipients: "*", text: "Waschmaschine ist fertig" });
 		setState("device-reminder.0.waschmaschine.acknowledge", true);
 	}
 });
@@ -384,16 +388,16 @@ on({ id: "device-reminder.0.waschmaschine.finished", change: "ne" }, obj => {
 ## 11. sendTo-API
 
 ```js
-sendTo("device-reminder.0", "status", { deviceId: "waschmaschine" }, result => log(JSON.stringify(result)));
+sendTo("device-reminder.0", "send", { recipients: ["telegram-abc1"], text: "Hallo" }, result => log(JSON.stringify(result)));
 ```
 
 | Kommando | Nachricht | Antwort |
 | --- | --- | --- |
 | `list` | keine | `[{ id, name }]` aller Geräte |
-| `status` | `{ deviceId }` | `{ status, running, finished, consumption, runtime }` oder `{ error: "unknownDevice" }` |
-| `acknowledge` | `{ deviceId }` | `{ ok: true }` oder `{ error: "unknownDevice" }` |
-| `setDnd` | `{ deviceId, value }` | `{ ok: true }` oder `{ error: "unknownDevice" }` |
+| `send` | `{ recipients, text, doNotDisturb? }`: `recipients` ist eine Empfänger-ID, eine Liste von IDs oder `"*"` für alle aktiven Empfänger; `doNotDisturb: true` unterdrückt Sprachausgaben | `{ ok, sent, skippedWindow, unknown }` (gesendet, wegen Zeitfenster übersprungen, unbekannte IDs) oder `{ ok: false, error: "missingText" \| "missingRecipient" }` |
 | `testRecipient` | `{ id }` (Empfänger-ID) | Ergebnis der Testnachricht oder `{ ok: false, error: "missingRecipient" }` |
+
+Status, Quittieren und Nicht stören laufen über die States des Geräts (siehe [State-Referenz](#13-state-referenz)).
 
 ## 12. vis-2-Widgets
 

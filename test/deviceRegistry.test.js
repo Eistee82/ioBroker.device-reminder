@@ -286,18 +286,6 @@ describe("DeviceRegistry", () => {
 		assert.strictEqual(ctx.reg.get("washer").isRunning, false);
 	});
 
-	it("status returns the main states", async () => {
-		const ctx = setup();
-		await ctx.reg.upsert("washer", makeCfg());
-		await feed(ctx, P1, 200, 4);
-		const s = await ctx.reg.status("washer");
-		assert.strictEqual(s.running, true);
-		assert.strictEqual(s.finished, false);
-		assert.strictEqual(s.consumption, 200);
-		assert.strictEqual(s.status, ctx.inst.statusTexts.running);
-		assert.strictEqual(await ctx.reg.status("nope"), null);
-	});
-
 	it("remove stops the device", async () => {
 		const ctx = setup();
 		await ctx.reg.upsert("washer", makeCfg({ reminder: { ...DEFAULT_REMINDER, enabled: true } }));
