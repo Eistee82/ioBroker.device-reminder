@@ -303,25 +303,61 @@ What is fixed during migration: Telegram user name, first name and chat ID are m
 
 Only the states created by 3.1.2 are removed. Migration warnings (unknown fields, missing device types, recipients that no longer exist, power states that do not exist) are written to the log; they do not abort the migration. If the migration itself fails, the configuration stays unchanged and the adapter keeps running.
 
+### What changes for you when you update
+
+**What stays the same**
+
+- Detection: every migrated device uses the detection mode **count** with the thresholds of 3.1.2 and detects start and end exactly as before. All new features (other detection modes, pause protection, anti-crease, reminders, actions, automatic optimisation) are off.
+- Messages: start and end texts, recipients and status texts are taken over.
+- Value formats: `runtime` and `lastRuntime` as `hh:mm:ss`, `lastOperations` as a JSON array with `start`, `end` (`DD.MM.YYYY hh:mm:ss`) and `runtime`, at most 14 entries.
+- The values of `last operations`, `lastRuntime`, `do not disturb` and `runtime max` are copied to the new states.
+
+**What changes**
+
+| Area | 3.1.2 | Version 4 |
+| --- | --- | --- |
+| Configuring devices | table in the instance settings | Device Manager (tab **Devices**), one form per device; changes apply without restarting the instance |
+| Device types | tables "default" and "custom" | one tab **Device types** with the three default types and ten custom types, also by learning |
+| Recipients | one table per messenger, ticked in the device | tab **Recipients** with one list of all recipients, selected in the device; ntfy, Pushsafer and Gotify are new |
+| Object structure | states directly below `<name>` (folder) | a device object `<deviceId>` with states, like other ioBroker adapters |
+| Object ID | device name unchanged (with spaces and umlauts) | built from the name: lower case, umlauts rewritten (`ä` → `ae`), spaces and dots → `_`, duplicate names get `_2`, `_3` … |
+| State names | with spaces (`live consumption`) | camelCase without spaces (`consumption`) |
+| Roles | all `indicator` | matching roles (`value.power`, `text`, `json`, `indicator.alarm`, `switch.enable`, `level` …), so visualisations and the type detector recognise the states |
+| Names of the states | `live consumption Washer` | `Current consumption` in 11 languages; the device is the device object |
+
+Example: a device "Wäsche Keller" had the state `device-reminder.0.Wäsche Keller.live consumption` in 3.1.2; in version 4 it is `device-reminder.0.waesche_keller.consumption`.
+
+**What you have to do after the update**
+
+1. Check the log for migration warnings (for example missing power states or recipients).
+2. Change scripts, Blockly, scenes and visualisations to the new IDs (table below). The old states are deleted.
+3. If a history adapter was enabled on an old state (for example `live consumption`), enable it on the new state. The old records stay in the database but do not belong to the new state.
+4. Optional: switch on the new features per device.
+
 ### Old and new state IDs
 
-3.1.2 created the states directly below `<device name>`. In version 4 they are below the device object `<deviceId>`. **Scripts, Blockly and visualisations that use the old IDs must be adapted.**
+| 3.1.2 | Version 4 | Type, role (V4) | Value taken over | Note |
+| --- | --- | --- | --- | --- |
+| `<name>.Status` | `<deviceId>.status` | string, text | – | status texts of 3.1.2 |
+| `<name>.live consumption` | `<deviceId>.consumption` | number, value.power (W) | – | live value |
+| `<name>.average consumption` | `<deviceId>.averageConsumption` | number, value.power (W) | – | live value |
+| `<name>.runtime` | `<deviceId>.runtime` | string, text | – | `hh:mm:ss` |
+| `<name>.runtime in ms` | `<deviceId>.runtimeMs` | number, value (ms) | – | |
+| `<name>.lastRuntime` | `<deviceId>.lastRuntime` | string, text | yes | `hh:mm:ss` |
+| `<name>.messageDP` | `<deviceId>.message` | string, text | – | last text sent |
+| `<name>.alert runtime` | `<deviceId>.alertRuntime` | boolean, indicator.alarm | – | |
+| `<name>.last operations` | `<deviceId>.lastOperations` | string, json | yes | same JSON format |
+| `<name>.config.do not disturb` | `<deviceId>.config.doNotDisturb` | boolean, switch.enable | yes | writable |
+| `<name>.config.runtime max` | `<deviceId>.config.runtimeMax` | number, level (min) | yes | writable |
 
-| 3.1.2 | Version 4 |
-| --- | --- |
-| `<name>.Status` | `<deviceId>.status` |
-| `<name>.live consumption` | `<deviceId>.consumption` |
-| `<name>.average consumption` | `<deviceId>.averageConsumption` |
-| `<name>.runtime` | `<deviceId>.runtime` |
-| `<name>.runtime in ms` | `<deviceId>.runtimeMs` |
-| `<name>.lastRuntime` | `<deviceId>.lastRuntime` |
-| `<name>.messageDP` | `<deviceId>.message` |
-| `<name>.alert runtime` | `<deviceId>.alertRuntime` |
-| `<name>.last operations` | `<deviceId>.lastOperations` |
-| `<name>.config.do not disturb` | `<deviceId>.config.doNotDisturb` |
-| `<name>.config.runtime max` | `<deviceId>.config.runtimeMax` |
+New in version 4 (see [States reference](#13-states-reference)):
 
-New in version 4: `running`, `finished`, `lastFinished`, `acknowledge`, `learning.*`, `lastOperationsHtml`.
+- `running`, `finished`, `lastFinished`: running, finished (until acknowledged), time of the last end. 3.1.2 only had the status text for this.
+- `acknowledge`: acknowledges the finished message and stops reminders.
+- `lastOperationsHtml`: HTML table of the last operations (only when switched on).
+- `antiCrease`: anti-crease is running.
+- `learning.*`: learning and automatic optimisation.
+- `info.connection` at the instance.
 
 ## 10. Blockly
 
