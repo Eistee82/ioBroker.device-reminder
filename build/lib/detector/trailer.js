@@ -1,7 +1,7 @@
 export const TRAILER_BLOCK_SEC = 120;
 export const TRAILER_QUIET_END_MS = 20 * 60_000;
 export const TRAILER_MAX_DEFAULT_SEC = 7200;
-const QUEUE_HARD_CAP = 200;
+const QUEUE_HARD_CAP = 2000;
 const BASE_VALUES = 5;
 export class TrailerFilter {
     inner;
@@ -25,6 +25,7 @@ export class TrailerFilter {
     trailerUntil = null;
     lastAbove = null;
     queue = [];
+    queuedTicks = 0;
     holdStart = 0;
     suppressedInTrailer = 0;
     burstsSuppressed = 0;
@@ -39,7 +40,7 @@ export class TrailerFilter {
         this.endVal = s.endVal;
         this.standby = s.standby;
         this.bridgeMs = 2 * poll * 1000;
-        this.cap = Math.min(QUEUE_HARD_CAP, Math.ceil(s.trailerBurstSec / poll) + 2);
+        this.cap = Math.ceil(s.trailerBurstSec / poll) + 2;
     }
     get started() {
         return this.inner.started;
@@ -63,6 +64,7 @@ export class TrailerFilter {
         this.trailerUntil = null;
         this.lastAbove = null;
         this.queue = [];
+        this.queuedTicks = 0;
         this.holdStart = 0;
         this.suppressedInTrailer = 0;
         this.burstsSuppressed = 0;
@@ -89,6 +91,7 @@ export class TrailerFilter {
             this.trackQuiet(call);
             this.holdStart = call.now;
             this.queue = [call];
+            this.queuedTicks = call.kind === "tick" ? 1 : 0;
             return this.held();
         }
         this.trackQuiet(call);
@@ -125,17 +128,24 @@ export class TrailerFilter {
     resolve(call) {
         this.trackQuiet(call);
         if (call.power >= this.endVal) {
-            if (call.now - this.holdStart > this.burstMs || this.queue.length >= this.cap) {
+            if (call.now - this.holdStart > this.burstMs ||
+                this.queuedTicks >= this.cap ||
+                this.queue.length >= QUEUE_HARD_CAP) {
                 const calls = [...this.queue, call];
                 this.queue = [];
+                this.queuedTicks = 0;
                 this.endTrailer();
                 return this.forward(calls, null);
             }
             this.queue.push(call);
+            if (call.kind === "tick") {
+                this.queuedTicks++;
+            }
             return this.held();
         }
         const calls = this.queue;
         this.queue = [];
+        this.queuedTicks = 0;
         this.burstsSuppressed++;
         if (this.trailerUntil !== null) {
             this.suppressedInTrailer++;

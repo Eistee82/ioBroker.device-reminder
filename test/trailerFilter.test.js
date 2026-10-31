@@ -291,4 +291,35 @@ describe("anti-crease filter", () => {
 		const count = createDetector(settings(FILTER), { abort: false, abortFixed: false });
 		assert.deepStrictEqual(count.feed(500, 0).events, []);
 	});
+
+	it("time-based mode: power reports more often than the poll do not release a burst early", () => {
+		// 20 min at 2000 W, then 300 W bursts of 30 s every 3 min for 1 h (plug reports every 1-5 s)
+		const power = t => (t < 60 ? 1 : t < 1260 ? 2000 : t < 4860 && (t - 1260) % 180 >= 150 ? 300 : 1);
+		for (const every of [10, 5, 2, 1]) {
+			const det = createDetector(
+				settings({ mode: "timed", startDurationSec: 20, endDurationSec: 120, ...FILTER }),
+				{ abort: false, abortFixed: false, pollSec: 10 },
+			);
+			const events = [];
+			let last = power(0);
+			for (let t = 0; t <= 8000; t++) {
+				const results = [];
+				if (t % every === 0) {
+					last = power(t);
+					results.push(det.feed(last, t * 1000));
+				}
+				if (t % 10 === 0) {
+					results.push(det.tick(last, t * 1000, { switchOff: false }));
+				}
+				for (const r of results) {
+					r.events.forEach((ev, k) => {
+						if (ev !== "running") {
+							events.push(`${ev}@${(r.times?.[k] ?? t * 1000) / 1000}`);
+						}
+					});
+				}
+			}
+			assert.deepStrictEqual(events, ["started@80", "finished@1380"], `report every ${every} s`);
+		}
+	});
 });

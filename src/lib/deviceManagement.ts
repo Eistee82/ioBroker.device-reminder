@@ -814,7 +814,13 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 				}
 				break;
 			case "saveType":
-				await this.saveLearnedType(id, suggestionOf(runtime.effective), ctx);
+				await this.saveLearnedType(
+					id,
+					suggestionOf(runtime.effective),
+					ctx,
+					undefined,
+					TEXT.optSaveTypeConfirm,
+				);
 				break;
 			default:
 				break;
@@ -958,12 +964,14 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	 * @param suggestion - Suggested type settings
 	 * @param ctx - Action context
 	 * @param unit - Unit of the power state
+	 * @param confirm - Confirmation before saving (the instance restarts)
 	 */
 	private async saveLearnedType(
 		id: Id,
 		suggestion: LearningSuggestion,
 		ctx: ActionContext,
 		unit = "W",
+		confirm: ioBroker.Translated = TEXT.learnConfirm,
 	): Promise<void> {
 		const deviceName = this.adapter.registry.get(id)?.config.name ?? id;
 		const withTrailer = (suggestion.trailerBurstSec ?? 0) > 0;
@@ -1026,7 +1034,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			const typeId = allocateDeviceId(parsed.type.name, new Set(inst.types.map(t => t.id)));
 			type = { ...parsed.type, id: typeId, builtin: false };
 		}
-		if (!(await ctx.showConfirmation(TEXT.learnConfirm))) {
+		if (!(await ctx.showConfirmation(confirm))) {
 			return;
 		}
 		const instanceId = `system.adapter.${this.adapter.namespace}`;

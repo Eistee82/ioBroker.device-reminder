@@ -13,7 +13,7 @@ import type { FileIO, NotifierHost } from "./lib/host.js";
 import type { LegacyStateIo } from "./lib/migration.js";
 import { isLegacyConfig, migrateLegacyConfig, migrateLegacyStates } from "./lib/migration.js";
 import { Notifier } from "./lib/notifier.js";
-import { errorMessage } from "./lib/utils.js";
+import { errorMessage, isNotFound } from "./lib/utils.js";
 
 /** Own states (relative to the namespace) that are handled by the registry. */
 const OWN_SUBSCRIPTIONS = ["*.config.*", "*.acknowledge", "*.learning.*"];
@@ -322,7 +322,7 @@ class DeviceReminder extends utils.Adapter {
 			return;
 		}
 		const cfg = obj ? this.deviceConfigOf(deviceId, obj) : null;
-		await this.sync.apply(deviceId, cfg);
+		await this.sync.apply(deviceId, cfg, obj === null);
 		await this.syncForeignSubscriptions();
 	}
 
@@ -390,12 +390,30 @@ class DeviceReminder extends utils.Adapter {
 
 	/** Meta object holding the learning data files of the automatic optimisation. */
 	private async ensureLearnObject(): Promise<void> {
+		// same names as the object in io-package.json (instanceObjects)
+		const name: ioBroker.StringOrTranslated = {
+			en: "Learning data",
+			de: "Anlerndaten",
+			ru: "Данные обучения",
+			pt: "Dados de aprendizagem",
+			nl: "Leergegevens",
+			fr: "Données d'apprentissage",
+			it: "Dati di apprendimento",
+			es: "Datos de aprendizaje",
+			pl: "Dane uczenia",
+			uk: "Дані навчання",
+			"zh-cn": "学习数据",
+		};
 		try {
 			await this.setObjectNotExistsAsync("learn", {
 				type: "meta",
-				common: { name: "Learning data", type: "meta.user" },
+				common: { name, type: "meta.user" },
 				native: {},
 			});
+			// an object created with an untranslated name gets the translated one
+			if (typeof (await this.getObjectAsync("learn"))?.common?.name === "string") {
+				await this.extendObjectAsync("learn", { common: { name } });
+			}
 		} catch (err) {
 			this.log.warn(`Cannot create the learning data object: ${errorMessage(err)}`);
 		}
@@ -410,8 +428,12 @@ class DeviceReminder extends utils.Adapter {
 					const res = await this.readFileAsync(meta, name);
 					const file: unknown = res.file;
 					return typeof file === "string" ? file : Buffer.isBuffer(file) ? file.toString("utf8") : null;
-				} catch {
-					return null;
+				} catch (err) {
+					// only a missing file means "no learning data"; other errors must not reset the store
+					if (isNotFound(err)) {
+						return null;
+					}
+					throw new Error(`Cannot read ${name}: ${errorMessage(err)}`);
 				}
 			},
 			write: async (name, data) => {

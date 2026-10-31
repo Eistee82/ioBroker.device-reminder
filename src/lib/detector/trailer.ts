@@ -6,8 +6,8 @@ export const TRAILER_BLOCK_SEC = 120;
 export const TRAILER_QUIET_END_MS = 20 * 60_000;
 /** Default length of the anti-crease phase when the filter is on and no length is set. */
 export const TRAILER_MAX_DEFAULT_SEC = 7200;
-/** Hard cap of queued calls. */
-const QUEUE_HARD_CAP = 200;
+/** Hard cap of queued calls (poll steps and power reports of a time-based detector). */
+const QUEUE_HARD_CAP = 2000;
 /** Number of recent quiet values whose median is the replacement level. */
 const BASE_VALUES = 5;
 
@@ -71,6 +71,7 @@ export class TrailerFilter implements Detector {
 	private trailerUntil: number | null = null;
 	private lastAbove: number | null = null;
 	private queue: Call[] = [];
+	private queuedTicks = 0;
 	private holdStart = 0;
 	private suppressedInTrailer = 0;
 	/** Number of bursts replaced by the quiet level since the last reset. */
@@ -93,7 +94,8 @@ export class TrailerFilter implements Detector {
 		this.endVal = s.endVal;
 		this.standby = s.standby;
 		this.bridgeMs = 2 * poll * 1000;
-		this.cap = Math.min(QUEUE_HARD_CAP, Math.ceil(s.trailerBurstSec / poll) + 2);
+		// poll steps come once per poll; power reports (time-based detector) may come much more often
+		this.cap = Math.ceil(s.trailerBurstSec / poll) + 2;
 	}
 
 	/** Whether a run is in progress (of the inner detector). */
@@ -125,6 +127,7 @@ export class TrailerFilter implements Detector {
 		this.trailerUntil = null;
 		this.lastAbove = null;
 		this.queue = [];
+		this.queuedTicks = 0;
 		this.holdStart = 0;
 		this.suppressedInTrailer = 0;
 		this.burstsSuppressed = 0;
@@ -168,6 +171,7 @@ export class TrailerFilter implements Detector {
 			this.trackQuiet(call);
 			this.holdStart = call.now;
 			this.queue = [call];
+			this.queuedTicks = call.kind === "tick" ? 1 : 0;
 			return this.held();
 		}
 		this.trackQuiet(call);
@@ -221,19 +225,28 @@ export class TrailerFilter implements Detector {
 	private resolve(call: Call): TickResult {
 		this.trackQuiet(call);
 		if (call.power >= this.endVal) {
-			if (call.now - this.holdStart > this.burstMs || this.queue.length >= this.cap) {
+			if (
+				call.now - this.holdStart > this.burstMs ||
+				this.queuedTicks >= this.cap ||
+				this.queue.length >= QUEUE_HARD_CAP
+			) {
 				// real activity: pass everything on unchanged
 				const calls = [...this.queue, call];
 				this.queue = [];
+				this.queuedTicks = 0;
 				this.endTrailer();
 				return this.forward(calls, null);
 			}
 			this.queue.push(call);
+			if (call.kind === "tick") {
+				this.queuedTicks++;
+			}
 			return this.held();
 		}
 		// a drum burst: the inner detector gets the quiet level instead
 		const calls = this.queue;
 		this.queue = [];
+		this.queuedTicks = 0;
 		this.burstsSuppressed++;
 		if (this.trailerUntil !== null) {
 			this.suppressedInTrailer++;

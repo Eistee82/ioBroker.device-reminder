@@ -4,7 +4,7 @@ import type { RunFeatures } from "./learn/families.js";
 import { assignFamilies } from "./learn/families.js";
 import { buildLayout, MAX_PAUSE_MS, MAX_WINDOWS, median } from "./learn/runs.js";
 import type { RunInfo } from "./learn/runs.js";
-import { encodeCells, fromCells, quantOf } from "./learn/ticks.js";
+import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
 import type { TickSeries } from "./learn/ticks.js";
 import type { Capture, CaptureEvent } from "./runRecorder.js";
 import { errorMessage } from "./utils.js";
@@ -17,6 +17,8 @@ export const MAX_RUNS = MAX_WINDOWS;
 export const MAX_SPIKES = 10;
 /** Largest store file in bytes (characters). */
 export const MAX_STORE_BYTES = 400_000;
+/** Largest persisted capture of a run in progress in bytes (characters, encoded). */
+export const MAX_PENDING_BYTES = 200_000;
 /** Most kept changes. */
 export const MAX_CHANGES = 10;
 /** A runtime start within this distance of the segmented start counts as the start of the run. */
@@ -320,7 +322,7 @@ function isStore(val: unknown, deviceId: string): val is StoreFile {
 }
 
 /**
- * Load the newest valid slot of a device.
+ * Load the newest valid slot of a device (null: no learning data). Throws if a file cannot be read.
  *
  * @param io - Files
  * @param deviceId - Device id
@@ -333,12 +335,9 @@ export async function loadStore(
 ): Promise<StoreFile | null> {
 	let best: StoreFile | null = null;
 	for (const slot of ["a", "b"] as const) {
-		let text: string | null = null;
-		try {
-			text = await io.read(slotName(deviceId, slot));
-		} catch (err) {
-			log.debug(`Learning data ${slotName(deviceId, slot)} not readable: ${errorMessage(err)}`);
-		}
+		// a missing file reads as null; any other read error is thrown, so that a store that exists
+		// but cannot be read right now is not taken for an empty one (and then overwritten)
+		const text = await io.read(slotName(deviceId, slot));
 		if (text === null) {
 			continue;
 		}
@@ -357,8 +356,79 @@ export async function loadStore(
 	}
 	if (best) {
 		best.nextFamily ??= Math.max(0, ...best.runs.map(r => r.family + 1));
+		try {
+			best.pending = decodePending(best.pending);
+		} catch (err) {
+			log.warn(`Learning data of ${deviceId}: capture of the last run ignored: ${errorMessage(err)}`);
+			best.pending = null;
+		}
 	}
 	return best;
+}
+
+/** Capture of a run in progress as stored in the file (cells encoded like a stored run). */
+interface StoredCapture extends Omit<Capture, "cells"> {
+	/** Quantisation factor. */
+	q: number;
+	/** Encoded cells. */
+	data: string;
+}
+
+/**
+ * Encode a capture for the file.
+ *
+ * @param c - Capture
+ */
+export function encodePending(c: Capture): StoredCapture {
+	const q = quantOf(c.unitFactor);
+	return {
+		t0: c.t0,
+		stepMs: c.stepMs,
+		unitFactor: c.unitFactor,
+		ev: c.ev,
+		postTruncated: c.postTruncated,
+		q,
+		data: encodeCells(c.cells, q),
+	};
+}
+
+/**
+ * Decode a capture read from the file.
+ *
+ * @param raw - Value of `pending` in the file
+ */
+function decodePending(raw: unknown): Capture | null {
+	if (raw === null || raw === undefined) {
+		return null;
+	}
+	const c = raw as Partial<StoredCapture>;
+	if (
+		typeof c.data !== "string" ||
+		typeof c.q !== "number" ||
+		typeof c.t0 !== "number" ||
+		typeof c.stepMs !== "number" ||
+		typeof c.unitFactor !== "number" ||
+		!Array.isArray(c.ev)
+	) {
+		throw new Error("unknown format");
+	}
+	return {
+		t0: c.t0,
+		stepMs: c.stepMs,
+		unitFactor: c.unitFactor,
+		ev: c.ev,
+		postTruncated: c.postTruncated === true,
+		cells: decodeCells(c.data, c.q),
+	};
+}
+
+/**
+ * The store as written to the file (the capture of a run in progress encoded).
+ *
+ * @param store - Store
+ */
+export function serializeStore(store: StoreFile): string {
+	return JSON.stringify(store.pending ? { ...store, pending: encodePending(store.pending) } : store);
 }
 
 /**
@@ -369,7 +439,7 @@ export async function loadStore(
  */
 export async function saveStore(io: FileIO, store: StoreFile): Promise<void> {
 	store.seq++;
-	await io.write(slotName(store.deviceId, store.seq % 2 === 0 ? "a" : "b"), JSON.stringify(store));
+	await io.write(slotName(store.deviceId, store.seq % 2 === 0 ? "a" : "b"), serializeStore(store));
 }
 
 /**
@@ -683,6 +753,24 @@ export function addRun(store: StoreFile, run: StoredRun): string[] {
 	const prevN = store.envelope.n;
 	store.envelope = mergeEnvelope(store.envelope, envelopeOf(store.runs, store.spikes));
 	store.envelope.n = prevN + (run.label === "spike" ? 0 : 1);
+	evicted.push(...fitSize(store));
+	refreshInfo(store);
+	return evicted;
+}
+
+/**
+ * Evict runs and false starts until the store fits its limits (also after the capture of a run in
+ * progress was set). The extremes of all runs stay.
+ *
+ * @param store - Store
+ * @returns ids of the evicted runs
+ */
+export function fitSize(store: StoreFile): string[] {
+	const evicted: string[] = [];
+	if (store.pending && JSON.stringify(encodePending(store.pending)).length > MAX_PENDING_BYTES) {
+		// too large to persist: a restart before the capture closes loses this run
+		store.pending = null;
+	}
 	while (store.runs.length > MAX_RUNS || (sizeOf(store) > MAX_STORE_BYTES && store.runs.length > 2)) {
 		const victim = pickVictim(store);
 		if (victim < 0) {
@@ -694,7 +782,9 @@ export function addRun(store: StoreFile, run: StoredRun): string[] {
 	while (sizeOf(store) > MAX_STORE_BYTES && store.spikes.length > 0) {
 		evicted.push((store.spikes.shift() as StoredRun).id);
 	}
-	refreshInfo(store);
+	if (evicted.length > 0) {
+		refreshInfo(store);
+	}
 	return evicted;
 }
 
@@ -704,7 +794,7 @@ export function addRun(store: StoreFile, run: StoredRun): string[] {
  * @param store - Store
  */
 export function sizeOf(store: StoreFile): number {
-	return JSON.stringify(store).length;
+	return serializeStore(store).length;
 }
 
 /**

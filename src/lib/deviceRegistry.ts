@@ -21,6 +21,7 @@ import type { StoreFile } from "./runStore.js";
 import {
 	addRun,
 	emptyStore,
+	fitSize,
 	labelCapture,
 	loadStore,
 	pushChange,
@@ -463,7 +464,11 @@ export class DeviceRegistry implements RuntimeListener {
 	 * @param deviceId - Device id
 	 * @param runId - Id of the stored run
 	 */
-	public async discardRun(deviceId: string, runId: string): Promise<boolean> {
+	public discardRun(deviceId: string, runId: string): Promise<boolean> {
+		return this.serialized(() => this.discardRunNow(deviceId, runId));
+	}
+
+	private async discardRunNow(deviceId: string, runId: string): Promise<boolean> {
 		const entry = this.devices.get(deviceId);
 		const store = entry?.opt?.store;
 		if (!entry || !store) {
@@ -487,7 +492,11 @@ export class DeviceRegistry implements RuntimeListener {
 	 *
 	 * @param deviceId - Device id
 	 */
-	public async deleteLearningData(deviceId: string): Promise<void> {
+	public deleteLearningData(deviceId: string): Promise<void> {
+		return this.serialized(() => this.deleteLearningDataNow(deviceId));
+	}
+
+	private async deleteLearningDataNow(deviceId: string): Promise<void> {
 		const entry = this.devices.get(deviceId);
 		if (entry?.opt) {
 			const cfg = entry.runtime.config;
@@ -516,7 +525,11 @@ export class DeviceRegistry implements RuntimeListener {
 	 *
 	 * @param deviceId - Device id
 	 */
-	public async undoOptimization(deviceId: string): Promise<boolean> {
+	public undoOptimization(deviceId: string): Promise<boolean> {
+		return this.serialized(() => this.undoOptimizationNow(deviceId));
+	}
+
+	private async undoOptimizationNow(deviceId: string): Promise<boolean> {
 		const entry = this.devices.get(deviceId);
 		const store = entry?.opt?.store;
 		if (!entry || !store) {
@@ -538,7 +551,11 @@ export class DeviceRegistry implements RuntimeListener {
 	 *
 	 * @param deviceId - Device id
 	 */
-	public async resetOptimization(deviceId: string): Promise<boolean> {
+	public resetOptimization(deviceId: string): Promise<boolean> {
+		return this.serialized(() => this.resetOptimizationNow(deviceId));
+	}
+
+	private async resetOptimizationNow(deviceId: string): Promise<boolean> {
 		const entry = this.devices.get(deviceId);
 		const store = entry?.opt?.store;
 		if (!entry || !store) {
@@ -628,7 +645,16 @@ export class DeviceRegistry implements RuntimeListener {
 		const unitFactor = await this.unitFactorOf(cfg.powerId);
 		const type = entry.runtime.deviceType;
 		const now = this.host.now();
-		const loaded = await loadStore(this.files, deviceId, this.host.log);
+		let loaded: StoreFile | null;
+		try {
+			loaded = await loadStore(this.files, deviceId, this.host.log);
+		} catch (err) {
+			// not "no learning data": starting empty would overwrite both slots with the next saves
+			this.host.log.warn(
+				`${cfg.name}: learning data not readable, automatic optimisation off until the next start: ${errorMessage(err)}`,
+			);
+			return;
+		}
 		const store = loaded ?? emptyStore(deviceId, cfg.typeId, typeHash(type), step, unitFactor);
 		const hadOverride = store.override !== null;
 		for (const msg of reconcileStore(store, cfg.typeId, typeHash(type), step, unitFactor, now)) {
@@ -699,6 +725,7 @@ export class DeviceRegistry implements RuntimeListener {
 		const store = opt.store;
 		if (
 			entry.opt !== opt ||
+			this.devices.get(deviceId) !== entry ||
 			meta.energyCounter ||
 			meta.unitFactor !== store.unitFactor ||
 			series.stepMs !== store.step
@@ -741,7 +768,7 @@ export class DeviceRegistry implements RuntimeListener {
 			}
 			await this.yieldNow();
 		}
-		if (entry.opt !== opt) {
+		if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
 			return;
 		}
 		if (runs + spikes === 0) {
@@ -797,6 +824,7 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		opt.store.pending = opt.recorder.snapshot();
+		fitSize(opt.store);
 		this.saveOpt(entry).catch(err => this.host.log.warn(errorMessage(err)));
 	}
 
@@ -860,6 +888,21 @@ export class DeviceRegistry implements RuntimeListener {
 	 */
 	private enqueueOptimize(deviceId: string): void {
 		this.enqueue(deviceId, () => this.runOptimize(deviceId));
+	}
+
+	/**
+	 * Run a change of the learning data by the user after the queued optimisation jobs, so that a job
+	 * computed from the old values cannot overwrite it.
+	 *
+	 * @param fn - Change
+	 */
+	private serialized<T>(fn: () => Promise<T>): Promise<T> {
+		const res = this.optQueue.then(fn);
+		this.optQueue = res.then(
+			() => undefined,
+			() => undefined,
+		);
+		return res;
 	}
 
 	/**
@@ -1006,6 +1049,8 @@ export class DeviceRegistry implements RuntimeListener {
 	}
 
 	private disposeEntry(entry: Entry): void {
+		// running optimisation jobs see that the entry is gone and write nothing
+		entry.opt = null;
 		entry.runtime.dispose();
 		entry.reminder.dispose();
 		entry.recorder.stop(this.host.now());

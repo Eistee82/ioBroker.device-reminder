@@ -11,9 +11,12 @@ export class DeviceSync {
         this.getConfig = getConfig;
         this.log = log;
     }
-    async apply(deviceId, cfg) {
+    async apply(deviceId, cfg, deleted = false) {
         if (!cfg) {
             this.applied.delete(deviceId);
+            if (deleted) {
+                await this.registry.deleteLearningData(deviceId);
+            }
             if (this.registry.get(deviceId)) {
                 this.registry.remove(deviceId);
                 this.log.info(`Device ${deviceId} removed`);

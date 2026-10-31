@@ -11,6 +11,7 @@ import {
 import { ensureDeviceObjects } from "../build/lib/deviceObjects.js";
 import * as I18n from "@iobroker/adapter-core/i18n";
 import { Notifier } from "../build/lib/notifier.js";
+import { TEXT } from "../build/lib/dmTexts.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { washingMachine } from "./helpers/curves.js";
 import { historyOf, longPause } from "./helpers/history.js";
@@ -1128,6 +1129,7 @@ describe("optimisation in the device manager", function () {
 		assert.strictEqual(learn.options.data.endCount, eff.endCount);
 		assert.strictEqual(learn.schema.items.samples, undefined);
 		assert.strictEqual(learn.options.data.trailerBurstSec, eff.trailerBurstSec);
+		assert.deepStrictEqual(action.confirmations, [TEXT.optSaveTypeConfirm], "own confirmation (restart)");
 		const saved = ctx.adapter.extendedForeign.at(-1).obj.native.types.at(-1);
 		assert.strictEqual(saved.endCount, eff.endCount);
 		assert.strictEqual(saved.trailerBurstSec, eff.trailerBurstSec);

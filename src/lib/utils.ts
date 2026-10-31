@@ -7,6 +7,15 @@ export function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Whether an error of the file API means that the file does not exist (js-controller: "Not exists").
+ *
+ * @param err - Error
+ */
+export function isNotFound(err: unknown): boolean {
+	return /not exist|ENOENT/i.test(errorMessage(err)) || (err as { code?: unknown } | null)?.code === "ENOENT";
+}
+
 const NUMERIC_STRING = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 const HHMM = /^(\d{1,2}):(\d{2})$/;
 const MINUTES_PER_DAY = 24 * 60;

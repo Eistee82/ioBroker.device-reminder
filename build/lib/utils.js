@@ -1,6 +1,9 @@
 export function errorMessage(err) {
     return err instanceof Error ? err.message : String(err);
 }
+export function isNotFound(err) {
+    return /not exist|ENOENT/i.test(errorMessage(err)) || err?.code === "ENOENT";
+}
 const NUMERIC_STRING = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 const HHMM = /^(\d{1,2}):(\d{2})$/;
 const MINUTES_PER_DAY = 24 * 60;

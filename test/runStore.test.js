@@ -3,6 +3,7 @@ import { decodeCells, encodeCells, fromStored, quantOf } from "../build/lib/lear
 import {
 	addRun,
 	emptyStore,
+	fitSize,
 	labelCapture,
 	loadStore,
 	MAX_RUNS,
@@ -158,6 +159,30 @@ describe("run store", () => {
 		assert.ok(store.envelope.maxTrailerSec >= env.maxTrailerSec && store.envelope.minCoreSec <= env.minCoreSec);
 	});
 
+	it("never evicts a binding run (the one that sets an extreme of the envelope) while others can go", () => {
+		const store = emptyStore("dev", "washing-machine", typeHash(WASHER), STEP, 1);
+		let t = 0;
+		const add = k => {
+			const run = runOf({ device: "washer", programme: "quick30", shape: "T4", seed: k + 1, after: 400 });
+			addRun(store, labelCapture(captureOf(run, t), 15).run);
+			t += 86_400_000;
+		};
+		add(0);
+		// the oldest run has the longest pause of all (slightly, so it stays in the same group)
+		const binding = store.runs[0];
+		binding.feat.maxPauseSec += 5;
+		store.envelope.maxPauseSec = binding.feat.maxPauseSec;
+		for (let k = 1; k < MAX_RUNS + 6; k++) {
+			add(k);
+		}
+		assert.strictEqual(store.runs.length, MAX_RUNS);
+		assert.ok(
+			store.runs.some(r => r.id === binding.id),
+			"the binding run is kept",
+		);
+		assert.ok(store.runs[1].ts > 86_400_000, "the oldest non-binding runs were evicted");
+	});
+
 	it("keeps ten false starts first in first out", () => {
 		const store = emptyStore("dev", "dryer", "h", STEP, 1);
 		const values = [...new Array(200).fill(0.5), 600, 600, ...new Array(200).fill(0.5)];
@@ -188,12 +213,56 @@ describe("run store", () => {
 		assert.strictEqual(warns.length, 2);
 		await removeStore(io, "dev");
 		assert.strictEqual(await loadStore(io, "dev", log), null);
+		// a read error is not "no learning data" (an empty store would overwrite both slots)
 		const failing = {
 			read: async () => Promise.reject(new Error("x")),
 			write: async () => {},
 			remove: async () => {},
 		};
-		assert.strictEqual(await loadStore(failing, "dev", log), null);
+		await assert.rejects(loadStore(failing, "dev", log), /x/);
+	});
+
+	it("stores the capture of a run in progress encoded and within the size limit", async () => {
+		const io = memoryFiles();
+		const store = emptyStore("dev", "washing-machine", "h", 1000, 1);
+		// 30 min pre-roll plus a 3 h run at a 1 s poll with noisy values
+		let seed = 7;
+		const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+		const cells = Array.from({ length: 12_600 }, () => {
+			const v = Math.round((300 + rnd() * 1700) * 10) / 10;
+			return { min: v - 3, max: v + 3, last: v, valid: true };
+		});
+		store.pending = {
+			t0: 1e12,
+			stepMs: 1000,
+			unitFactor: 1,
+			cells,
+			ev: [[1e12 + 1_800_000, "s"]],
+			postTruncated: false,
+		};
+		const raw = JSON.stringify(store).length;
+		await saveStore(io, store);
+		const text = [...io.files.values()][0];
+		assert.ok(text.length < raw / 2, `encoded ${text.length} < raw ${raw} / 2`);
+		assert.strictEqual(sizeOf(store), text.length);
+		const back = await loadStore(io, "dev", log);
+		assert.strictEqual(back.pending.cells.length, cells.length);
+		assert.deepStrictEqual(back.pending.cells[5], cells[5]);
+		assert.deepStrictEqual(back.pending.ev, store.pending.ev);
+
+		// with 20 stored runs the file still stays below the limit
+		for (let k = 0; k < MAX_RUNS; k++) {
+			const run = runOf({ device: "washer", programme: "cotton60", shape: "T4", seed: k + 1, after: 400 });
+			addRun(store, labelCapture(captureOf(run, 2e12 + k * 1e8), 15).run);
+		}
+		fitSize(store);
+		assert.ok(sizeOf(store) <= MAX_STORE_BYTES, `size ${sizeOf(store)}`);
+		// a capture too large to persist is dropped instead of growing the file
+		const huge = Array.from({ length: 25_000 }, (_, i) => ({ min: i, max: i + 1, last: i + 0.5, valid: true }));
+		store.pending = { ...store.pending, cells: huge };
+		fitSize(store);
+		assert.strictEqual(store.pending, null);
+		assert.ok(sizeOf(store) <= MAX_STORE_BYTES);
 	});
 
 	it("discards the override when the type changes and the runs when poll or unit change", () => {

@@ -10,7 +10,7 @@ import { scaled } from "./learn/ticks.js";
 import { LearningRecorder, suggestType } from "./learning.js";
 import { ReminderScheduler } from "./reminder.js";
 import { RunRecorder } from "./runRecorder.js";
-import { addRun, emptyStore, labelCapture, loadStore, pushChange, reconcileStore, refreshInfo, removeStore, saveStore, typeHash, } from "./runStore.js";
+import { addRun, emptyStore, fitSize, labelCapture, loadStore, pushChange, reconcileStore, refreshInfo, removeStore, saveStore, typeHash, } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 const OPTIMIZE_BUDGET_MS = 30_000;
 function isTrue(val) {
@@ -298,7 +298,10 @@ export class DeviceRegistry {
         }
         return gate(store, entry.runtime.effective, this.optimizeContext(entry));
     }
-    async discardRun(deviceId, runId) {
+    discardRun(deviceId, runId) {
+        return this.serialized(() => this.discardRunNow(deviceId, runId));
+    }
+    async discardRunNow(deviceId, runId) {
         const entry = this.devices.get(deviceId);
         const store = entry?.opt?.store;
         if (!entry || !store) {
@@ -316,7 +319,10 @@ export class DeviceRegistry {
         this.host.log.info(`${entry.runtime.config.name}: stored run ${runId} discarded`);
         return true;
     }
-    async deleteLearningData(deviceId) {
+    deleteLearningData(deviceId) {
+        return this.serialized(() => this.deleteLearningDataNow(deviceId));
+    }
+    async deleteLearningDataNow(deviceId) {
         const entry = this.devices.get(deviceId);
         if (entry?.opt) {
             const cfg = entry.runtime.config;
@@ -334,7 +340,10 @@ export class DeviceRegistry {
             }
         }
     }
-    async undoOptimization(deviceId) {
+    undoOptimization(deviceId) {
+        return this.serialized(() => this.undoOptimizationNow(deviceId));
+    }
+    async undoOptimizationNow(deviceId) {
         const entry = this.devices.get(deviceId);
         const store = entry?.opt?.store;
         if (!entry || !store) {
@@ -350,7 +359,10 @@ export class DeviceRegistry {
         this.host.log.info(`${entry.runtime.config.name}: last optimisation undone`);
         return true;
     }
-    async resetOptimization(deviceId) {
+    resetOptimization(deviceId) {
+        return this.serialized(() => this.resetOptimizationNow(deviceId));
+    }
+    async resetOptimizationNow(deviceId) {
         const entry = this.devices.get(deviceId);
         const store = entry?.opt?.store;
         if (!entry || !store) {
@@ -412,7 +424,14 @@ export class DeviceRegistry {
         const unitFactor = await this.unitFactorOf(cfg.powerId);
         const type = entry.runtime.deviceType;
         const now = this.host.now();
-        const loaded = await loadStore(this.files, deviceId, this.host.log);
+        let loaded;
+        try {
+            loaded = await loadStore(this.files, deviceId, this.host.log);
+        }
+        catch (err) {
+            this.host.log.warn(`${cfg.name}: learning data not readable, automatic optimisation off until the next start: ${errorMessage(err)}`);
+            return;
+        }
         const store = loaded ?? emptyStore(deviceId, cfg.typeId, typeHash(type), step, unitFactor);
         const hadOverride = store.override !== null;
         for (const msg of reconcileStore(store, cfg.typeId, typeHash(type), step, unitFactor, now)) {
@@ -477,6 +496,7 @@ export class DeviceRegistry {
         const { series, meta } = loadedHistory;
         const store = opt.store;
         if (entry.opt !== opt ||
+            this.devices.get(deviceId) !== entry ||
             meta.energyCounter ||
             meta.unitFactor !== store.unitFactor ||
             series.stepMs !== store.step) {
@@ -519,7 +539,7 @@ export class DeviceRegistry {
             }
             await this.yieldNow();
         }
-        if (entry.opt !== opt) {
+        if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
             return;
         }
         if (runs + spikes === 0) {
@@ -557,6 +577,7 @@ export class DeviceRegistry {
             return;
         }
         opt.store.pending = opt.recorder.snapshot();
+        fitSize(opt.store);
         this.saveOpt(entry).catch(err => this.host.log.warn(errorMessage(err)));
     }
     async saveOpt(entry) {
@@ -603,6 +624,11 @@ export class DeviceRegistry {
     }
     enqueueOptimize(deviceId) {
         this.enqueue(deviceId, () => this.runOptimize(deviceId));
+    }
+    serialized(fn) {
+        const res = this.optQueue.then(fn);
+        this.optQueue = res.then(() => undefined, () => undefined);
+        return res;
     }
     enqueue(deviceId, job) {
         this.optQueue = this.optQueue
@@ -702,6 +728,7 @@ export class DeviceRegistry {
         this.devices.clear();
     }
     disposeEntry(entry) {
+        entry.opt = null;
         entry.runtime.dispose();
         entry.reminder.dispose();
         entry.recorder.stop(this.host.now());

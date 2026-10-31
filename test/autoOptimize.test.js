@@ -17,7 +17,7 @@ import { fromCells } from "../build/lib/learn/ticks.js";
 import { Notifier } from "../build/lib/notifier.js";
 import { addRun, emptyStore, labelCapture, typeHash } from "../build/lib/runStore.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
-import { runOf } from "./helpers/programmes.js";
+import { lcg, runOf, times } from "./helpers/programmes.js";
 import { memoryFiles } from "./helpers/files.js";
 
 const P = "plug.0.power";
@@ -188,6 +188,37 @@ describe("automatic optimisation", function () {
 		}
 	});
 
+	it("a phase inside the programme that looks like the anti-crease phase never ends a run early", async () => {
+		// spinning, then 20 min of drum bursts exactly like an anti-crease phase, then the programme goes
+		// on (heating, spinning) and ends with the real anti-crease phase
+		const programme = seed => {
+			const r = runOf({ device: "washer", programme: "spinOnly", shape: "T2", seed, after: 0 });
+			const head = r.values.slice(0, r.coreEnd + 1);
+			const fake = r.values.slice(r.coreEnd + 1, r.coreEnd + 121);
+			const tail = [...times(2000, 60), ...times(600, 30)];
+			const values = [...head, ...fake, ...tail, ...r.values.slice(r.coreEnd + 1), ...times(0.3, 400)];
+			return { values, start: r.start, coreEnd: head.length + fake.length + tail.length - 1 };
+		};
+		const ctx = await setup();
+		const typesBefore = JSON.stringify(ctx.inst.types);
+		for (let k = 0; k < 8; k++) {
+			const r = await play(ctx, programme(k + 1));
+			assert.strictEqual(r.starts.length, 1, `run ${k}: starts ${r.starts}`);
+			assert.strictEqual(r.ends.length, 1, `run ${k}: ends ${r.ends}`);
+			assert.ok(r.delays[0] >= 0, `run ${k}: end ${r.delays[0]} s before the programme end`);
+			ctx.host.tickClock(DAY);
+		}
+		const store = ctx.reg.learningData("dev");
+		const eff = ctx.reg.get("dev").effective;
+		assert.ok(["used", "notSeparable", "none"].includes(store.info.trailer), store.info.trailer);
+		if ((eff.trailerBurstSec ?? 0) > 0) {
+			// the filter is only on behind a guard that keeps the phase inside the programme
+			assert.ok(eff.trailerBlockVal > 0 || eff.trailerAfterSec > 0 || eff.pauseHoldSec > 0, JSON.stringify(eff));
+		}
+		assert.strictEqual(JSON.stringify(ctx.inst.types), typesBefore, "instance configuration untouched");
+		assert.ok(!ctx.host.writes.some(w => w.id.startsWith("system.adapter.")));
+	});
+
 	it("keeps the optimised values over a restart and discards them when the type changes", async () => {
 		const ctx = await setup({ typeId: "dryer" });
 		await play(ctx, runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 }));
@@ -352,6 +383,99 @@ describe("automatic optimisation engine", function () {
 			}
 		}
 		assert.ok(changes >= 4, `${changes} changes`);
+	});
+
+	it("live: noisy runs of random programmes are detected correctly after every change, a repair never shortens a wait", async () => {
+		// random programme, anti-crease shape and idle level per run, power with ±5 % noise; each run is
+		// played with the values in use at that time (what the user gets), then stored and optimised
+		const shapes = [...SHAPES, null];
+		let changes = 0;
+		for (let seq = 0; seq < 3; seq++) {
+			const rnd = lcg(seq * 7919 + 13);
+			const store = emptyStore("dev", type.id, typeHash(type), STEP, 1);
+			let now = 1_700_000_000_000;
+			let changed = false;
+			for (let k = 0; k < 8; k++) {
+				const programme = WASHER[Math.floor(rnd() * WASHER.length)];
+				const shape = shapes[Math.floor(rnd() * shapes.length)];
+				const idle = [0.3, 0.8, 1.5, 2][Math.floor(rnd() * 4)];
+				const clean = runOf({ device: "washer", programme, shape, seed: seq * 1000 + k, after: 400, idle });
+				const noise = lcg(seq * 31 + k);
+				const run = {
+					...clean,
+					values: clean.values.map(v => Math.max(0, Math.round(v * (1 + 0.1 * (noise() - 0.5)) * 10) / 10)),
+				};
+				const p = effectiveOf(type, store.override);
+				const cap = captureWith(run, now, p);
+				const starts = cap.ev.filter(e => e[1] === "s").length;
+				const ends = cap.ev.filter(e => e[1] === "f").map(e => e[0]);
+				if (changed) {
+					const what = `seq ${seq} run ${k} ${programme}/${shape}: ${starts} starts, ${ends.length} ends`;
+					assert.strictEqual(starts, 1, what);
+					assert.strictEqual(ends.length, 1, what);
+					assert.ok(ends[0] >= now + run.coreEnd * STEP, `${what}: end before the programme end`);
+				}
+				const res = labelCapture(cap, p.endVal);
+				if (res.run) {
+					addRun(store, res.run);
+					if (res.trusted) {
+						store.newSinceChange++;
+						store.lockRuns = Math.max(0, store.lockRuns - 1);
+					}
+				}
+				const out = await optimize(store, ctxOf(now));
+				if (out.change) {
+					changes++;
+					changed = true;
+				}
+				if (out.kind === "repair") {
+					const q = effectiveOf(type, store.override);
+					for (const key of ["startCount", "endCount", "startDurationSec", "endDurationSec"]) {
+						assert.ok(q[key] >= p[key], `seq ${seq} run ${k}: repair lowers ${key} ${p[key]} → ${q[key]}`);
+					}
+				}
+				now += DAY + 3_600_000;
+			}
+		}
+		assert.ok(changes >= 3, `${changes} changes`);
+	});
+
+	it("a tightening switches the anti-crease filter on only behind a terminal block", async () => {
+		// quick programmes and spinning only with anti-crease phases: the filter must not swallow the
+		// soaking of the eco programme that comes later and was never seen
+		const store = emptyStore("dev", type.id, typeHash(type), STEP, 1);
+		let now = 1_700_000_000_000;
+		const seenRuns = [
+			["quick30", "T4"],
+			["cotton60", "T1"],
+			["spinOnly", "T4"],
+			["quick30", "T5"],
+			["cotton60", "T2"],
+		];
+		let filterOn = false;
+		for (const [k, [programme, shape]] of seenRuns.entries()) {
+			const run = runOf({ device: "washer", programme, shape, seed: 50 + k, after: 400 });
+			const res = labelCapture(captureWith(run, now, effectiveOf(type, store.override)), 15);
+			addRun(store, res.run);
+			store.newSinceChange++;
+			store.lockRuns = Math.max(0, store.lockRuns - 1);
+			const out = await optimize(store, ctxOf(now));
+			const q = effectiveOf(type, store.override);
+			if (out.kind === "tighten" && (q.trailerBurstSec ?? 0) > 0) {
+				filterOn = true;
+				assert.ok(q.trailerBlockVal > 0, `filter without a block guard: ${JSON.stringify(store.override)}`);
+			}
+			now += DAY + 3_600_000;
+		}
+		assert.ok(filterOn, "the filter was switched on");
+		for (const seed of [1, 2, 3]) {
+			const eco = runOf({ device: "washer", programme: "eco4060", shape: "T4", seed, after: 400 });
+			const cap = captureWith(eco, now, effectiveOf(type, store.override));
+			const ends = cap.ev.filter(e => e[1] === "f").map(e => e[0]);
+			assert.strictEqual(cap.ev.filter(e => e[1] === "s").length, 1, `eco ${seed}: one start`);
+			assert.strictEqual(ends.length, 1, `eco ${seed}: one end`);
+			assert.ok(ends[0] >= now + eco.coreEnd * STEP, `eco ${seed}: end not before the programme end`);
+		}
 	});
 
 	it("a new programme that ends too early is repaired at once and locks the tightening", async () => {

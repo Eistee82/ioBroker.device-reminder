@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
 import { DeviceRegistry, formatDate } from "../build/lib/deviceRegistry.js";
+import { DeviceSync } from "../build/lib/deviceSync.js";
 import { fill, TEXT } from "../build/lib/dmTexts.js";
 import { Notifier } from "../build/lib/notifier.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
@@ -190,6 +191,102 @@ describe("automatic optimisation in the registry", function () {
 			sent.some(m => m.includes("Erkennung nach dem Lauf vom")),
 			`German message sent: ${sent.join(" | ")}`,
 		);
+	});
+
+	it("an undo or reset during a running optimisation job is not overwritten by the job", async () => {
+		for (const op of ["reset", "undo"]) {
+			const ctx = await setup({ typeId: "dryer" });
+			if (op === "undo") {
+				// a first change to undo later
+				await play(ctx, runOf({ device: "dryer", programme: "iron", shape: "T1", seed: 2, after: 400 }).values);
+				assert.ok(ctx.reg.learningData("dev").changes.length > 0);
+			}
+			const typesBefore = JSON.stringify(ctx.inst.types);
+			const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 });
+			// feed the run without waiting: the capture closes and the job starts
+			for (const v of run.values) {
+				ctx.host.setValue(P, v);
+				await ctx.reg.routeForeignState(P, v);
+				ctx.host.tickClock(STEP);
+				await ctx.reg.tickAll();
+			}
+			// the job waits at its first yield (fake timers run only in drain)
+			const store = ctx.reg.learningData("dev");
+			const user = op === "reset" ? ctx.reg.resetOptimization("dev") : ctx.reg.undoOptimization("dev");
+			await drain(ctx);
+			assert.strictEqual(await user, true);
+			assert.strictEqual(store.changes.at(-1).kind, op, `${op}: ${store.changes.map(c => c.kind)}`);
+			assert.deepStrictEqual(ctx.reg.get("dev").currentOverride, store.override);
+			if (op === "reset") {
+				assert.strictEqual(store.override, null);
+			}
+			// the optimiser never writes the instance configuration (that would restart the instance)
+			assert.strictEqual(JSON.stringify(ctx.inst.types), typesBefore);
+			assert.ok(!ctx.host.writes.some(w => w.id.startsWith("system.adapter.")));
+		}
+	});
+
+	it("a read error of the learning data keeps the optimisation off instead of overwriting the data", async () => {
+		const ctx = await setup({ typeId: "dryer" });
+		await play(ctx, runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 }).values);
+		const saved = new Map(ctx.files.files);
+		const before = ctx.reg.learningData("dev");
+		const broken = {
+			...ctx.files,
+			writes: 0,
+			read: async () => Promise.reject(new Error("connection lost")),
+			write: async (name, data) => {
+				broken.writes++;
+				ctx.files.files.set(name, data);
+			},
+		};
+		const next = await setup({ typeId: "dryer", files: broken });
+		await drain(next);
+		assert.strictEqual(next.reg.learningData("dev"), null, "optimisation off");
+		assert.strictEqual(broken.writes, 0, "nothing written");
+		assert.ok(next.host.logs.warn.some(m => m.includes("learning data not readable")));
+		assert.deepStrictEqual(ctx.files.files, saved);
+		// the next start reads the data again
+		const again = await setup({ typeId: "dryer", files: ctx.files });
+		assert.strictEqual(again.reg.learningData("dev").runs.length, before.runs.length);
+		assert.deepStrictEqual(again.reg.learningData("dev").override, before.override);
+	});
+
+	it("deleting the device deletes its learning data, also while the history is read", async () => {
+		// deleted in the object browser: DeviceSync gets the deleted object
+		const ctx = await setup({ typeId: "dryer" });
+		await play(ctx, runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 }).values);
+		const writer = { extendObject: async () => {}, setObjectNotExists: async () => {}, delObject: async () => {} };
+		const sync = new DeviceSync(ctx.reg, writer, () => ctx.inst, ctx.host.log);
+		await sync.apply("dev", null);
+		assert.ok(ctx.files.files.size > 0, "an unusable configuration keeps the data");
+		await ctx.reg.upsert("dev", ctx.cfg);
+		await sync.apply("dev", null, true);
+		assert.strictEqual(ctx.files.files.size, 0);
+		assert.strictEqual(ctx.reg.get("dev"), undefined);
+
+		// deleted while the history is read: nothing is written for the deleted device
+		let release = () => {};
+		const gateHistory = new Promise(resolve => {
+			release = resolve;
+		});
+		const host = createFakeHost({ objects: { [P]: "number" } });
+		const history = historyEnv(historyOf([washingMachine, washingMachine, washingMachine], host.now() - DAY));
+		const read = history.getHistory.bind(history);
+		history.getHistory = async (id, options) => {
+			await gateHistory;
+			return read(id, options);
+		};
+		const slow = await setup({ host, history });
+		for (let i = 0; i < 20; i++) {
+			await new Promise(resolve => setImmediate(resolve));
+		}
+		const removed = slow.reg.deleteLearningData("dev");
+		slow.reg.remove("dev");
+		release();
+		await drain(slow);
+		await removed;
+		assert.strictEqual(slow.files.files.size, 0, [...slow.files.files.keys()].join());
 	});
 
 	it("sends nothing without the message option", async () => {

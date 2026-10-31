@@ -632,7 +632,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 }
                 break;
             case "saveType":
-                await this.saveLearnedType(id, suggestionOf(runtime.effective), ctx);
+                await this.saveLearnedType(id, suggestionOf(runtime.effective), ctx, undefined, TEXT.optSaveTypeConfirm);
                 break;
             default:
                 break;
@@ -752,7 +752,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             getHistory: (id, options) => this.adapter.getHistoryAsync(id, options),
         };
     }
-    async saveLearnedType(id, suggestion, ctx, unit = "W") {
+    async saveLearnedType(id, suggestion, ctx, unit = "W", confirm = TEXT.learnConfirm) {
         const deviceName = this.adapter.registry.get(id)?.config.name ?? id;
         const withTrailer = (suggestion.trailerBurstSec ?? 0) > 0;
         let data = {
@@ -806,7 +806,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             const typeId = allocateDeviceId(parsed.type.name, new Set(inst.types.map(t => t.id)));
             type = { ...parsed.type, id: typeId, builtin: false };
         }
-        if (!(await ctx.showConfirmation(TEXT.learnConfirm))) {
+        if (!(await ctx.showConfirmation(confirm))) {
             return;
         }
         const instanceId = `system.adapter.${this.adapter.namespace}`;

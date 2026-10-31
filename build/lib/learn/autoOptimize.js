@@ -276,8 +276,7 @@ async function repairCandidates(data, p0) {
     const out = [];
     const sg = await analyzeStored(data, p0, () => true);
     if (sg) {
-        const c = fromSuggestion(sg);
-        out.push(c, saferOf(c, p0));
+        out.push(saferOf(fromSuggestion(sg), p0));
     }
     const base = detectionOf(p0);
     const env = store.envelope;
@@ -292,6 +291,11 @@ async function repairCandidates(data, p0) {
     const variants = [base, startRaised];
     if (trailer && !(base.trailerBurstSec ?? 0)) {
         variants.push({ ...base, ...trailer }, { ...startRaised, ...trailer });
+    }
+    if (trailer) {
+        for (const v of filterVariants(store.runs, store, poll).slice(1)) {
+            variants.push({ ...base, ...v }, { ...startRaised, ...v });
+        }
     }
     if ((base.trailerBurstSec ?? 0) > 0) {
         if (trailer) {
@@ -455,11 +459,9 @@ export async function optimize(store, ctx) {
         throw err;
     }
 }
-async function repair(data, p0, r0, done) {
-    const { store, ctx } = data;
+async function bestRepair(data, p0, candidates, seen) {
     let best = null;
-    const seen = new Set();
-    for (const c of await repairCandidates(data, p0)) {
+    for (const c of candidates) {
         const key = JSON.stringify(detectionOf(c));
         if (seen.has(key)) {
             continue;
@@ -475,6 +477,17 @@ async function repair(data, p0, r0, done) {
             best = { p: c, d: score, g };
         }
     }
+    return best;
+}
+async function repair(data, p0, r0, done) {
+    const { store, ctx } = data;
+    const raw = await repairCandidates(data, p0);
+    const floored = raw
+        .map(c => clampBounds(applyFloors(c, store, ctx.pollSec), ctx.pollSec))
+        .filter(c => withinBounds(c, ctx.pollSec));
+    const seen = new Set();
+    let best = await bestRepair(data, p0, floored, seen);
+    best ??= await bestRepair(data, p0, raw, seen);
     if (!best) {
         store.failStreak++;
         store.info.status = store.failStreak >= DRIFT_RUNS ? "drift" : "cannotCover";
@@ -533,7 +546,13 @@ function filterOptions(runs, store, p0, withTrailer, pollSec) {
             },
         ];
     }
-    return withTrailer >= FILTER_RUNS ? filterVariants(runs, store, pollSec) : [];
+    if (withTrailer < FILTER_RUNS) {
+        return [];
+    }
+    return filterVariants(runs, store, pollSec).filter(v => (v.trailerBlockVal ?? 0) > 0);
+}
+function unguardedFilterOn(c, p0) {
+    return (p0.trailerBurstSec ?? 0) <= 0 && (c.trailerBurstSec ?? 0) > 0 && (c.trailerBlockVal ?? 0) <= 0;
 }
 async function tighten(data, p0, r0, done) {
     const { store, ctx } = data;
@@ -573,7 +592,7 @@ async function tighten(data, p0, r0, done) {
     for (const recipe of recipes) {
         const c = build(recipe, analysis, variants);
         const key = JSON.stringify(c);
-        if (seen.has(key) || !withinBounds(c, poll)) {
+        if (seen.has(key) || !withinBounds(c, poll) || unguardedFilterOn(c, p0)) {
             continue;
         }
         seen.add(key);

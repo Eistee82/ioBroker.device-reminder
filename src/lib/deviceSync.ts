@@ -39,10 +39,14 @@ export class DeviceSync {
 	 *
 	 * @param deviceId - Device id below the namespace
 	 * @param cfg - Normalized device configuration, or null
+	 * @param deleted - The device object was deleted (its learning data is deleted too)
 	 */
-	public async apply(deviceId: string, cfg: DeviceConfig | null): Promise<void> {
+	public async apply(deviceId: string, cfg: DeviceConfig | null, deleted = false): Promise<void> {
 		if (!cfg) {
 			this.applied.delete(deviceId);
+			if (deleted) {
+				await this.registry.deleteLearningData(deviceId);
+			}
 			if (this.registry.get(deviceId)) {
 				this.registry.remove(deviceId);
 				this.log.info(`Device ${deviceId} removed`);

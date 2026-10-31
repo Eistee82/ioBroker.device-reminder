@@ -480,8 +480,9 @@ async function repairCandidates(data: Data, p0: DetectionSettings): Promise<Dete
 	const out: DetectionSettings[] = [];
 	const sg = await analyzeStored(data, p0, () => true);
 	if (sg) {
-		const c = fromSuggestion(sg);
-		out.push(c, saferOf(c, p0));
+		// only merged with the current values: the plain analysis may wait much shorter than now and
+		// a repair has seen too few runs for that (a tightening has its own step limits and checks)
+		out.push(saferOf(fromSuggestion(sg), p0));
 	}
 	const base = detectionOf(p0);
 	const env = store.envelope;
@@ -496,6 +497,13 @@ async function repairCandidates(data: Data, p0: DetectionSettings): Promise<Dete
 	const variants: DetectionSettings[] = [base, startRaised];
 	if (trailer && !(base.trailerBurstSec ?? 0)) {
 		variants.push({ ...base, ...trailer }, { ...startRaised, ...trailer });
+	}
+	if (trailer) {
+		// the filter armed only after a terminal block or some time after the start: a programme with
+		// soaking keeps its drum movements and needs no long end wait
+		for (const v of filterVariants(store.runs, store, poll).slice(1)) {
+			variants.push({ ...base, ...v }, { ...startRaised, ...v });
+		}
 	}
 	if ((base.trailerBurstSec ?? 0) > 0) {
 		if (trailer) {
@@ -712,11 +720,22 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 
 type Done = (kind: OptimizeOutcome["kind"], change?: Change | null) => OptimizeOutcome;
 
-async function repair(data: Data, p0: DetectionSettings, r0: GateResult, done: Done): Promise<OptimizeOutcome> {
-	const { store, ctx } = data;
+/**
+ * The repair candidate closest to the current values that passes the gate.
+ *
+ * @param data - Decoded data
+ * @param p0 - Current values
+ * @param candidates - Candidates
+ * @param seen - Candidates already checked (shared between calls)
+ */
+async function bestRepair(
+	data: Data,
+	p0: DetectionSettings,
+	candidates: readonly DetectionSettings[],
+	seen: Set<string>,
+): Promise<{ p: DetectionSettings; d: number; g: GateResult } | null> {
 	let best: { p: DetectionSettings; d: number; g: GateResult } | null = null;
-	const seen = new Set<string>();
-	for (const c of await repairCandidates(data, p0)) {
+	for (const c of candidates) {
 		const key = JSON.stringify(detectionOf(c));
 		if (seen.has(key)) {
 			continue;
@@ -733,6 +752,20 @@ async function repair(data: Data, p0: DetectionSettings, r0: GateResult, done: D
 			best = { p: c, d: score, g };
 		}
 	}
+	return best;
+}
+
+async function repair(data: Data, p0: DetectionSettings, r0: GateResult, done: Done): Promise<OptimizeOutcome> {
+	const { store, ctx } = data;
+	const raw = await repairCandidates(data, p0);
+	// first with the envelope floors (start not shorter than the longest burst seen, end not shorter
+	// than the longest pause seen), only if none of those passes without them
+	const floored = raw
+		.map(c => clampBounds(applyFloors(c, store, ctx.pollSec), ctx.pollSec))
+		.filter(c => withinBounds(c, ctx.pollSec));
+	const seen = new Set<string>();
+	let best = await bestRepair(data, p0, floored, seen);
+	best ??= await bestRepair(data, p0, raw, seen);
 	if (!best) {
 		store.failStreak++;
 		store.info.status = store.failStreak >= DRIFT_RUNS ? "drift" : "cannotCover";
@@ -791,7 +824,8 @@ function filterVariants(runs: readonly StoredRun[], store: StoreFile, pollSec: n
 
 /**
  * Anti-crease filter options of a tightening: the filter of the current values when it is on,
- * otherwise the variants derived from the runs (only with enough runs with a trailer).
+ * otherwise the variants derived from the runs that arm only after a terminal block (only with
+ * enough runs with a trailer).
  *
  * @param runs - Trusted runs
  * @param store - Store
@@ -818,7 +852,24 @@ function filterOptions(
 			},
 		];
 	}
-	return withTrailer >= FILTER_RUNS ? filterVariants(runs, store, pollSec) : [];
+	if (withTrailer < FILTER_RUNS) {
+		return [];
+	}
+	// a tightening turns the filter on only behind a terminal block like the ones seen: a programme
+	// not seen yet with a soaking phase (drum movements after washing) would otherwise lose its soak
+	// to the filter and end early; the plain filter is left to learning and repair
+	return filterVariants(runs, store, pollSec).filter(v => (v.trailerBlockVal ?? 0) > 0);
+}
+
+/**
+ * Whether a candidate switches the anti-crease filter on without the terminal block guard (a
+ * tightening must not: see `filterOptions`).
+ *
+ * @param c - Candidate
+ * @param p0 - Current values
+ */
+function unguardedFilterOn(c: DetectionSettings, p0: DetectionSettings): boolean {
+	return (p0.trailerBurstSec ?? 0) <= 0 && (c.trailerBurstSec ?? 0) > 0 && (c.trailerBlockVal ?? 0) <= 0;
 }
 
 /** How a tightening candidate is built (repeated without one programme group for the cross-check). */
@@ -876,7 +927,7 @@ async function tighten(data: Data, p0: DetectionSettings, r0: GateResult, done: 
 	for (const recipe of recipes) {
 		const c = build(recipe, analysis, variants);
 		const key = JSON.stringify(c);
-		if (seen.has(key) || !withinBounds(c, poll)) {
+		if (seen.has(key) || !withinBounds(c, poll) || unguardedFilterOn(c, p0)) {
 			continue;
 		}
 		seen.add(key);

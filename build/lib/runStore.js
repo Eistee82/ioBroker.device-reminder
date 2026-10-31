@@ -1,11 +1,12 @@
 import { assignFamilies } from "./learn/families.js";
 import { buildLayout, MAX_PAUSE_MS, MAX_WINDOWS, median } from "./learn/runs.js";
-import { encodeCells, fromCells, quantOf } from "./learn/ticks.js";
+import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
 import { errorMessage } from "./utils.js";
 export const STORE_VERSION = 1;
 export const MAX_RUNS = MAX_WINDOWS;
 export const MAX_SPIKES = 10;
 export const MAX_STORE_BYTES = 400_000;
+export const MAX_PENDING_BYTES = 200_000;
 export const MAX_CHANGES = 10;
 const START_MATCH_MS = 5 * 60_000;
 const POST_ROLL_MS = MAX_PAUSE_MS;
@@ -112,13 +113,7 @@ function isStore(val, deviceId) {
 export async function loadStore(io, deviceId, log) {
     let best = null;
     for (const slot of ["a", "b"]) {
-        let text = null;
-        try {
-            text = await io.read(slotName(deviceId, slot));
-        }
-        catch (err) {
-            log.debug(`Learning data ${slotName(deviceId, slot)} not readable: ${errorMessage(err)}`);
-        }
+        const text = await io.read(slotName(deviceId, slot));
         if (text === null) {
             continue;
         }
@@ -138,12 +133,56 @@ export async function loadStore(io, deviceId, log) {
     }
     if (best) {
         best.nextFamily ??= Math.max(0, ...best.runs.map(r => r.family + 1));
+        try {
+            best.pending = decodePending(best.pending);
+        }
+        catch (err) {
+            log.warn(`Learning data of ${deviceId}: capture of the last run ignored: ${errorMessage(err)}`);
+            best.pending = null;
+        }
     }
     return best;
 }
+export function encodePending(c) {
+    const q = quantOf(c.unitFactor);
+    return {
+        t0: c.t0,
+        stepMs: c.stepMs,
+        unitFactor: c.unitFactor,
+        ev: c.ev,
+        postTruncated: c.postTruncated,
+        q,
+        data: encodeCells(c.cells, q),
+    };
+}
+function decodePending(raw) {
+    if (raw === null || raw === undefined) {
+        return null;
+    }
+    const c = raw;
+    if (typeof c.data !== "string" ||
+        typeof c.q !== "number" ||
+        typeof c.t0 !== "number" ||
+        typeof c.stepMs !== "number" ||
+        typeof c.unitFactor !== "number" ||
+        !Array.isArray(c.ev)) {
+        throw new Error("unknown format");
+    }
+    return {
+        t0: c.t0,
+        stepMs: c.stepMs,
+        unitFactor: c.unitFactor,
+        ev: c.ev,
+        postTruncated: c.postTruncated === true,
+        cells: decodeCells(c.data, c.q),
+    };
+}
+export function serializeStore(store) {
+    return JSON.stringify(store.pending ? { ...store, pending: encodePending(store.pending) } : store);
+}
 export async function saveStore(io, store) {
     store.seq++;
-    await io.write(slotName(store.deviceId, store.seq % 2 === 0 ? "a" : "b"), JSON.stringify(store));
+    await io.write(slotName(store.deviceId, store.seq % 2 === 0 ? "a" : "b"), serializeStore(store));
 }
 export async function removeStore(io, deviceId) {
     await io.remove(slotName(deviceId, "a"));
@@ -364,6 +403,15 @@ export function addRun(store, run) {
     const prevN = store.envelope.n;
     store.envelope = mergeEnvelope(store.envelope, envelopeOf(store.runs, store.spikes));
     store.envelope.n = prevN + (run.label === "spike" ? 0 : 1);
+    evicted.push(...fitSize(store));
+    refreshInfo(store);
+    return evicted;
+}
+export function fitSize(store) {
+    const evicted = [];
+    if (store.pending && JSON.stringify(encodePending(store.pending)).length > MAX_PENDING_BYTES) {
+        store.pending = null;
+    }
     while (store.runs.length > MAX_RUNS || (sizeOf(store) > MAX_STORE_BYTES && store.runs.length > 2)) {
         const victim = pickVictim(store);
         if (victim < 0) {
@@ -375,11 +423,13 @@ export function addRun(store, run) {
     while (sizeOf(store) > MAX_STORE_BYTES && store.spikes.length > 0) {
         evicted.push(store.spikes.shift().id);
     }
-    refreshInfo(store);
+    if (evicted.length > 0) {
+        refreshInfo(store);
+    }
     return evicted;
 }
 export function sizeOf(store) {
-    return JSON.stringify(store).length;
+    return serializeStore(store).length;
 }
 function pickVictim(store) {
     const count = new Map();

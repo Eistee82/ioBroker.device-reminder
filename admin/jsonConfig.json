@@ -111,7 +111,7 @@
 							"type": "text",
 							"attr": "name",
 							"title": "typeName",
-							"width": "15%",
+							"width": "10.5%",
 							"readOnly": false,
 							"disabled": "data.builtin === true"
 						},
@@ -119,7 +119,7 @@
 							"type": "number",
 							"attr": "startVal",
 							"title": "typeStartVal",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 0,
 							"step": 0.05
 						},
@@ -127,7 +127,7 @@
 							"type": "number",
 							"attr": "endVal",
 							"title": "typeEndVal",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 0,
 							"step": 0.05
 						},
@@ -135,7 +135,7 @@
 							"type": "number",
 							"attr": "standby",
 							"title": "typeStandby",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 0,
 							"step": 0.05
 						},
@@ -143,7 +143,7 @@
 							"type": "number",
 							"attr": "startCount",
 							"title": "typeStartCount",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 1,
 							"step": 0.5
 						},
@@ -151,7 +151,7 @@
 							"type": "number",
 							"attr": "endCount",
 							"title": "typeEndCount",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 2,
 							"step": 1
 						},
@@ -159,7 +159,7 @@
 							"type": "select",
 							"attr": "mode",
 							"title": "typeMode",
-							"width": "10%",
+							"width": "7%",
 							"options": [
 								{
 									"label": "modeCount",
@@ -179,7 +179,7 @@
 							"type": "number",
 							"attr": "startDurationSec",
 							"title": "typeStartDuration",
-							"width": "8%",
+							"width": "5.5%",
 							"min": 0,
 							"hidden": "data.mode === 'count'"
 						},
@@ -187,7 +187,7 @@
 							"type": "number",
 							"attr": "endDurationSec",
 							"title": "typeEndDuration",
-							"width": "8%",
+							"width": "5.5%",
 							"min": 0,
 							"hidden": "data.mode === 'count'"
 						},
@@ -195,7 +195,7 @@
 							"type": "number",
 							"attr": "pauseHoldSec",
 							"title": "typePauseHold",
-							"width": "8%",
+							"width": "5.5%",
 							"min": 0,
 							"step": 1
 						},
@@ -203,7 +203,7 @@
 							"type": "number",
 							"attr": "pauseUntilSec",
 							"title": "typePauseUntil",
-							"width": "8%",
+							"width": "5.5%",
 							"min": 0,
 							"step": 1
 						},
@@ -211,7 +211,7 @@
 							"type": "number",
 							"attr": "pauseBelowVal",
 							"title": "typePauseBelow",
-							"width": "8%",
+							"width": "5.5%",
 							"min": 0,
 							"step": 0.05
 						},
@@ -220,7 +220,7 @@
 							"attr": "trailerBurstSec",
 							"title": "typeTrailerBurst",
 							"tooltip": "typeTrailerBurstTooltip",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 0,
 							"max": 180,
 							"step": 1
@@ -230,7 +230,7 @@
 							"attr": "trailerGapSec",
 							"title": "typeTrailerGap",
 							"tooltip": "typeTrailerGapTooltip",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 0,
 							"max": 600,
 							"step": 1,
@@ -241,7 +241,7 @@
 							"attr": "trailerAfterSec",
 							"title": "typeTrailerAfter",
 							"tooltip": "typeTrailerAfterTooltip",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 0,
 							"max": 21600,
 							"step": 1,
@@ -252,7 +252,7 @@
 							"attr": "trailerBlockVal",
 							"title": "typeTrailerBlock",
 							"tooltip": "typeTrailerBlockTooltip",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 0,
 							"max": 10000,
 							"step": 0.05,
@@ -263,7 +263,7 @@
 							"attr": "trailerMaxSec",
 							"title": "typeTrailerMax",
 							"tooltip": "typeTrailerMaxTooltip",
-							"width": "7%",
+							"width": "5.5%",
 							"min": 0,
 							"max": 14400,
 							"step": 1,
