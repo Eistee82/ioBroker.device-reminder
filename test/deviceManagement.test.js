@@ -396,6 +396,15 @@ describe("deviceManagement", () => {
 			assert.strictEqual(ctx.registry.get("trockner").config.recipients.length, 1);
 		});
 
+		it("drops common.custom from the device object when saving", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner");
+			ctx.adapter.objects.get(`${NS}.trockner`).common.custom = null;
+			const [info] = await load(ctx);
+			await actionOf(info, "edit").handler("trockner", fakeAction({ forms: [formOf({ name: "Trockner" })] }));
+			assert.ok(!("custom" in ctx.adapter.objects.get(`${NS}.trockner`).common));
+		});
+
 		it("keeps the device when editing is cancelled", async () => {
 			const ctx = setup();
 			await addDevice(ctx, "trockner");

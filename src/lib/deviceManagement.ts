@@ -319,9 +319,11 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	private async writeDevice(id: Id, cfg: DeviceConfig): Promise<void> {
 		const old = await this.adapter.getObjectAsync(id);
 		if (old) {
+			// js-controller only allows common.custom on states and warns about it on a device
+			const { custom: _custom, ...common } = old.common as ioBroker.ObjectCommon & { custom?: unknown };
 			await this.adapter.setObjectAsync(id, {
 				...old,
-				common: { ...old.common, name: cfg.name },
+				common: { ...common, name: cfg.name },
 				native: { ...cfg },
 			} as ioBroker.Object);
 		}

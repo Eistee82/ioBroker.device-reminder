@@ -223,9 +223,10 @@ export class ReminderDeviceManagement extends DeviceManagement {
     async writeDevice(id, cfg) {
         const old = await this.adapter.getObjectAsync(id);
         if (old) {
+            const { custom: _custom, ...common } = old.common;
             await this.adapter.setObjectAsync(id, {
                 ...old,
-                common: { ...old.common, name: cfg.name },
+                common: { ...common, name: cfg.name },
                 native: { ...cfg },
             });
         }
