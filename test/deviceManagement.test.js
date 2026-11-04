@@ -608,6 +608,7 @@ describe("deviceManagement", () => {
 			const dialog = await form();
 			assert.ok(dialog.options.data.startVal > 0, "the suggestion is offered");
 			assert.strictEqual(dialog.options.data.samples, 42);
+			assert.strictEqual(dialog.options.ignoreApplyDisabled, true, "the suggestion can be accepted as is");
 			assert.strictEqual(action.confirmations.length, 1, "the restart is confirmed first");
 			assert.strictEqual(ctx.adapter.extendedForeign.length, 1);
 			const { id, obj } = ctx.adapter.extendedForeign[0];
@@ -737,6 +738,12 @@ describe("deviceManagement", () => {
 			await actionOf(info, "learn").handler("trockner", action);
 			assert.strictEqual(action.forms[0].options.data.instance, "history.0");
 			assert.strictEqual(action.forms[0].options.data.runs, 3, "the source dialog shows the runs found");
+			assert.strictEqual(action.forms[0].options.ignoreApplyDisabled, true, "OK works without a change");
+			assert.strictEqual(
+				action.forms[1].options.ignoreApplyDisabled,
+				true,
+				"the suggestion can be accepted as is",
+			);
 			assert.strictEqual(ctx.historyQuery.options.instance, "history.0");
 			assert.strictEqual(action.forms.progress.closed, true);
 			const dialog = action.forms[1];

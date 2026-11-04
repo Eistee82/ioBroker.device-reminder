@@ -630,6 +630,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			const first = await ctx.showForm(buildSourceSchema(), {
 				title: TEXT.addTitle,
 				data: { manual, sourceId },
+				ignoreApplyDisabled: true,
 			});
 			if (!first) {
 				return { refresh: false };
@@ -934,6 +935,8 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		const choice = await ctx.showForm(buildLearnSourceSchema(), {
 			data: { source: "history", instance, runs: result.runs },
 			title: TEXT.learnTitle,
+			// the preset choice is a valid answer: OK must work without a change
+			ignoreApplyDisabled: true,
 		});
 		if (!choice) {
 			return true;
@@ -1021,7 +1024,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		let type: DeviceTypeConfig | null = null;
 		const inst = this.adapter.instanceConfig;
 		while (!type) {
-			const result = await ctx.showForm(schema, { data, title: TEXT.learnTitle });
+			const result = await ctx.showForm(schema, { data, title: TEXT.learnTitle, ignoreApplyDisabled: true });
 			if (!result) {
 				return;
 			}
