@@ -571,8 +571,9 @@ describe("automatic optimisation engine", function () {
 			},
 		});
 		const ms = Date.now() - t0;
-		// the limits hold for an uninstrumented run; the coverage instrumentation makes the replay ~4x slower
-		const slow = process.env.NODE_V8_COVERAGE ? 4 : 1;
+		// the limits hold for an uninstrumented run; the coverage instrumentation makes the replay ~4x slower,
+		// and shared CI runners add up to 2x on top (measured 9-21 s under coverage)
+		const slow = process.env.NODE_V8_COVERAGE ? 8 : 1;
 		assert.ok(ms < 5000 * slow, `${ms} ms`);
 		assert.strictEqual(out.kind, "tighten", JSON.stringify(out.info));
 		const gaps = [t0, ...yields, Date.now()].map((t, i, a) => (i === 0 ? 0 : t - a[i - 1]));
