@@ -38,6 +38,23 @@ export const SPLIT_GAP_MIN_MS = 3 * 60_000;
 export const POST_END_MS = 10 * 60_000;
 /** Minimum distance between two levels in W. */
 export const LEVEL_SEP_W = 0.3;
+/**
+ * A flat level at the end of most runs lasting at least this long is a rest level (display or door
+ * lock after the end, before the device switches itself off); it is no activity.
+ */
+export const REST_MIN_MS = 5 * 60_000;
+/** A rest level is at most this share of the median run power. */
+const REST_MAX_SHARE = 0.1;
+/** Minimum number of bursts of a dense trailer. */
+const DENSE_MIN_BURSTS = 6;
+/** Minimum length of a dense trailer. */
+const DENSE_MIN_MS = 5 * 60_000;
+/** Highest share of burst time in a dense trailer (tumbling during the programme is busier). */
+const DENSE_MAX_DUTY = 0.7;
+/** Highest quiet level of a dense trailer as share of the median burst maximum. */
+const DENSE_MAX_QUIET_SHARE = 0.25;
+/** Time at the end of a run whose low values give the quiet level of a dense trailer. */
+const DENSE_PROBE_MS = 10 * 60_000;
 /** Idle time after the end used for the idle level. */
 const IDLE_SPAN_MS = 2 * 60 * 60_000;
 /** Pauses inside a run shorter than this describe the level of pauses. */
@@ -77,12 +94,16 @@ export interface RunInfo {
 	trailerTo: number | null;
 	/** Longest burst of the trailer in ms (0 without trailer). */
 	burstMaxMs: number;
+	/** p90 of the burst lengths of the trailer in ms (0 without trailer). */
+	burstP90Ms: number;
 	/** Shortest quiet time before a burst of the trailer in ms (0 without trailer). */
 	gapMinMs: number;
 	/** p10 of the highest value of each burst in W (0 without trailer). */
 	burstP10W: number;
 	/** Mean power of the last 2 minutes of the terminal block (the last sustained block before the core end) in W. */
 	blockMean: number;
+	/** Quiet level between the bursts of a dense trailer in W (0 otherwise). */
+	trailerQuietW: number;
 }
 
 /** Simulated tick range with the expected result. */
@@ -115,6 +136,8 @@ export interface Layout {
 	windows: Window[];
 	/** Segments dropped because they touch a gap. */
 	gapsDropped: number;
+	/** Rest level after the end of the runs in W (display before the device switches off), or null. */
+	rest: number | null;
 }
 
 /** Options of the layout. */
@@ -326,6 +349,59 @@ function trailerOf(blocks: Span[], stepMs: number): { block: Span; bursts: Span[
 	return null;
 }
 
+/**
+ * Dense anti-crease trailer: after the last sustained block (final spin) the drum moves for a few
+ * seconds and rests for a few seconds, alternating with every report, for at least DENSE_MIN_MS.
+ * The bursts are measured against the quiet level of the end of the run (the electronics between the
+ * drum moves), not against the run level.
+ *
+ * @param s - Series
+ * @param seg - Segment of the run
+ * @param runLimit - Run level
+ * @returns the sustained block, the bursts and the quiet level, or null
+ */
+function denseTrailerOf(
+	s: TickSeries,
+	seg: Span,
+	runLimit: number,
+): { block: Span; bursts: Span[]; quiet: number; limit: number } | null {
+	const step = s.stepMs;
+	const tail = valuesOf(s, seg.to - Math.ceil(DENSE_PROBE_MS / step) + 1, seg.to);
+	if (tail.length === 0) {
+		return null;
+	}
+	const quiet = quantile(tail, 0.25);
+	const limit = Math.max(runLimit, quiet * 1.5 + LEVEL_SEP_W);
+	const blocks = blocksOf(s, seg, limit);
+	const dur = (b: Span): number => (b.to - b.from + 1) * step;
+	let k = blocks.length - 1;
+	while (
+		k >= 0 &&
+		dur(blocks[k]) < SUSTAINED_MS &&
+		(k === blocks.length - 1 || (blocks[k + 1].from - blocks[k].to - 1) * step <= TRAILER_GAP_MAX_MS)
+	) {
+		k--;
+	}
+	if (k < 0 || dur(blocks[k]) < SUSTAINED_MS) {
+		return null;
+	}
+	const bursts = blocks.slice(k + 1);
+	const spanMs = (seg.to - blocks[k].to) * step;
+	if (bursts.length < DENSE_MIN_BURSTS || spanMs < DENSE_MIN_MS) {
+		return null;
+	}
+	const busy = bursts.reduce((a, b) => a + dur(b), 0);
+	if (busy > DENSE_MAX_DUTY * spanMs) {
+		return null;
+	}
+	// between the drum moves only the electronics runs: far below the drum moves themselves
+	const maxima = bursts.map(b => Math.max(...valuesOf(s, b.from, b.to)));
+	if (quiet > DENSE_MAX_QUIET_SHARE * median(maxima)) {
+		return null;
+	}
+	return { block: blocks[k], bursts, quiet, limit };
+}
+
 interface Bounds {
 	/** First tick of the next segment (or series length). */
 	next: number;
@@ -340,7 +416,8 @@ interface Bounds {
  */
 function coreOf(s: TickSeries, seg: Span & { active: number }, runLimit: number): RunInfo {
 	const blocks = blocksOf(s, seg, runLimit);
-	const trailer = trailerOf(blocks, s.stepMs);
+	const dense = trailerOf(blocks, s.stepMs) === null ? denseTrailerOf(s, seg, runLimit) : null;
+	const trailer = dense ?? trailerOf(blocks, s.stepMs);
 	const coreEnd = trailer ? trailer.block.to : seg.to;
 	const bursts = trailer ? trailer.bursts : [];
 	let burstMaxMs = 0;
@@ -357,9 +434,13 @@ function coreOf(s: TickSeries, seg: Span & { active: number }, runLimit: number)
 		}
 		maxima.push(m);
 	});
+	// a dense trailer is measured above its quiet level: the electronics between the drum moves is
+	// above the run level and would join the whole run into one block
+	const level = dense ? dense.limit : runLimit;
+	const coreBlocks = dense ? blocksOf(s, seg, level) : blocks;
 	// terminal block: the last block of at least SUSTAINED_MS before the core end (short dips bridged)
 	const merged = mergeBlocks(
-		blocks.filter(b => b.to <= coreEnd),
+		coreBlocks.filter(b => b.to <= coreEnd),
 		Math.ceil(TRAILER_GAP_MIN_MS(s.stepMs) / s.stepMs),
 	);
 	const terminal =
@@ -370,7 +451,7 @@ function coreOf(s: TickSeries, seg: Span & { active: number }, runLimit: number)
 		const from = Math.max(terminal.from, terminal.to - Math.ceil(SUSTAINED_MS / s.stepMs) + 1);
 		const vals: number[] = [];
 		for (let j = from; j <= terminal.to; j++) {
-			if (s.last[j] > runLimit) {
+			if (s.last[j] > level) {
 				vals.push(s.last[j]);
 			}
 		}
@@ -383,15 +464,23 @@ function coreOf(s: TickSeries, seg: Span & { active: number }, runLimit: number)
 		coreEnd,
 		runEnd: coreEnd,
 		bursts,
-		gaps: gapsBetween(blocks, coreEnd),
+		gaps: gapsBetween(coreBlocks, coreEnd),
 		plateauLevel: null,
 		postEnd: 0,
 		trailerFrom: bursts.length > 0 ? bursts[0].from : null,
 		trailerTo: bursts.length > 0 ? (bursts.at(-1) as Span).to : null,
 		burstMaxMs,
+		burstP90Ms:
+			bursts.length > 0
+				? quantile(
+						bursts.map(b => (b.to - b.from + 1) * s.stepMs),
+						0.9,
+					)
+				: 0,
 		gapMinMs,
 		burstP10W: maxima.length > 0 ? quantile(maxima, 0.1) : 0,
 		blockMean,
+		trailerQuietW: dense ? dense.quiet : 0,
 	};
 }
 
@@ -602,6 +691,106 @@ function detailRuns(
 }
 
 /**
+ * Width of the band around a flat level.
+ *
+ * @param level - Level in W
+ */
+function restBand(level: number): number {
+	return Math.max(LEVEL_SEP_W, 0.1 * level);
+}
+
+/**
+ * Rest level: most runs end with a flat level above the run level for at least REST_MIN_MS (display
+ * or door lock after the end) before the device switches itself off. Without it that level counts as
+ * activity and the end of a run is the moment the device switches off.
+ *
+ * @param s - Series
+ * @param runs - Runs
+ * @param runLimit - Run level
+ * @returns the highest rest level and the shortest rest phase, or null
+ */
+function restLevelOf(
+	s: TickSeries,
+	runs: readonly RunInfo[],
+	runLimit: number,
+): { level: number; minMs: number } | null {
+	const levels: number[] = [];
+	const lengths: number[] = [];
+	for (const r of runs) {
+		const v = s.last[r.to];
+		let i = r.to;
+		while (i - 1 >= r.from && s.valid[i - 1] === 1 && Math.abs(s.last[i - 1] - v) <= restBand(v)) {
+			i--;
+		}
+		const ms = (r.to - i + 1) * s.stepMs;
+		const active = valuesOf(s, r.from, i - 1).filter(x => x > runLimit);
+		if (ms >= REST_MIN_MS && active.length > 0 && v <= REST_MAX_SHARE * median(active)) {
+			levels.push(v);
+			lengths.push(ms);
+		}
+	}
+	if (levels.length < Math.max(2, Math.ceil(runs.length / 2))) {
+		return null;
+	}
+	const lo = Math.min(...levels);
+	const hi = Math.max(...levels);
+	return hi <= lo * 1.5 + LEVEL_SEP_W ? { level: hi, minMs: Math.min(...lengths) } : null;
+}
+
+/**
+ * Split runs at a pause that starts with the rest level for at least half the shortest rest phase
+ * (two runs started one after the other without switching the device off in between).
+ *
+ * @param s - Series
+ * @param spans - Run spans
+ * @param runLimit - Run level (just above the rest level)
+ * @param rest - Rest level and shortest rest phase
+ * @param rest.level - Rest level in W
+ * @param rest.minMs - Shortest rest phase in ms
+ * @param minActive - Minimum active ticks of a run
+ */
+function splitAtRest(
+	s: TickSeries,
+	spans: (Span & { active: number })[],
+	runLimit: number,
+	rest: { level: number; minMs: number },
+	minActive: number,
+): (Span & { active: number })[] {
+	const need = Math.ceil(Math.max(SPLIT_GAP_MIN_MS, rest.minMs / 2) / s.stepMs);
+	const band = restBand(rest.level);
+	const activeIn = (a: number, b: number): number => {
+		let n = 0;
+		for (let i = a; i <= b; i++) {
+			if (s.last[i] > runLimit) {
+				n++;
+			}
+		}
+		return n;
+	};
+	const out: (Span & { active: number })[] = [];
+	for (const r of spans) {
+		let from = r.from;
+		for (const g of gapsBetween(blocksOf(s, r, runLimit), r.to)) {
+			let flat = 0;
+			while (g.from + flat <= g.to && Math.abs(s.last[g.from + flat] - rest.level) <= band) {
+				flat++;
+			}
+			if (flat < need || g.from <= from) {
+				continue;
+			}
+			const before = activeIn(from, g.from - 1);
+			const after = activeIn(g.to + 1, r.to);
+			if (before >= minActive && after >= minActive) {
+				out.push({ from, to: g.from - 1, active: before });
+				from = g.to + 1;
+			}
+		}
+		out.push({ from, to: r.to, active: activeIn(from, r.to) });
+	}
+	return out;
+}
+
+/**
  * Next segment after each run.
  *
  * @param spans - Run spans
@@ -627,21 +816,44 @@ export function buildLayout(s: TickSeries, opts: LayoutOptions = {}): Layout {
 		// the last value as well: a recording stopped shortly after the end has the run in its tail
 		tailIdle = Math.max(0, Math.min(median(tail), tail.at(-1) ?? 0));
 	}
-	const runLimit = Math.max(0, tailIdle ?? median(validValues)) * 3 + 2;
+	let runLimit = Math.max(0, tailIdle ?? median(validValues)) * 3 + 2;
 	if (!opts.recording) {
 		applyGapRule(s, runLimit);
 	}
 	const maxGap = opts.recording ? s.length : Math.floor(MAX_PAUSE_MS / step);
 	const minActive = opts.recording ? 6 : Math.ceil(MIN_ACTIVE_MS / step);
-	const all = segments(s, runLimit, maxGap, opts.recording ? 0 : minActive);
-	const usable = all.filter(x => !x.touched);
-	const gapsDropped = all.length - usable.length;
-	let runSpans: (Span & { active: number })[] = usable.filter(x => x.active >= minActive);
-	const spikes: Span[] = usable.filter(x => x.active < minActive).slice(-MAX_WINDOWS);
+	const scan = (): { all: Segment[]; runSpans: (Span & { active: number })[]; spikes: Span[]; dropped: number } => {
+		const found = segments(s, runLimit, maxGap, opts.recording ? 0 : minActive);
+		const usable = found.filter(x => !x.touched);
+		return {
+			all: found,
+			runSpans: usable.filter(x => x.active >= minActive),
+			spikes: usable.filter(x => x.active < minActive).slice(-MAX_WINDOWS),
+			dropped: found.length - usable.length,
+		};
+	};
+	let { all, runSpans, spikes, dropped: gapsDropped } = scan();
 
 	const fallbackIdle = Math.max(0, tailIdle ?? median(validValues));
 	let bounds = boundsOf(runSpans, all, s.length);
 	let { runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle, opts.keepAbove);
+	let rest: number | null = null;
+	const restCandidate = opts.recording ? null : restLevelOf(s, runs, runLimit);
+	// the current type keeps running at that level: it is the drying of the run, no rest
+	const restFound =
+		restCandidate && !(opts.keepAbove !== undefined && restCandidate.level >= opts.keepAbove)
+			? restCandidate
+			: null;
+	if (restFound) {
+		// the rest level is no activity, and a run is over once the device rests there for half the
+		// shortest rest phase (two runs started one after the other without switching off)
+		rest = restFound.level;
+		runLimit = restFound.level + restBand(restFound.level);
+		({ all, runSpans, spikes, dropped: gapsDropped } = scan());
+		runSpans = splitAtRest(s, runSpans, runLimit, restFound, minActive);
+		bounds = boundsOf(runSpans, all, s.length);
+		({ runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle, opts.keepAbove));
+	}
 	if (!opts.recording) {
 		const split = splitGrown(s, runs, bounds, runLimit);
 		if (split) {
@@ -709,5 +921,5 @@ export function buildLayout(s: TickSeries, opts: LayoutOptions = {}): Layout {
 		}
 	}
 	const lpost = kept.length > 0 ? Math.max(...kept.map(r => r.postEnd)) : idle;
-	return { runLimit, idle, lpost, runs: kept, spikes, windows, gapsDropped };
+	return { runLimit, idle, lpost, runs: kept, spikes, windows, gapsDropped, rest };
 }

@@ -47,7 +47,8 @@ interface Call {
  *
  * Bursts are held while a run is in progress after a sustained block (optionally only some time after
  * the start or after a block of at least `trailerBlockVal`), so that the end is reported when the
- * programme finishes, and during the anti-crease phase after the end, so that bursts start no run.
+ * programme finishes, and during the anti-crease phase after the end, so that bursts start no run
+ * (there a phase is real activity only after TRAILER_BLOCK_SEC).
  * The inner detector is unchanged; without the filter (trailerBurstSec 0) it is not built at all.
  */
 export class TrailerFilter implements Detector {
@@ -60,6 +61,8 @@ export class TrailerFilter implements Detector {
 	private readonly standby: number;
 	private readonly bridgeMs: number;
 	private readonly cap: number;
+	private readonly afterEndMs: number;
+	private readonly afterEndCap: number;
 	private quietSince: number | null = null;
 	private recentQuiet: number[] = [];
 	private phaseStart: number | null = null;
@@ -96,6 +99,10 @@ export class TrailerFilter implements Detector {
 		this.bridgeMs = 2 * poll * 1000;
 		// poll steps come once per poll; power reports (time-based detector) may come much more often
 		this.cap = Math.ceil(s.trailerBurstSec / poll) + 2;
+		// after the end only a sustained phase is a new run: drum moves of the anti-crease phase may
+		// take a few reports in a row, the start of a programme (water intake, heating) does not stop
+		this.afterEndMs = Math.max(this.burstMs, TRAILER_BLOCK_SEC * 1000);
+		this.afterEndCap = Math.ceil(this.afterEndMs / 1000 / poll) + 2;
 	}
 
 	/** Whether a run is in progress (of the inner detector). */
@@ -225,9 +232,10 @@ export class TrailerFilter implements Detector {
 	private resolve(call: Call): TickResult {
 		this.trackQuiet(call);
 		if (call.power >= this.endVal) {
+			const afterEnd = this.trailerUntil !== null && !this.inner.started;
 			if (
-				call.now - this.holdStart > this.burstMs ||
-				this.queuedTicks >= this.cap ||
+				call.now - this.holdStart > (afterEnd ? this.afterEndMs : this.burstMs) ||
+				this.queuedTicks >= (afterEnd ? this.afterEndCap : this.cap) ||
 				this.queue.length >= QUEUE_HARD_CAP
 			) {
 				// real activity: pass everything on unchanged

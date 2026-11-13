@@ -36,6 +36,13 @@ export function endCandidates(s, layout, minDeltaW) {
     const clamp = (v) => round2(Math.min(lmax, Math.max(lmin, v)));
     const out = [clamp(Math.max(idle * 1.5, idle + 1, lmin))];
     const extra = [...new Set(levels.map(round2))].filter(b => b / lmin >= 1.3).sort((a, b) => a - b);
+    const quiet = runs.map(r => r.trailerQuietW).filter(q => q > 0);
+    if (quiet.length > 0) {
+        const c = clamp(Math.max(...quiet) * 1.5 + LEVEL_SEP_W);
+        if (!out.includes(c)) {
+            out.push(c);
+        }
+    }
     for (const b of extra) {
         const c = clamp(Math.sqrt(lmin * b));
         if (!out.includes(c) && out.length < 6) {

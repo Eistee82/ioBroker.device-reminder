@@ -1,7 +1,7 @@
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import { endCandidates, planFor, runTable, suppressBursts } from "./optimize.js";
 import { allOk, compare, evaluate, runOkFull, simulate } from "./replay.js";
-import { buildLayout, median } from "./runs.js";
+import { buildLayout, LEVEL_SEP_W, median } from "./runs.js";
 import { scaled } from "./ticks.js";
 export const HISTORY_DAYS = 30;
 export const MIN_RUNS = 2;
@@ -115,7 +115,7 @@ export async function analyzeTicks(series, pollIntervalSec, opts = {}) {
     const poll = Math.max(pollIntervalSec, 1);
     const factor = opts.unitFactor && opts.unitFactor > 0 ? opts.unitFactor : 1;
     const minDeltaW = Math.max(0, opts.minDelta ?? 0) * factor;
-    const keepAbove = opts.currentType ? opts.currentType.endVal * factor : undefined;
+    const keepAbove = opts.currentType && opts.keepCurrentLevel !== false ? opts.currentType.endVal * factor : undefined;
     const layout = buildLayout(series, { recording: opts.recording, keepAbove });
     const { runs, idle, runLimit } = layout;
     const minRuns = Math.max(1, opts.minRuns ?? MIN_RUNS);
@@ -137,7 +137,7 @@ export async function analyzeTicks(series, pollIntervalSec, opts = {}) {
         }
         return median(vals);
     });
-    const startVal = round2(Math.max(idle + 5, 0.25 * Math.min(...runPower)));
+    const startVal = round2(Math.max(idle + 5, layout.lpost * 1.5 + LEVEL_SEP_W, 0.25 * Math.min(...runPower)));
     const standby = round2(idle * 1.2 + 0.1);
     const maxBurst = longestAbove(series, [...runs.flatMap(r => r.bursts), ...layout.spikes], startVal);
     const k0 = Math.max(2, maxBurst + 1);
@@ -146,11 +146,16 @@ export async function analyzeTicks(series, pollIntervalSec, opts = {}) {
     const trailerParams = withTrailer.length >= 2 ? deriveTrailer(withTrailer, series.stepMs, poll) : null;
     const variants = [];
     if (trailerParams) {
-        const minCore = Math.min(...runs.map(r => (r.coreEnd - r.from) * (series.stepMs / 1000)));
-        const minBlock = Math.min(...runs.map(r => r.blockMean));
+        const minCore = Math.min(...withTrailer.map(r => (r.coreEnd - r.from) * (series.stepMs / 1000)));
+        const minBlock = Math.min(...withTrailer.map(r => r.blockMean));
         const after = Math.floor(0.9 * minCore);
         const block = round2(0.8 * minBlock);
         variants.push(trailerParams);
+        const typicalBurst = Math.max(...withTrailer.map(r => r.burstP90Ms)) / 1000;
+        const tight = Math.max(Math.ceil(Math.max(15, 1.5 * poll + 10)), Math.ceil(typicalBurst + poll));
+        if (tight < trailerParams.trailerBurstSec) {
+            variants.push({ ...trailerParams, trailerBurstSec: tight });
+        }
         variants.push({ ...trailerParams, trailerAfterSec: after });
         if (block > startVal) {
             variants.push({ ...trailerParams, trailerBlockVal: block });

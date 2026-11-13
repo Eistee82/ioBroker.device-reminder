@@ -6,7 +6,7 @@ import {
 	TRAILER_MAX_DEFAULT_SEC,
 	TrailerFilter,
 } from "../build/lib/detector/index.js";
-import { TRAILER_QUIET_END_MS } from "../build/lib/detector/trailer.js";
+import { TRAILER_BLOCK_SEC, TRAILER_QUIET_END_MS } from "../build/lib/detector/trailer.js";
 import { lcg, times } from "./helpers/programmes.js";
 
 const STEP = 10_000;
@@ -192,7 +192,8 @@ describe("anti-crease filter", () => {
 				[...values, 0].map((_, i) => i * STEP),
 				`seed ${seed}: every value once`,
 			);
-			// a replaced value is a phase >= endVal of at most trailerBurstSec, replaced by a quiet level
+			// a replaced value is a phase >= endVal of at most trailerBurstSec (TRAILER_BLOCK_SEC after the
+			// end), replaced by a quiet level
 			let k = 0;
 			while (k < values.length) {
 				if (forwarded[k][0] !== values[k]) {
@@ -201,7 +202,10 @@ describe("anti-crease filter", () => {
 						assert.ok(values[j] >= 15 && forwarded[j][0] < 15, `seed ${seed}: replaced ${j}`);
 						j++;
 					}
-					assert.ok((j - k - 1) * STEP <= FILTER.trailerBurstSec * 1000, `seed ${seed}: burst ${k}-${j}`);
+					assert.ok(
+						(j - k - 1) * STEP <= Math.max(FILTER.trailerBurstSec, TRAILER_BLOCK_SEC) * 1000,
+						`seed ${seed}: burst ${k}-${j}`,
+					);
 					k = j;
 				} else {
 					k++;
@@ -219,6 +223,22 @@ describe("anti-crease filter", () => {
 		);
 		assert.strictEqual(r.started.length, 2, JSON.stringify(r));
 		assert.ok(r.started[1] - restart <= FILTER.trailerBurstSec / 10 + 2, JSON.stringify(r));
+	});
+
+	it("starts no run in the anti-crease phase with drum moves longer than a burst", () => {
+		// 90 s drum moves after the end (longer than trailerBurstSec 45 s), then a new programme
+		const moves = [];
+		for (let k = 0; k < 4; k++) {
+			moves.push(...times(0.8, 30), ...times(400, 9));
+		}
+		const values = [...programme, ...times(0.8, 30), ...moves, ...times(0.8, 20), ...times(2000, 60)];
+		const restart = values.length - 60;
+		const r = run(
+			createDetector(settings({ endCount: 12, ...FILTER }), { abort: false, abortFixed: false }),
+			values,
+		);
+		assert.strictEqual(r.started.length, 2, JSON.stringify(r));
+		assert.ok(r.started[1] >= restart && r.started[1] - restart <= TRAILER_BLOCK_SEC / 10 + 2, JSON.stringify(r));
 	});
 
 	it("does not hold tumbling with short stops (minimum quiet time)", () => {

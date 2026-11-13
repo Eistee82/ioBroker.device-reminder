@@ -14,6 +14,8 @@ export class TrailerFilter {
     standby;
     bridgeMs;
     cap;
+    afterEndMs;
+    afterEndCap;
     quietSince = null;
     recentQuiet = [];
     phaseStart = null;
@@ -41,6 +43,8 @@ export class TrailerFilter {
         this.standby = s.standby;
         this.bridgeMs = 2 * poll * 1000;
         this.cap = Math.ceil(s.trailerBurstSec / poll) + 2;
+        this.afterEndMs = Math.max(this.burstMs, TRAILER_BLOCK_SEC * 1000);
+        this.afterEndCap = Math.ceil(this.afterEndMs / 1000 / poll) + 2;
     }
     get started() {
         return this.inner.started;
@@ -128,8 +132,9 @@ export class TrailerFilter {
     resolve(call) {
         this.trackQuiet(call);
         if (call.power >= this.endVal) {
-            if (call.now - this.holdStart > this.burstMs ||
-                this.queuedTicks >= this.cap ||
+            const afterEnd = this.trailerUntil !== null && !this.inner.started;
+            if (call.now - this.holdStart > (afterEnd ? this.afterEndMs : this.burstMs) ||
+                this.queuedTicks >= (afterEnd ? this.afterEndCap : this.cap) ||
                 this.queue.length >= QUEUE_HARD_CAP) {
                 const calls = [...this.queue, call];
                 this.queue = [];

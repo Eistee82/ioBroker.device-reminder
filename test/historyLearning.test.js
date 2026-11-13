@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
 import { DEFAULT_TYPES } from "../build/lib/config.js";
 import { analyzeHistory, pickMode } from "../build/lib/historyLearning.js";
 import { CHUNK_CAP, findHistoryInstance, loadHistorySeries, MAX_QUERIES } from "../build/lib/historySource.js";
@@ -302,6 +303,45 @@ describe("learning from the history", () => {
 
 	it("K: ignores short spikes as runs", async () => {
 		assert.strictEqual((await analyzeHistory(historyOf([wm, wm]), 10)).runs, 2);
+	});
+
+	describe("M: real washing machine with display after the end and a dense anti-crease phase", () => {
+		// recorded power (times shifted): after the last spin the drum moves for ~30 min, alternating with
+		// 6 W at every report, then 5 W (display) for ~25 min before the machine switches itself off; on
+		// two days a second programme was started during the display phase
+		const points = JSON.parse(
+			readFileSync(new URL("./fixtures/washerAntiCrease.json", import.meta.url), "utf8"),
+		).map(([t, val]) => ({ ts: START + t * 1000, val }));
+		// start of the anti-crease phase (end of the laundry), for the short programme its end
+		const laundryDone = [11_940, 109_100, 121_160, 222_410, 233_860, 336_870].map(t => START + t * 1000);
+		const learnedBefore = {
+			...DEFAULT_TYPES.find(t => t.id === "washing-machine"),
+			mode: "count",
+			startVal: 10.25,
+			endVal: 1,
+			standby: 0.1,
+			startCount: 2,
+			endCount: 158,
+			startDurationSec: 20,
+			endDurationSec: 1580,
+		};
+
+		for (const [label, opts] of [
+			["with the built-in type", { currentType: DEFAULT_TYPES.find(t => t.id === "washing-machine") }],
+			["relearned from a type learned before", { currentType: learnedBefore, keepCurrentLevel: false }],
+		]) {
+			it(`reports the end when the anti-crease phase starts (${label})`, async () => {
+				const s = await analyzeHistory(points, 10, opts);
+				assert.ok(!("error" in s), JSON.stringify(s));
+				assert.strictEqual(s.runs, 6, "the programmes started during the display phase are separate runs");
+				assert.strictEqual(s.trailer, "used");
+				assert.strictEqual(s.looDetected, 6);
+				assert.ok(s.thresholds.startVal > 6, `startVal ${s.thresholds.startVal} above display and electronics`);
+				const r = replay(points, s);
+				assert.deepStrictEqual([r.started, r.finished], [6, 6]);
+				delaysOf(r.finishedAt, laundryDone, 720);
+			});
+		}
 	});
 
 	it("L: 20 runs over 30 days are analysed within 3 s and yield regularly", async () => {

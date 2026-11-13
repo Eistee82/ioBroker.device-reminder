@@ -709,6 +709,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
                     unitFactor: meta.unitFactor,
                     minDelta: meta.minDelta,
                     currentType: type ? detectionSettingsOf(type) : undefined,
+                    keepCurrentLevel: type?.builtin === true,
                     yieldFn: () => new Promise(resolve => {
                         this.adapter.setTimeout(resolve, 0);
                     }),

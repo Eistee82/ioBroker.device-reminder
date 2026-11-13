@@ -910,6 +910,8 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 					unitFactor: meta.unitFactor,
 					minDelta: meta.minDelta,
 					currentType: type ? detectionSettingsOf(type) : undefined,
+					// only a built-in type stands for the wanted end (drying of a dishwasher)
+					keepCurrentLevel: type?.builtin === true,
 					yieldFn: () =>
 						new Promise<void>(resolve => {
 							this.adapter.setTimeout(resolve, 0);
