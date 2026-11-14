@@ -79,8 +79,8 @@ describe("run recorder", () => {
 		const rec = new RunRecorder(STEP, 1);
 		rec.sample(1, 0);
 		rec.onEvent("s", 0);
-		rec.event(900);
-		rec.event(0.2);
+		rec.event(900, 2_000);
+		rec.event(0.2, 6_000);
 		rec.sample(5, STEP);
 		const snap = rec.snapshot();
 		assert.deepStrictEqual(snap.cells.at(-1), { last: 5, min: 0.2, max: 900, valid: true });
@@ -90,7 +90,8 @@ describe("run recorder", () => {
 			rec.snapshot().cells.map(c => c.valid),
 			[true, true, false, true],
 		);
-		rec.event(Number.NaN);
+		rec.event(Number.NaN, 4 * STEP);
+		assert.deepStrictEqual(rec.snapshot().rep, [2_000, 6_000]);
 	});
 
 	it("resumes a pending capture after a short restart and closes an old one as truncated", () => {

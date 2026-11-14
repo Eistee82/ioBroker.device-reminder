@@ -156,9 +156,22 @@ export async function loadStore(io, deviceId, log) {
     }
     return best;
 }
+export function toDiffs(times) {
+    return times.map((t, i) => (i === 0 ? t : t - times[i - 1]));
+}
+export function fromDiffs(diffs) {
+    if (!Array.isArray(diffs) || !diffs.every(d => typeof d === "number" && Number.isFinite(d))) {
+        return undefined;
+    }
+    const times = [];
+    for (const d of diffs) {
+        times.push(times.length === 0 ? d : times.at(-1) + d);
+    }
+    return times;
+}
 export function encodePending(c) {
     const q = quantOf(c.unitFactor);
-    return {
+    const out = {
         t0: c.t0,
         stepMs: c.stepMs,
         unitFactor: c.unitFactor,
@@ -167,6 +180,13 @@ export function encodePending(c) {
         q,
         data: encodeCells(c.cells, q),
     };
+    if (c.rep) {
+        out.rep = toDiffs(c.rep);
+    }
+    return out;
+}
+export function decodePendingForTest(raw) {
+    return decodePending(raw);
 }
 function decodePending(raw) {
     if (raw === null || raw === undefined) {
@@ -181,7 +201,7 @@ function decodePending(raw) {
         !Array.isArray(c.ev)) {
         throw new Error("unknown format");
     }
-    return {
+    const out = {
         t0: c.t0,
         stepMs: c.stepMs,
         unitFactor: c.unitFactor,
@@ -189,6 +209,11 @@ function decodePending(raw) {
         postTruncated: c.postTruncated === true,
         cells: decodeCells(c.data, c.q),
     };
+    const rep = fromDiffs(c.rep);
+    if (rep) {
+        out.rep = rep;
+    }
+    return out;
 }
 export function serializeStore(store) {
     return JSON.stringify(store.pending ? { ...store, pending: encodePending(store.pending) } : store);
@@ -441,6 +466,11 @@ export function addRun(store, run) {
 }
 export function fitSize(store) {
     const evicted = [];
+    if (store.pending?.rep && JSON.stringify(encodePending(store.pending)).length > MAX_PENDING_BYTES) {
+        const lighter = { ...store.pending };
+        delete lighter.rep;
+        store.pending = lighter;
+    }
     if (store.pending && JSON.stringify(encodePending(store.pending)).length > MAX_PENDING_BYTES) {
         store.pending = null;
     }

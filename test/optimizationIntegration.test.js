@@ -80,6 +80,15 @@ describe("automatic optimisation in the registry", function () {
 		assert.strictEqual(plain.reg.learningData("dev").runs.length, 0);
 	});
 
+	it("records a run whose start the values miss (capture without a start event)", async () => {
+		const ctx = await setup({ detection: { ...WASHER, startVal: 5000 } });
+		await play(ctx, [...new Array(200).fill(0.5), ...new Array(180).fill(500), ...new Array(250).fill(0.5)]);
+		const store = ctx.reg.learningData("dev");
+		assert.strictEqual(store.runs.length, 1, "the run is stored");
+		assert.deepStrictEqual(store.runs[0].ev, [], "without a start of the runtime");
+		assert.strictEqual(store.pending, null);
+	});
+
 	it("does not read the history while the optimisation is off", async () => {
 		const history = historyEnv([]);
 		const ctx = await setup({ history, autoOptimize: false });

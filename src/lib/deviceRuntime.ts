@@ -211,7 +211,7 @@ export class DeviceRuntime {
 		}
 		this.power = parsed;
 		this.missingPower = false;
-		this.recorder?.event(parsed);
+		this.recorder?.event(parsed, this.host.now());
 		if (this.detectorMode !== "timed" || !this.detector.feed) {
 			return;
 		}

@@ -389,11 +389,38 @@ export async function loadStore(
 }
 
 /** Capture of a run in progress as stored in the file (cells encoded like a stored run). */
-interface StoredCapture extends Omit<Capture, "cells"> {
+interface StoredCapture extends Omit<Capture, "cells" | "rep"> {
 	/** Quantisation factor. */
 	q: number;
 	/** Encoded cells. */
 	data: string;
+	/** Report times as differences (the first one to `t0`). */
+	rep?: number[];
+}
+
+/**
+ * Times as differences to the time before (the first one as is).
+ *
+ * @param times - Times (ascending)
+ */
+export function toDiffs(times: readonly number[]): number[] {
+	return times.map((t, i) => (i === 0 ? t : t - times[i - 1]));
+}
+
+/**
+ * Times from differences written by `toDiffs`, or undefined if the value is not a list of numbers.
+ *
+ * @param diffs - Value read from the file
+ */
+export function fromDiffs(diffs: unknown): number[] | undefined {
+	if (!Array.isArray(diffs) || !diffs.every(d => typeof d === "number" && Number.isFinite(d))) {
+		return undefined;
+	}
+	const times: number[] = [];
+	for (const d of diffs as number[]) {
+		times.push(times.length === 0 ? d : (times.at(-1) as number) + d);
+	}
+	return times;
 }
 
 /**
@@ -403,7 +430,7 @@ interface StoredCapture extends Omit<Capture, "cells"> {
  */
 export function encodePending(c: Capture): StoredCapture {
 	const q = quantOf(c.unitFactor);
-	return {
+	const out: StoredCapture = {
 		t0: c.t0,
 		stepMs: c.stepMs,
 		unitFactor: c.unitFactor,
@@ -412,6 +439,19 @@ export function encodePending(c: Capture): StoredCapture {
 		q,
 		data: encodeCells(c.cells, q),
 	};
+	if (c.rep) {
+		out.rep = toDiffs(c.rep);
+	}
+	return out;
+}
+
+/**
+ * `decodePending` for tests.
+ *
+ * @param raw - Value of `pending` in the file
+ */
+export function decodePendingForTest(raw: unknown): Capture | null {
+	return decodePending(raw);
 }
 
 /**
@@ -434,7 +474,7 @@ function decodePending(raw: unknown): Capture | null {
 	) {
 		throw new Error("unknown format");
 	}
-	return {
+	const out: Capture = {
 		t0: c.t0,
 		stepMs: c.stepMs,
 		unitFactor: c.unitFactor,
@@ -442,6 +482,11 @@ function decodePending(raw: unknown): Capture | null {
 		postTruncated: c.postTruncated === true,
 		cells: decodeCells(c.data, c.q),
 	};
+	const rep = fromDiffs(c.rep);
+	if (rep) {
+		out.rep = rep;
+	}
+	return out;
 }
 
 /**
@@ -830,6 +875,12 @@ export function addRun(store: StoreFile, run: StoredRun): string[] {
  */
 export function fitSize(store: StoreFile): string[] {
 	const evicted: string[] = [];
+	if (store.pending?.rep && JSON.stringify(encodePending(store.pending)).length > MAX_PENDING_BYTES) {
+		// the report times go first: the run itself is worth more than its report statistics
+		const lighter: Capture = { ...store.pending };
+		delete lighter.rep;
+		store.pending = lighter;
+	}
 	if (store.pending && JSON.stringify(encodePending(store.pending)).length > MAX_PENDING_BYTES) {
 		// too large to persist: a restart before the capture closes loses this run
 		store.pending = null;

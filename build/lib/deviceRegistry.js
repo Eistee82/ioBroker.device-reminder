@@ -180,6 +180,7 @@ export class DeviceRegistry {
                 continue;
             }
             try {
+                entry.opt?.recorder.setActivityLimit(entry.runtime.effective.endVal);
                 await entry.runtime.tick();
                 if (entry.opt) {
                     const cap = entry.opt.recorder.closeIfDue(this.host.now(), entry.runtime.effective.endVal);

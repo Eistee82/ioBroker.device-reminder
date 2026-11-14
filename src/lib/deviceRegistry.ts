@@ -284,6 +284,8 @@ export class DeviceRegistry implements RuntimeListener {
 				continue;
 			}
 			try {
+				// a start the runtime misses is still recorded (activity above the end threshold)
+				entry.opt?.recorder.setActivityLimit(entry.runtime.effective.endVal);
 				await entry.runtime.tick();
 				if (entry.opt) {
 					const cap = entry.opt.recorder.closeIfDue(this.host.now(), entry.runtime.effective.endVal);
