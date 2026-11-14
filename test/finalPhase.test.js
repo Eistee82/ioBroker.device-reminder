@@ -377,6 +377,29 @@ describe("final phase filter (Spec A.3)", function () {
 			// count mode: there is no feed of the inner detector, nothing is passed on
 			assert.deepStrictEqual(det.feed(500, t).events, []);
 		});
+		it("a gap longer than the cap in the lock counts only the cap; the maximum duration keeps the clock", () => {
+			const lockOf = extra => {
+				const det = createDetector(
+					{ ...WM_312, ...WM_FINAL, ...extra },
+					{ abort: false, abortFixed: false, pollSec: 10 },
+				);
+				pre.forEach((v, i) => det.tick(v, i * 10_000));
+				assert.strictEqual(det.tick(0.8, pre.length * 10_000).events.at(-1), "finished");
+				return { det, t: pre.length * 10_000 };
+			};
+			// cap = max(2 × poll, 60 s) = 60 s: a 10 min gap is 60 s of rest, the rest proof of 120 s needs two
+			const rest = lockOf({ finalRestSec: 120 });
+			rest.det.tick(0.8, rest.t + 600_000);
+			assert.strictEqual(rest.det.settling, true, "60 s counted of the 10 min gap");
+			rest.det.tick(0.8, rest.t + 1_200_000);
+			assert.strictEqual(rest.det.settling, false);
+			assert.strictEqual(rest.det.stats.b, 1);
+			// the maximum duration counts the time since the early end, not the capped counters
+			const max = lockOf({ finalRestSec: 14_400, finalActVal: 0, finalActShare: 0 });
+			max.det.tick(0.8, max.t + 2_700_000);
+			assert.strictEqual(max.det.settling, false);
+			assert.strictEqual(max.det.stats.e, 1);
+		});
 	});
 	it("abort before the early end is passed on; in the lock it is swallowed", () => {
 		const { values, coreEnd } = syntheticRun();
