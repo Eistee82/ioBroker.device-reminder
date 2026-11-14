@@ -1000,7 +1000,8 @@ function pauseLevels(
  * SPLIT_GAP_MIN_MS (as `splitGrown` of the history only if the pauses inside the runs are clearly below or above
  * that level; otherwise a long pause inside a programme would split it and the split run would be hidden), and in
  * addition at every start with the mark `afterFinal` (there at the rest, otherwise right after the early end, so
- * that the part after it holds the time between the parts). Events and report times go to the part of their time.
+ * that the part after it holds the time between the parts). Each part after a cut begins with the start of the cut and
+ * keeps the events up to the next one; report times go to the part of their time.
  * Without a split point the capture is the only part.
  *
  * @param c - Closed capture
@@ -1026,8 +1027,10 @@ export function splitCapture(c: Capture): CapturePart[] {
 	const atRest = (k: number): boolean => (below || above) && Number.isFinite(w[k]) && w[k] >= lo && w[k] <= hi;
 
 	const cuts: number[] = [];
+	// index into c.ev of the start that begins the part after each cut
+	const firstEv: number[] = [];
 	let lastEnd: CaptureEntry | null = null;
-	for (const e of c.ev) {
+	for (const [j, e] of c.ev.entries()) {
 		if (e[1] !== "s") {
 			lastEnd = e;
 			continue;
@@ -1062,12 +1065,14 @@ export function splitCapture(c: Capture): CapturePart[] {
 		}
 		if (cut !== null && cut > (cuts.at(-1) ?? 0) && cut < n) {
 			cuts.push(cut);
+			firstEv.push(j);
 		}
 	}
 	if (cuts.length === 0) {
 		return whole;
 	}
 	const bounds = [0, ...cuts, n];
+	const evBounds = [0, ...firstEv, c.ev.length];
 	const parts: CapturePart[] = [];
 	for (let p = 0; p + 1 < bounds.length; p++) {
 		const from = bounds[p];
@@ -1075,8 +1080,8 @@ export function splitCapture(c: Capture): CapturePart[] {
 		const first = p === 0;
 		const last = p + 2 === bounds.length;
 		const t0 = c.t0 + from * step;
-		const tEnd = c.t0 + to * step;
-		const ev = c.ev.filter(e => (first || e[0] >= t0) && (last || e[0] < tEnd));
+		// by order, not by time: a start dated back to the early end has the time of that end
+		const ev = c.ev.slice(evBounds[p], evBounds[p + 1]);
 		const capture: Capture = {
 			t0,
 			stepMs: step,

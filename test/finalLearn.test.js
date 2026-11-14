@@ -244,6 +244,19 @@ describe("learn the final phase (Spec B.6)", function () {
 		// without comparison data: a real restart after unloading (rest between the parts) is no split
 		assert.strictEqual(checkFinalSplit(real[0].prev, real[0].next, [], null, wm.c.values.finalRestVal), false);
 	});
+	it("finalSplit without comparison data: a pause longer than every rest of the early part is no split (known limit)", () => {
+		const clean = learnInput(W);
+		const others = clean.runs.map(x => x.sample);
+		const [p] = splitPairs(soaking(W, 8), wm.c.values);
+		const rest = wm.c.values.finalRestVal;
+		// the 45 min soaking pause looks like unloading as long as only the rest counts (exit b proves at least 60 s)
+		assert.strictEqual(p.next.afterFinal, "b");
+		assert.strictEqual(checkFinalSplit(p.prev, p.next, [], null, rest), false);
+		assert.strictEqual(checkFinalSplit(p.prev, p.next, others.slice(0, 2), clean.bands, rest), false, "2 runs");
+		assert.strictEqual(checkFinalSplit(p.prev, p.next, others, null, rest), false, "no bands");
+		// from 3 clean runs with bands the missing start sequence finds it
+		assert.strictEqual(checkFinalSplit(p.prev, p.next, others.slice(0, 3), clean.bands, rest), true);
+	});
 	it("too small Y on washer30d: all 11 rests are judged finalSplit (acceptance [S7])", () => {
 		// 11 layout runs (w01–w12 without the short w04) plus w13 at the data end, a whole programme for the detector
 		const inp = learnInput(W);

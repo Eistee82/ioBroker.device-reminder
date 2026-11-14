@@ -468,8 +468,9 @@ export function splitCapture(c) {
     const hi = 1.25 * idle + 0.1;
     const atRest = (k) => (below || above) && Number.isFinite(w[k]) && w[k] >= lo && w[k] <= hi;
     const cuts = [];
+    const firstEv = [];
     let lastEnd = null;
-    for (const e of c.ev) {
+    for (const [j, e] of c.ev.entries()) {
         if (e[1] !== "s") {
             lastEnd = e;
             continue;
@@ -505,12 +506,14 @@ export function splitCapture(c) {
         }
         if (cut !== null && cut > (cuts.at(-1) ?? 0) && cut < n) {
             cuts.push(cut);
+            firstEv.push(j);
         }
     }
     if (cuts.length === 0) {
         return whole;
     }
     const bounds = [0, ...cuts, n];
+    const evBounds = [0, ...firstEv, c.ev.length];
     const parts = [];
     for (let p = 0; p + 1 < bounds.length; p++) {
         const from = bounds[p];
@@ -518,8 +521,7 @@ export function splitCapture(c) {
         const first = p === 0;
         const last = p + 2 === bounds.length;
         const t0 = c.t0 + from * step;
-        const tEnd = c.t0 + to * step;
-        const ev = c.ev.filter(e => (first || e[0] >= t0) && (last || e[0] < tEnd));
+        const ev = c.ev.slice(evBounds[p], evBounds[p + 1]);
         const capture = {
             t0,
             stepMs: step,

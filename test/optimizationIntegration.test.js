@@ -497,6 +497,22 @@ describe("judging afterwards (Spec A.3)", function () {
 			["on", 150, "finalResume"],
 		);
 	});
+	it("switching the final phase off and on keeps the stored suspension; cleared meanwhile, it is used again", async () => {
+		const detection = { ...FIN, finalMinSec: 30 };
+		const ctx = await registrySetup({ autoOptimize: false, detection });
+		await feedPoints(ctx, washerWindow(ctx, beforeRun1()));
+		assert.strictEqual(ctx.reg.learningData("dev").final.state, "suspended");
+		await ctx.reg.upsert("dev", { ...ctx.cfg, detection: WASHER });
+		assert.strictEqual(ctx.reg.learningData("dev"), null, "no learning data without final phase");
+		await ctx.reg.upsert("dev", { ...ctx.cfg, detection });
+		assert.strictEqual(ctx.reg.learningData("dev").final.state, "suspended", "only the user resumes it");
+		assert.strictEqual(ctx.reg.get("dev").active.finalMinVal, 0);
+		await ctx.reg.upsert("dev", { ...ctx.cfg, detection: WASHER });
+		await ctx.reg.deleteLearningData("dev");
+		await ctx.reg.upsert("dev", { ...ctx.cfg, detection });
+		assert.notStrictEqual(ctx.reg.learningData("dev").final?.state, "suspended");
+		assert.strictEqual(ctx.reg.get("dev").active.finalMinVal, 150, "no mask left from before");
+	});
 	it("two real runs 15 min apart in one capture → two stored runs, no change (review/cap.mjs)", async () => {
 		const ctx = await registrySetup({ detection: { ...WASHER, trailerBurstSec: 0 } });
 		const a = runOf({ device: "washer", programme: "cotton60", shape: "T3", seed: 1, after: 90 }).values;

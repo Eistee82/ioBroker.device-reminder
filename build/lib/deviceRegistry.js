@@ -512,6 +512,7 @@ export class DeviceRegistry {
             if (entry.opt) {
                 entry.runtime.attachRecorder(null);
                 entry.runtime.setOverride(null);
+                entry.runtime.setFinalSuspended(false);
                 entry.opt = null;
                 await this.host.setOwnState(`${deviceId}.learning.optimized`, false);
                 await this.host.setOwnState(`${deviceId}.learning.optimizeInfo`, JSON.stringify({ status: "off" }));

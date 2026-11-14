@@ -26,6 +26,7 @@ import {
 	saveStore,
 	setDecision,
 	sizeOf,
+	splitCapture,
 	storeSamples,
 	typeHash,
 	upgradeStore,
@@ -105,6 +106,38 @@ describe("run store", () => {
 		}
 		assert.throws(() => decodeCells("{}", 100));
 		assert.throws(() => decodeCells("[[0, 1]]", 100));
+	});
+
+	it("splitCapture: a start dated back to the early end begins the part after the cut", () => {
+		// the rest of the programme follows the early end at once: its start gets the time of that end
+		const a = runOf({ device: "washer", programme: "cotton60", seed: 1 });
+		const b = runOf({ device: "washer", programme: "cotton60", seed: 2 });
+		const early = a.coreEnd + 30;
+		const values = [...a.values.slice(0, early + 1), ...b.values.slice(b.start)];
+		const last = early + 1 + b.coreEnd - b.start + 30;
+		const c = captureOf({ values }, 0, [
+			[a.start + 2, "s"],
+			[early, "f"],
+			[early, "s"],
+			[last, "f"],
+		]);
+		c.ev[2] = [c.ev[2][0], "s", "f"];
+		const parts = splitCapture(c);
+		assert.deepStrictEqual(
+			parts.map(x => x.ev.map(e => e.join(":"))),
+			[
+				[`${(a.start + 2) * STEP}:s`, `${early * STEP}:f`],
+				[`${early * STEP}:s:f`, `${last * STEP}:f`],
+			],
+		);
+		const res = parts.map(x => labelCapture(x.capture, 15, "live", { followed: x.followed }));
+		assert.deepStrictEqual(
+			res.map(x => [x.label, x.run?.afterFinal]),
+			[
+				["run", undefined],
+				["run", "f"],
+			],
+		);
 	});
 
 	it("labels a run, a false start and a split run", () => {

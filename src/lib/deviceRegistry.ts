@@ -810,6 +810,9 @@ export class DeviceRegistry implements RuntimeListener {
 			if (entry.opt) {
 				entry.runtime.attachRecorder(null);
 				entry.runtime.setOverride(null);
+				// the suspension belongs to the learning data: they are read again when the final phase comes back
+				// (also cleared meanwhile), a mask kept here would outlive them
+				entry.runtime.setFinalSuspended(false);
 				entry.opt = null;
 				await this.host.setOwnState(`${deviceId}.learning.optimized`, false);
 				await this.host.setOwnState(`${deviceId}.learning.optimizeInfo`, JSON.stringify({ status: "off" }));
