@@ -47,4 +47,21 @@ describe("runActions", () => {
 		assert.strictEqual(host.warns.length, 1);
 		assert.deepStrictEqual(host.writes, [{ id: "lamp.on", val: false }]);
 	});
+
+	it("runActions filters phase events by phaseId", async () => {
+		const host = makeHost({ "x.0.a": "string", "x.0.b": "string" });
+		await runActions(
+			host,
+			[
+				{ event: "phaseEnd", stateId: "x.0.a", value: "1", phaseId: "p2" },
+				{ event: "phaseEnd", stateId: "x.0.b", value: "2" },
+			],
+			"phaseEnd",
+			"p3",
+		);
+		assert.deepStrictEqual(
+			host.writes.map(w => w.id),
+			["x.0.b"],
+		);
+	});
 });

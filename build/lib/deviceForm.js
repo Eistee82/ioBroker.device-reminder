@@ -9,6 +9,8 @@ const ACTION_EVENT_KEYS = {
     end: "dev_eventEnd",
     reminder: "dev_eventReminder",
     acknowledged: "dev_eventAcknowledged",
+    phaseStart: "dev_eventPhaseStart",
+    phaseEnd: "dev_eventPhaseEnd",
 };
 const ACTION_EVENTS = Object.keys(ACTION_EVENT_KEYS);
 const DETECTION_MODES = ["count", "timed", "combined"];
@@ -280,8 +282,9 @@ export function buildDeviceSchema(cfg, detection, enums, unit = "W", copyHint = 
                         default: "end",
                         width: "20%",
                     },
-                    { type: "objectId", attr: "stateId", title: I18n.translate("dev_actionState"), width: "55%" },
-                    { type: "text", attr: "value", title: I18n.translate("dev_actionValue"), width: "25%" },
+                    { type: "objectId", attr: "stateId", title: I18n.translate("dev_actionState"), width: "40%" },
+                    { type: "text", attr: "value", title: I18n.translate("dev_actionValue"), width: "20%" },
+                    { type: "text", attr: "phaseId", title: I18n.translate("dev_actionPhaseId"), width: "20%" },
                 ],
             },
         },
@@ -562,7 +565,8 @@ export function formToDeviceConfig(f, o) {
             errors.push(`Action ${i + 1} needs an event and a state.`);
             return;
         }
-        actions.push({ event, stateId, value });
+        const phaseId = event === "phaseStart" || event === "phaseEnd" ? toText(row.phaseId).trim() : "";
+        actions.push({ event, stateId, value, ...(phaseId !== "" ? { phaseId } : {}) });
     });
     if (errors.length > 0 || !detection) {
         return { config: null, errors, warnings };

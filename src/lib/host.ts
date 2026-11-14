@@ -22,8 +22,18 @@ export interface DeviceHost {
 	log: Pick<ioBroker.Logger, "debug" | "info" | "warn" | "error">;
 }
 
+/** Start or end of a phase (only with phases on). */
+export interface PhaseEvent {
+	/** Kind of the event. */
+	kind: "phase";
+	/** Phase id (phase of the model, band or system phase). */
+	id: string;
+	/** Start or end. */
+	edge: "start" | "end";
+}
+
 /** Lifecycle events of a running device. */
-export type RuntimeEvent = "start" | "end" | "abort";
+export type RuntimeEvent = "start" | "end" | "abort" | PhaseEvent;
 
 /** Receives finished message texts of a device. */
 export interface MessageSink {

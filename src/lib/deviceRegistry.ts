@@ -402,6 +402,7 @@ export class DeviceRegistry implements RuntimeListener {
 					entry.opt.recorder.setActivityLimit(Math.max(entry.runtime.effective.endVal, runLevel));
 					store.lastSeenTs = this.host.now();
 				}
+				entry.runtime.setHoldBands(entry.opt?.store.bands ?? null);
 				await entry.runtime.tick();
 				if (entry.opt) {
 					const cap = entry.opt.recorder.closeIfDue(this.host.now(), entry.runtime.effective.endVal);
@@ -494,6 +495,10 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		const cfg = entry.runtime.config;
+		if (typeof ev === "object") {
+			void runActions(this.host, cfg.actions, ev.edge === "start" ? "phaseStart" : "phaseEnd", ev.id);
+			return;
+		}
 		switch (ev) {
 			case "start":
 				entry.reminder.onStarted();

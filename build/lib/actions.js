@@ -1,7 +1,10 @@
 import { coerceToType, errorMessage } from "./utils.js";
-export async function runActions(host, actions, event) {
+export async function runActions(host, actions, event, phaseId) {
     for (const action of actions) {
         if (action.event !== event || !action.stateId) {
+            continue;
+        }
+        if (phaseId !== undefined && action.phaseId && action.phaseId !== phaseId) {
             continue;
         }
         try {

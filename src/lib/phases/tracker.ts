@@ -1,4 +1,4 @@
-import type { HoldProfile } from "../learn/bands.js";
+import type { BaseBands, HoldProfile } from "../learn/bands.js";
 import { DEFAULT_PHASE_NAMES, SYSTEM_PHASES } from "./model.js";
 import type { BandDef, PhaseDef, PhaseModel, PhaseTrigger } from "./model.js";
 
@@ -55,6 +55,51 @@ export type PhaseEdge = {
 export interface TrackerOptions {
 	/** Closed segments to keep (default 1000; `Infinity` for an offline replay). */
 	maxSegments?: number;
+}
+
+/**
+ * Suspect limits in ms per band.
+ *
+ * @param bands - Bands of the model
+ * @param holds - Hold time profile by band id, or null
+ */
+function suspectOf(bands: readonly BandDef[], holds: HoldProfile[] | null): number[] {
+	return bands.map(b => {
+		const h = holds?.find(x => x.band === b.id);
+		return h && h.suspectSec > 0 ? h.suspectSec * 1000 : Infinity;
+	});
+}
+
+/**
+ * Hold time profile of the bands of a phase model, taken from the base bands of the learning data: for each
+ * phase band the largest suspect limit of the base bands it overlaps (a limit that is too large only shows fewer
+ * values as "unknown", never a wrong one).
+ *
+ * @param model - Phase model
+ * @param base - Base bands and hold time profile of the device, or null
+ * @returns Profile by phase band id, or null without data
+ */
+export function phaseHolds(model: PhaseModel, base: BaseBands | null): HoldProfile[] | null {
+	if (!base || base.holds.length === 0) {
+		return null;
+	}
+	const out: HoldProfile[] = [];
+	for (const b of model.bands) {
+		let best: HoldProfile | null = null;
+		for (const own of base.bands) {
+			if (own.max <= b.min || own.min >= b.max) {
+				continue;
+			}
+			const h = base.holds.find(x => x.band === own.id);
+			if (h && (!best || h.suspectSec > best.suspectSec)) {
+				best = h;
+			}
+		}
+		if (best) {
+			out.push({ ...best, band: b.id });
+		}
+	}
+	return out.length > 0 ? out : null;
 }
 
 /** A segment of the band reading (before the classes). */
@@ -115,7 +160,7 @@ export class PhaseTracker {
 	private readonly bands: BandDef[];
 	private readonly classes: PhaseDef[][];
 	private readonly triggers: PhaseDef[][];
-	private readonly suspectMs: number[];
+	private suspectMs: number[];
 	private readonly levelIdx: number[];
 	private readonly windowMs: number;
 	private readonly dtCapMs: number;
@@ -169,16 +214,22 @@ export class PhaseTracker {
 		this.bands = model.bands;
 		this.classes = this.bands.map(b => model.phases.filter(p => p.band === b.id && !p.trigger));
 		this.triggers = this.bands.map(b => model.phases.filter(p => p.band === b.id && p.trigger));
-		this.suspectMs = this.bands.map(b => {
-			const h = holds?.find(x => x.band === b.id);
-			return h && h.suspectSec > 0 ? h.suspectSec * 1000 : Infinity;
-		});
+		this.suspectMs = suspectOf(this.bands, holds);
 		this.levelIdx = this.bands.flatMap((b, k) => (b.smoothing === "level" ? [k] : []));
 		this.windowMs = Math.max(0, ...this.levelIdx.map(k => this.bands[k].windowSec * 1000));
 		this.dtCapMs = Math.max(2 * Math.max(1, pollSec), 60) * 1000;
 		this.names = { ...DEFAULT_PHASE_NAMES, ...(names ?? {}) };
 		this.maxSegments = opts.maxSegments ?? MAX_SEGMENTS;
 		this.continuous = model.scope === "continuous";
+	}
+
+	/**
+	 * Use a new hold time profile (the suspect limits of the bands); nothing else changes.
+	 *
+	 * @param holds - Hold time profile of the bands (by band id); null = no suspect limit
+	 */
+	public setHolds(holds: HoldProfile[] | null): void {
+		this.suspectMs = suspectOf(this.bands, holds);
 	}
 
 	/**

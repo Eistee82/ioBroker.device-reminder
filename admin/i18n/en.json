@@ -270,5 +270,8 @@
 	"phase_afterRun": "After the run",
 	"phase_rest": "Rest",
 	"phase_unknown": "Unknown",
-	"phase_neutral": "Level {n} · ≈ {w} W · {min}–{max} min"
+	"phase_neutral": "Level {n} · ≈ {w} W · {min}–{max} min",
+	"dev_eventPhaseStart": "Phase start",
+	"dev_eventPhaseEnd": "Phase end",
+	"dev_actionPhaseId": "Phase (id, empty = every phase)"
 }

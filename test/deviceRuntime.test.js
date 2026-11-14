@@ -4,10 +4,12 @@ import { washingMachine } from "./helpers/curves.js";
 import { saveStore } from "../build/lib/runStore.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { syntheticRun, WM_FINAL } from "./helpers/final.js";
-import { layoutOf, loadSeries } from "./helpers/fixtures.js";
+import { layoutOf, layoutRun, loadSeries } from "./helpers/fixtures.js";
+import { BOILER_PHASES, WM_PHASES } from "./helpers/phases.js";
 import {
 	deviceConfig,
 	feed,
+	feedPoints,
 	P as POWER,
 	play,
 	playPoints,
@@ -619,5 +621,139 @@ describe("runtime with a final phase", function () {
 			pend.ev.some(e => e[1] === "s" && e[2] === "c"),
 			JSON.stringify(pend.ev),
 		);
+	});
+});
+
+describe("phase outputs", function () {
+	this.timeout(300_000);
+	const series = loadSeries("washer30d");
+	/** The values of run w08 with 3 min before and 20 min after (fixture format; the next run starts 50 min after). */
+	const w08 = () => {
+		const { info, s } = layoutRun("washer30d", "w08");
+		return series.filter(
+			p => p.ts >= s.t0 + (info.from - 180) * s.stepMs && p.ts <= s.t0 + (info.runEnd + 120) * s.stepMs,
+		);
+	};
+	/**
+	 * A fake host whose clock starts at the first value of w08 (the fixture is from 2023).
+	 *
+	 * @param {Record<string, string> | string[]} [objects] foreign objects
+	 */
+	const w08Host = (objects = [POWER, SWITCH]) => createFakeHost({ objects, now: w08()[0].ts });
+	const strip = ctx => ctx.host.ownWrites.filter(w => !/\.phase/.test(w.id)).map(w => [w.id, w.val]);
+
+	it("status, events and messages are identical with and without phases (G2)", async () => {
+		const a = runtimeSetup({ host: w08Host() });
+		const b = runtimeSetup({ host: w08Host(), cfg: { phases: WM_PHASES } });
+		for (const c of [a, b]) {
+			await c.rt.init();
+			await playPoints(c, w08());
+		}
+		assert.ok(a.events.length >= 2);
+		assert.deepStrictEqual(
+			b.events.filter(e => !e.includes(":phase:")),
+			a.events,
+		);
+		assert.deepStrictEqual(b.messages, a.messages);
+		assert.deepStrictEqual(strip(b), strip(a));
+	});
+	it("writes phase, phaseId, phaseSince and the timeline", async () => {
+		const ctx = runtimeSetup({ host: w08Host(), cfg: { phases: WM_PHASES } });
+		await ctx.rt.init();
+		await playPoints(ctx, w08());
+		assert.ok(ctx.host.ownHistory("washer.phase").includes("Endschleudern"));
+		assert.ok(ctx.host.ownHistory("washer.phaseId").includes("p4"));
+		assert.ok(ctx.host.ownHistory("washer.phaseSince").some(v => v > 0));
+		assert.ok(JSON.parse(ctx.host.own("washer.phases")).some(x => x.id === "p3"));
+		assert.ok(ctx.events.includes("washer:phase:p4:start"));
+		assert.ok(ctx.events.includes("washer:phase:p4:end"));
+	});
+	it("no phase states are written without phases", async () => {
+		const ctx = runtimeSetup({ host: w08Host() });
+		await ctx.rt.init();
+		await playPoints(ctx, w08());
+		assert.ok(!ctx.host.ownWrites.some(w => /\.phase/.test(w.id)));
+	});
+	it("phaseStart action filtered by phaseId; an empty phaseId means every phase", async () => {
+		const actions = [
+			{ event: "phaseStart", stateId: "x.0.a", value: "1", phaseId: "p4" },
+			{ event: "phaseStart", stateId: "x.0.b", value: "1" },
+		];
+		const host = w08Host({ [POWER]: "number", "x.0.a": "string", "x.0.b": "string" });
+		const ctx = await registrySetup({ host, autoOptimize: false, cfg: { phases: WM_PHASES, actions } });
+		await feedPoints(ctx, w08());
+		const a = ctx.host.writes.filter(w => w.id === "x.0.a").length;
+		const b = ctx.host.writes.filter(w => w.id === "x.0.b").length;
+		assert.strictEqual(a, 1);
+		assert.ok(b >= 3 && b > a, String(b));
+	});
+	it("a phase message is sent once per run and phase; continuous at most every 10 min", async () => {
+		const notifyP4 = {
+			...WM_PHASES,
+			phases: WM_PHASES.phases.map(p =>
+				p.id === "p4" ? { ...p, notify: { start: true, text: "Endschleudern" } } : p,
+			),
+		};
+		const ctx = runtimeSetup({ host: w08Host(), cfg: { phases: notifyP4 } });
+		await ctx.rt.init();
+		await playPoints(ctx, w08());
+		assert.strictEqual(ctx.messages.filter(m => m.text === "Endschleudern").length, 1);
+		const boiler = {
+			...BOILER_PHASES,
+			phases: BOILER_PHASES.phases.map(p =>
+				p.id === "q3" ? { ...p, notify: { start: true, text: "Brenner" } } : p,
+			),
+		};
+		const k = runtimeSetup({ cfg: { phases: boiler, startText: "", endText: "" } });
+		await k.rt.init();
+		const t0 = k.host.now();
+		const pts = [];
+		for (let m = 0; m < 30; m += 2) {
+			pts.push({ ts: t0 + m * 60_000, val: m % 4 === 0 ? 250 : 0 });
+		}
+		await playPoints(k, pts, 2000);
+		assert.strictEqual(k.messages.filter(m => m.text === "Brenner").length, 3, "minutes 0, 12, 24 of 0-28");
+	});
+	it("continuous over 24 h with more than 200 segments keeps exactly the 200 newest (Review Focus 5)", async () => {
+		const ctx = runtimeSetup({ cfg: { phases: BOILER_PHASES, startText: "", endText: "" } });
+		await ctx.rt.init();
+		const t0 = ctx.host.now();
+		const pts = Array.from({ length: 480 }, (_, i) => ({ ts: t0 + i * 180_000, val: i % 2 ? 0 : 250 }));
+		await playPoints(ctx, pts, 10_000);
+		const tl = JSON.parse(ctx.host.own("washer.phases"));
+		assert.strictEqual(tl.length, 200);
+		assert.ok(tl.every((x, i) => i === 0 || x.from >= tl[i - 1].from));
+		assert.ok(tl.at(-1).from >= t0 + 470 * 180_000);
+	});
+	it("system phase afterRun while settling", async () => {
+		const ctx = runtimeSetup({
+			host: w08Host(),
+			cfg: { phases: WM_PHASES, detection: { ...WASHER, ...WM_FINAL } },
+		});
+		await ctx.rt.init();
+		await playPoints(ctx, w08());
+		assert.ok(ctx.host.ownHistory("washer.phaseId").includes("afterRun"));
+	});
+	it("the timeline state is written on segment changes only", async () => {
+		const ctx = runtimeSetup({ host: w08Host(), cfg: { phases: WM_PHASES } });
+		await ctx.rt.init();
+		await playPoints(ctx, w08());
+		const writes = ctx.host.ownWrites.filter(w => w.id === "washer.phases").length;
+		const segments = JSON.parse(ctx.host.own("washer.phases")).length;
+		assert.ok(writes <= 2 * segments + 2, `${writes} writes for ${segments} segments`);
+	});
+	it("a changed phase model is applied between two runs only", async () => {
+		const ctx = runtimeSetup({ host: w08Host(), cfg: { phases: WM_PHASES } });
+		await ctx.rt.init();
+		const pts = w08();
+		const mid = pts.findIndex(p => p.ts >= pts[0].ts + 20 * 60_000);
+		await playPoints(ctx, pts.slice(0, mid));
+		assert.strictEqual(ctx.rt.isRunning, true);
+		const builds = ctx.rt.phaseRev;
+		ctx.rt.updateConfig(deviceConfig({ phases: { ...WM_PHASES, learnedAt: 1 } }));
+		assert.strictEqual(ctx.rt.phaseRev, builds, "not rebuilt during the run");
+		await playPoints(ctx, pts.slice(mid));
+		assert.ok(ctx.rt.phaseRev > builds, "rebuilt after the run");
+		assert.ok(ctx.events.includes("washer:end"));
 	});
 });

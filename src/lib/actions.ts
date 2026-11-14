@@ -8,10 +8,19 @@ import { coerceToType, errorMessage } from "./utils.js";
  * @param host - Adapter host
  * @param actions - Configured actions of the device
  * @param event - Event that occurred
+ * @param phaseId - Phase of a phase event: actions with another `phaseId` do not run (an empty one matches every phase)
  */
-export async function runActions(host: DeviceHost, actions: DeviceAction[], event: ActionEvent): Promise<void> {
+export async function runActions(
+	host: DeviceHost,
+	actions: DeviceAction[],
+	event: ActionEvent,
+	phaseId?: string,
+): Promise<void> {
 	for (const action of actions) {
 		if (action.event !== event || !action.stateId) {
+			continue;
+		}
+		if (phaseId !== undefined && action.phaseId && action.phaseId !== phaseId) {
 			continue;
 		}
 		try {

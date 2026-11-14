@@ -216,7 +216,8 @@ Actions set foreign states automatically. Add as many actions per device as you 
 
 | Field | Meaning |
 | --- | --- |
-| Event | `start`, `end`, `reminder` or `acknowledged` |
+| Event | `start`, `end`, `reminder`, `acknowledged`, `phaseStart` or `phaseEnd` (begin or end of a [phase](#phases)) |
+| Phase | Only with `phaseStart`/`phaseEnd`: id of the phase (e.g. `p4`); empty = every phase. The ids are in the state `phaseId` and in the timeline `phases` |
 | State | The foreign state to write |
 | Value | Value; converted to the type of the target state (boolean, number or string) |
 
@@ -365,6 +366,17 @@ For now you enter the values by hand; learning and automatic optimisation of the
 | `finalActVal` / `finalActShare` | activity level and share for exit f (0 = off) |
 | `finalCheckSec` | check window for the exits d and g (s; 0 = 30 min) |
 | `finalLockSec` | maximum duration of the lock phase (s; 0 = 4 h) |
+
+### Phases
+
+Phases show what a device is doing right now ("washing", "final spin", "burner with pump"). They are only active when a phase model is switched on for the device; otherwise the states `phase`, `phaseId`, `phaseSince` and `phases` do not exist (they are deleted) and everything else behaves as without phases. Phases never change the `status` and never cause a start or end event.
+
+- **Display:** `phase` (name), `phaseId` (id) and `phaseSince` (begin) are written only when the phase changes, never at every poll. `phases` is the timeline of the running or last run as JSON (`id`, `name`, `from`, `to`), at most the 200 newest segments; for a device without runs (for example a boiler) the last 24 hours. The running segment has the time of the last poll as `to`. The state `phases` is only written when a segment changes (a new phase, the end of a segment or a later classification).
+- **What only appears afterwards:** A phase that can only be told by its maximum duration (for example "intermediate spin") is decided at the end of its segment. Live the state shows the umbrella term of the band ("spin"); the timeline then holds the exact name. The same holds for an ignition (event phase) that is not confirmed. Nothing is ever guessed; if no phase fits, the umbrella term shows.
+- **System phases:** "Anti-crease" (`antiCrease`) while the anti-crease filter recognises the run-on, "After the run" (`afterRun`) in the lock phase of the final phase, "Rest" (`rest`) and "Unknown" (`unknown`, when the power state reports nothing for an unusually long time). Their names are in the language of the installation.
+- **Event:** Begin and end of every phase are events for [actions](#7-actions) (`phaseStart`, `phaseEnd`, filtered on a phase id if you like).
+- **Messages:** Only phases with a message switched on (begin and/or end, own text) send a message, to the recipients of the device with do not disturb like with start and end. A phase is reported at most once per run; for a device without runs at most every 10 minutes per phase. A phase that is only known at its end is reported "at end" only.
+- **Changing the phase model:** A changed model applies between two runs (and after the lock phase), never in the middle of a run.
 
 ### Automatic optimisation
 
@@ -556,6 +568,10 @@ Device states are relative to the device object `<deviceId>`. Info states are on
 | `learning.result` | string | json | r | - | Learning result | JSON: thresholds, startDurationSec, endDurationSec, durationSec, samples, pauseHoldSec, pauseUntilSec, pauseBelowVal, mode, runs, evaluation (from the history also looDetected, longestPauseSec, current, gapsDropped), with an anti-crease phase also trailerBurstSec, trailerGapSec, trailerAfterSec, trailerBlockVal, trailerMaxSec, trailer (none, used, notSeparable), trailerRuns, delays (end delay per run from the programme end, s) and falseStarts, or an error (tooFewSamples, noRun) |
 | `antiCrease` | boolean | indicator | r | - | Anti-crease active | True while the anti-crease phase after a run is recognised (anti-crease filter of the device) |
 | `settlingUntil` | number | date | r | - | Lock phase until | End of the running lock phase of the final phase (early finish + maximum duration), otherwise 0; a restart continues the lock phase until then. Only with the final phase on (values of the device or optimised values) |
+| `phase` | string | text | r | - | Current phase | Name of the phase the device is in (empty outside a run); only with phases on, written only when it changes |
+| `phaseId` | string | text | r | - | Current phase (ID) | Id of the phase (system phases `antiCrease`, `afterRun`, `rest`, `unknown`); only with phases on |
+| `phaseSince` | number | date | r | - | Current phase since | Begin of the current phase; only with phases on |
+| `phases` | string | json | r | - | Phase timeline | JSON array `{id, name, from, to}` of the running or last run (the last 24 hours for a device without runs), at most 200 entries; only with phases on |
 | `learning.optimized` | boolean | indicator | r | - | Optimised values active | True when the automatic optimisation uses values that differ from the detection values of the device |
 | `learning.parameters` | string | json | r | - | Detection parameters | JSON: base (base values of the device), override (optimised values), effective (effective values: base values with the optimised values), active (values of the detection: like effective, with `finalMinVal` 0 while the final phase is suspended) |
 | `learning.lastChange` | string | json | r | - | Last optimisation change | JSON of the last change of the automatic optimisation (kind, from, to, reason, runs, gainSec) |

@@ -84,7 +84,7 @@ export function runtimeSetup({ cfg = {}, inst = {}, hostOpts = {}, host, id = "w
 	};
 	const listener = {
 		onRuntimeEvent(deviceId, ev) {
-			events.push(`${deviceId}:${ev}`);
+			events.push(typeof ev === "string" ? `${deviceId}:${ev}` : `${deviceId}:${ev.kind}:${ev.id}:${ev.edge}`);
 		},
 	};
 	const rt = new DeviceRuntime(h, id, deviceConfig(cfg), instanceConfig(inst), sink, listener);

@@ -193,7 +193,7 @@ const MESSENGER_KINDS = [
     "pushsafer",
     "gotify",
 ];
-const ACTION_EVENTS = ["start", "end", "reminder", "acknowledged"];
+const ACTION_EVENTS = ["start", "end", "reminder", "acknowledged", "phaseStart", "phaseEnd"];
 const DETECTION_MODES = ["count", "timed", "combined"];
 const TELEGRAM_TARGETS = ["user", "chatId", "none"];
 export const DEFAULT_REMINDER = {
@@ -463,7 +463,8 @@ export function normalizeDeviceConfig(native, legacyTypes) {
                 warnings.push(`Action #${i + 1} of "${name}" ignored: missing event or state`);
                 return;
             }
-            actions.push({ event, stateId, value: str(raw.value) });
+            const phaseId = event === "phaseStart" || event === "phaseEnd" ? str(raw.phaseId).trim() : "";
+            actions.push({ event, stateId, value: str(raw.value), ...(phaseId !== "" ? { phaseId } : {}) });
         });
     }
     const recipients = Array.isArray(src.recipients)

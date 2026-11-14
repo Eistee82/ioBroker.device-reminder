@@ -340,7 +340,7 @@ export interface InstanceConfig {
 }
 
 /** Action event. */
-export type ActionEvent = "start" | "end" | "reminder" | "acknowledged";
+export type ActionEvent = "start" | "end" | "reminder" | "acknowledged" | "phaseStart" | "phaseEnd";
 
 /** Device action configuration. */
 export interface DeviceAction {
@@ -350,6 +350,8 @@ export interface DeviceAction {
 	stateId: string;
 	/** Value. */
 	value: string;
+	/** Phase events only: id of the phase the action belongs to (missing = every phase). */
+	phaseId?: string;
 }
 
 /** Reminder config configuration. */
@@ -428,7 +430,7 @@ const MESSENGER_KINDS: readonly MessengerKind[] = [
 	"pushsafer",
 	"gotify",
 ];
-const ACTION_EVENTS: readonly ActionEvent[] = ["start", "end", "reminder", "acknowledged"];
+const ACTION_EVENTS: readonly ActionEvent[] = ["start", "end", "reminder", "acknowledged", "phaseStart", "phaseEnd"];
 const DETECTION_MODES: readonly DetectionMode[] = ["count", "timed", "combined"];
 const TELEGRAM_TARGETS = ["user", "chatId", "none"] as const;
 
@@ -785,7 +787,8 @@ export function normalizeDeviceConfig(
 				warnings.push(`Action #${i + 1} of "${name}" ignored: missing event or state`);
 				return;
 			}
-			actions.push({ event, stateId, value: str(raw.value) });
+			const phaseId = event === "phaseStart" || event === "phaseEnd" ? str(raw.phaseId).trim() : "";
+			actions.push({ event, stateId, value: str(raw.value), ...(phaseId !== "" ? { phaseId } : {}) });
 		});
 	}
 

@@ -1,3 +1,4 @@
+import * as I18n from "@iobroker/adapter-core/i18n";
 import type { DeviceConfig, InstanceConfig } from "./config.js";
 import { createDetector, finalOn, finalValuesOf, TrailerFilter } from "./detector/index.js";
 import type {
@@ -10,6 +11,10 @@ import type {
 } from "./detector/types.js";
 import { renderHistoryHtml } from "./historyHtml.js";
 import type { DeviceHost, MessageSink, RuntimeEvent, RuntimeListener } from "./host.js";
+import type { BaseBands } from "./learn/bands.js";
+import { PHASE_NOTIFY_MIN_MS, PHASES_CONTINUOUS_MS, PHASES_MAX, systemPhaseNames } from "./phases/model.js";
+import { PhaseTracker, phaseHolds } from "./phases/tracker.js";
+import type { PhaseEdge } from "./phases/tracker.js";
 import type { CaptureEvent, RunRecorder } from "./runRecorder.js";
 import { detectionOf, typeHash } from "./runStore.js";
 import { errorMessage, formatDuration, formatTimestamp, parseNumber } from "./utils.js";
@@ -83,6 +88,20 @@ export class DeviceRuntime {
 	private finalSuspended = false;
 	private recorder: RunRecorder | null = null;
 	private antiCrease = false;
+	/** Phase tracker (phases on), or null. */
+	private tracker: PhaseTracker | null = null;
+	/** Number of tracker builds. */
+	private trackerBuilds = 0;
+	/** Rebuild the tracker as soon as no run and no lock phase is active. */
+	private trackerPending = false;
+	/** Base bands of the learning data (hold time profile for the phase tracker). */
+	private holdBands: BaseBands | null = null;
+	/** Phase shown in the states last written (null = nothing written since the tracker was built). */
+	private shownPhase: { id: string; name: string; since: number } | null = null;
+	/** Signature of the timeline last written (null = nothing written since the tracker was built). */
+	private timelineSig: string | null = null;
+	/** Phase messages sent: "<phase>:<edge>" to the time of the edge. */
+	private phaseNotified = new Map<string, number>();
 
 	/**
 	 * @param host - Adapter access
@@ -102,6 +121,7 @@ export class DeviceRuntime {
 	) {
 		this.cfg = cfg;
 		this.detector = this.buildDetector();
+		this.tracker = this.buildTracker();
 	}
 
 	/** Current device configuration. */
@@ -177,17 +197,54 @@ export class DeviceRuntime {
 		}
 	}
 
+	/**
+	 * Rebuild the phase tracker between two runs (and lock phases), otherwise afterwards: a rebuild in a run would
+	 * lose the phases of the run.
+	 */
+	private rebuildTracker(): void {
+		if (this.detector.started || this.detector.settling === true) {
+			this.trackerPending = true;
+		} else {
+			this.tracker = this.buildTracker();
+			this.trackerPending = false;
+		}
+	}
+
 	/** Pending rebuild, as soon as no run and no lock phase is in progress. */
 	private rebuildIfDue(): void {
 		if (this.rebuildPending && !this.detector.started && this.detector.settling !== true) {
 			this.detector = this.buildDetector();
 			this.rebuildPending = false;
 		}
+		if (this.trackerPending && !this.detector.started && this.detector.settling !== true) {
+			this.tracker = this.buildTracker();
+			this.trackerPending = false;
+		}
 	}
 
 	/** Whether the lock phase after an early end of the final phase is active. */
 	public get settling(): boolean {
 		return this.detector.settling === true;
+	}
+
+	/** Number of phase tracker builds (tests: a changed phase model is applied between two runs only). */
+	public get phaseRev(): number {
+		return this.trackerBuilds;
+	}
+
+	/**
+	 * Base bands of the learning data: their hold time profile gives the phase tracker the suspect limits.
+	 *
+	 * @param bands - Base bands or null
+	 */
+	public setHoldBands(bands: BaseBands | null): void {
+		if (bands === this.holdBands) {
+			return;
+		}
+		this.holdBands = bands;
+		if (this.tracker && this.cfg.phases) {
+			this.tracker.setHolds(phaseHolds(this.cfg.phases, bands));
+		}
 	}
 
 	/** Number of detector builds (tests: a change of the values rebuilds only between runs and lock phases). */
@@ -349,6 +406,7 @@ export class DeviceRuntime {
 		this.power = parsed;
 		this.missingPower = false;
 		this.recorder?.event(parsed, this.host.now());
+		this.tracker?.observe(parsed, this.host.now());
 		if (this.detectorMode !== "timed" || !this.detector.feed) {
 			return;
 		}
@@ -419,6 +477,7 @@ export class DeviceRuntime {
 			this.recorder?.sample(power, this.host.now());
 			await this.apply(this.detector.tick(power, this.host.now(), { switchOff: this.switchOn === false }), power);
 			await this.checkAutoOffWait(power);
+			await this.publishPhases();
 		});
 	}
 
@@ -468,9 +527,13 @@ export class DeviceRuntime {
 			next.abortFixed !== this.cfg.abortFixed ||
 			typeHash(next.detection) !== typeHash(this.cfg.detection);
 		const switchChanged = next.switchId !== this.cfg.switchId;
+		const phasesChanged = JSON.stringify(next.phases) !== JSON.stringify(this.cfg.phases);
 		this.cfg = next;
 		if (detectorChanged) {
 			this.rebuildDetector();
+		}
+		if (phasesChanged) {
+			this.rebuildTracker();
 		}
 		if (switchChanged) {
 			this.switchOn = null;
@@ -496,6 +559,86 @@ export class DeviceRuntime {
 			return;
 		}
 		await this.host.setOwnState(this.own(rel), val);
+	}
+
+	/** Build the phase tracker (null without enabled phases). */
+	private buildTracker(): PhaseTracker | null {
+		this.shownPhase = null;
+		this.timelineSig = null;
+		const model = this.cfg.phases;
+		if (!model?.enabled) {
+			return null;
+		}
+		this.trackerBuilds++;
+		const names = systemPhaseNames(key => {
+			try {
+				return I18n.translate(key);
+			} catch {
+				return key; // texts not loaded: the English names
+			}
+		});
+		return new PhaseTracker(model, phaseHolds(model, this.holdBands), this.inst.pollIntervalSec, names);
+	}
+
+	/**
+	 * Let the phase tracker run to now and write what changed: the phase shown (`phase`, `phaseId`, `phaseSince`) and
+	 * the timeline (`phases`) only when a segment changes, never per poll; then the phase events and messages.
+	 */
+	private async publishPhases(): Promise<void> {
+		const tr = this.tracker;
+		const model = this.cfg.phases;
+		if (!tr || !model || this.disposed) {
+			return;
+		}
+		const now = this.host.now();
+		tr.setContext({ inTrailer: this.antiCrease, settling: this.detector.settling === true });
+		const edges = tr.advance(now);
+		const cur = tr.current;
+		const id = cur.id ?? "";
+		const shown = this.shownPhase;
+		if (!shown || shown.id !== id || shown.name !== cur.name || shown.since !== cur.since) {
+			this.shownPhase = { id, name: cur.name, since: cur.since };
+			await this.setState("phase", cur.name);
+			await this.setState("phaseId", id);
+			await this.setState("phaseSince", cur.since);
+		}
+		let segs = tr.timeline();
+		if (model.scope === "continuous") {
+			segs = segs.filter(x => x.to >= now - PHASES_CONTINUOUS_MS);
+		}
+		segs = segs.slice(-PHASES_MAX);
+		// the open segment grows every poll: it counts without its end
+		const sig = segs.map(x => `${x.id}|${x.name}|${x.from}|${x.final ? x.to : ""}`).join(";");
+		if (sig !== (this.timelineSig ?? "")) {
+			const list = segs.map(x => ({ id: x.id, name: x.name, from: x.from, to: x.to }));
+			await this.setState("phases", JSON.stringify(list));
+		}
+		this.timelineSig = sig;
+		for (const edge of edges) {
+			this.emit({ kind: "phase", id: edge.id, edge: edge.edge });
+			await this.notifyPhase(edge);
+		}
+	}
+
+	/**
+	 * Message of a phase with `notify`: once per run and phase (scope run), at most every 10 min per phase (scope
+	 * continuous); do not disturb works like with the start and end messages.
+	 *
+	 * @param edge - Start or end of a phase
+	 */
+	private async notifyPhase(edge: PhaseEdge): Promise<void> {
+		const model = this.cfg.phases;
+		const def = model?.phases.find(p => p.id === edge.id);
+		if (!model || !def?.notify || !def.notify[edge.edge]) {
+			return;
+		}
+		const key = `${edge.id}:${edge.edge}`;
+		const last = this.phaseNotified.get(key);
+		if (last !== undefined && (model.scope === "run" || edge.at - last < PHASE_NOTIFY_MIN_MS)) {
+			return;
+		}
+		this.phaseNotified.set(key, edge.at);
+		await this.notify(def.notify.text?.trim() || def.name);
 	}
 
 	/**
@@ -684,6 +827,10 @@ export class DeviceRuntime {
 
 	private async onStarted(at: number): Promise<void> {
 		this.startedAt = at;
+		this.tracker?.onRun("start", at);
+		if (this.cfg.phases?.scope === "run") {
+			this.phaseNotified.clear();
+		}
 		this.record("s", at, this.detector.finalExit ?? null);
 		this.cancelAutoOff();
 		this.autoOffDeferred = false;
@@ -711,6 +858,7 @@ export class DeviceRuntime {
 	private async onFinished(at: number): Promise<void> {
 		const now = at;
 		this.record("f", at);
+		this.tracker?.onRun("end", at);
 		const runtime = formatDuration(Math.max(0, now - this.startedAt));
 		if (this.cfg.endText) {
 			await this.notify(this.cfg.endText);
@@ -737,6 +885,7 @@ export class DeviceRuntime {
 
 	private async onAborted(at: number): Promise<void> {
 		this.record("a", at);
+		this.tracker?.onRun("abort", at);
 		await this.setState("running", false);
 		await this.setState("alertRuntime", false);
 		await this.startAutoOff();

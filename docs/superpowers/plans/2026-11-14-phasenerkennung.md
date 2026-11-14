@@ -2786,7 +2786,7 @@ describe("learn phases (Spec B.5)", function () {
   - Meldungen nur für Phasen mit `notify`: je Lauf und Phase höchstens einmal; `continuous` höchstens alle `PHASE_NOTIFY_MIN_MS = 600_000` je Phase; Nicht-Stören wie Start-/Ende-Meldungen.
   - Tracker sieht in `onPower` jeden Rohwert vor der Modusprüfung, `advance` im `tick`, `onRun` aus `onStarted`/`onFinished`/`onAborted`, Kontext aus `inTrailer`/`settling`; Tracker-Neubau nur zwischen zwei Läufen.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```js
 // test/deviceRuntime.test.js
@@ -2887,9 +2887,11 @@ it("runActions filters phase events by phaseId", async () => {
 
 Imports: `runtimeSetup`, `playPoints`, `registrySetup`, `feedPoints`, `WASHER` aus `./helpers/devices.js`, `WM_FINAL` aus `./helpers/final.js`, `runActions` aus `../build/lib/actions.js`. Die Zahl 3 im Kessel-Meldetest folgt aus der Regel „höchstens alle 10 min“: Brennerstarts in den Minuten 0, 4, 8, … 28; gemeldet in 0, 12 (erste ≥ 10 min nach 0) und 24.
 
-- [ ] **Step 2:** FAIL. **Step 3:** implementieren; Doku §7 (Aktionen) und §13 (States) de/en, neues Kapitel „Phasen“ (Anzeige, Systemphasen, was nur rückwirkend erscheint). **Step 4:** `npm test` → PASS.
-- [ ] **Doku/Changelog:** Changelog-Zeile 34 um Phasen ergänzen.
-- [ ] **Step 5: Commit** `feat: current phase as states, events, actions and optional messages`
+- [x] **Step 2:** FAIL. **Step 3:** implementieren; Doku §7 (Aktionen) und §13 (States) de/en, neues Kapitel „Phasen“ (Anzeige, Systemphasen, was nur rückwirkend erscheint). **Step 4:** `npm test` → PASS.
+- [x] **Doku/Changelog:** Changelog-Zeile 34 um Phasen ergänzen.
+- [x] **Step 5: Commit** `feat: current phase as states, events, actions and optional messages`
+
+**Umsetzungsnotizen (Task 20):** Rot-Lauf: 8 der neuen Tests scheiterten (Runtime ohne Phasen-States, `runActions` ohne Filter, `deviceObjects` ohne Phasen-States), dann grün. Abweichungen vom Plan: (1) Die Plan-Tests spielten die Fixture-Zeitstempel (2023) auf einem Fake-Host mit Uhr 2026; der Host startet jetzt mit der Uhr beim ersten Wert (`w08Host`). Das Fenster endet 20 min nach dem Lauf (`runEnd + 120` Ticks), nicht `+ 360`: w09 beginnt 50 min nach w08, und der State `phases` zeigte sonst nur den Anfang von w09. Der Aktionstest legt `x.0.a`/`x.0.b` als Objekte im Host an und importiert `feedPoints`. Der Test-Listener formatiert Phasen-Ereignisse als `<id>:phase:<phaseId>:<edge>`. (2) Neu: Getter `phaseRev` (Anzahl Tracker-Builds) und ein Test, dass ein geändertes Phasenmodell nur zwischen Läufen gilt (`rebuildTracker` wie `rebuildDetector`, auch nicht in der Sperrphase). (3) Haltezeit-Profil: `phaseHolds(model, base)` (tracker.ts) bildet die Grundbänder aus `store.bands` auf die Phasenbänder ab (größte Verdachtsgrenze der überlappenden Grundbänder, damit höchstens weniger statt falsche „unbekannt“); die Registry reicht `store.bands` vor jedem Tick an die Runtime (`setHoldBands`), der Tracker bekommt `setHolds`. (4) `phases` wird nur bei geänderter Signatur geschrieben (geschlossene Abschnitte mit Ende, der offene ohne `to`); ein leerer Verlauf nach einem Neustart überschreibt den letzten Lauf nicht. `phase`/`phaseId`/`phaseSince` nur bei Wechsel von Id, Name oder Beginn. (5) Meldungen: Schlüssel je Phase und Kante; scope run einmal je Lauf (Löschen beim Start), continuous höchstens alle `PHASE_NOTIFY_MIN_MS` (Zeit der Kante). Text = `notify.text`, sonst Phasenname; läuft über `notify()` (Nicht-Stören wie Start/Ende, State `message`). (6) Systemphasen-Namen kommen aus `I18n` (nicht initialisiert, z. B. in einem Skript: englische Namen). (7) Konstanten `PHASES_MAX`, `PHASES_CONTINUOUS_MS`, `PHASE_NOTIFY_MIN_MS` in `phases/model.ts`. (8) Aktionstabelle im Geräteformular: zwei neue Ereignisse und die Spalte „Phase“; `phaseId` wird nur bei Phasen-Ereignissen übernommen. i18n: `dev_eventPhaseStart`, `dev_eventPhaseEnd`, `dev_actionPhaseId` (de/en von Hand, Rest `npm run translate`), State-Namen in `stateDefinitions.ts` von Hand in 11 Sprachen. Doku de/en: §7, Unterkapitel „Phasen“ (in §8 vor der automatischen Optimierung), §13; Changelog-Zeile ergänzt.
 
 ---
 ### Task 21: Optimierung I – 30-Tage-Fenster, Gate über zugelassene Läufe, Grenzläufe, Mindestzahlen, Reparatur-Vorrang (Spec D.1–D.4, Entscheidungen 4 und 8)

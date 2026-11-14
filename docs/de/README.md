@@ -216,7 +216,8 @@ Aktionen setzen fremde States automatisch. Je Gerät kannst du beliebig viele an
 
 | Feld | Bedeutung |
 | --- | --- |
-| Ereignis | `start`, `end`, `reminder` oder `acknowledged` |
+| Ereignis | `start`, `end`, `reminder`, `acknowledged`, `phaseStart` oder `phaseEnd` (Beginn bzw. Ende einer [Phase](#phasen)) |
+| Phase | Nur bei `phaseStart`/`phaseEnd`: ID der Phase (z. B. `p4`); leer = jede Phase. Die IDs stehen im State `phaseId` und in der Zeitleiste `phases` |
 | State | Der fremde State, der geschrieben wird |
 | Wert | Wert; wird in den Typ des Ziel-States umgewandelt (boolean, number oder string) |
 
@@ -365,6 +366,17 @@ Die Werte trägst du derzeit von Hand ein; Anlernen und automatische Optimierung
 | `finalActVal` / `finalActShare` | Aktivitätspegel und -anteil für Ausgang f (0 = aus) |
 | `finalCheckSec` | Prüffenster für die Ausgänge d und g (s; 0 = 30 min) |
 | `finalLockSec` | Höchstdauer der Sperrphase (s; 0 = 4 h) |
+
+### Phasen
+
+Phasen zeigen, was ein Gerät gerade tut („Waschen“, „Endschleudern“, „Brenner mit Pumpe“). Sie sind nur aktiv, wenn für das Gerät ein Phasenmodell eingeschaltet ist; sonst gibt es die States `phase`, `phaseId`, `phaseSince` und `phases` nicht (sie werden gelöscht), und alles andere verhält sich wie ohne Phasen. Die Phasen verändern nie den `status` und lösen nie ein Start- oder Ende-Ereignis aus.
+
+- **Anzeige:** `phase` (Name), `phaseId` (ID) und `phaseSince` (Beginn) werden nur beim Wechsel der Phase geschrieben, nie bei jeder Abfrage. `phases` ist die Zeitleiste des laufenden bzw. letzten Laufs als JSON (`id`, `name`, `from`, `to`), höchstens die 200 neuesten Abschnitte; bei Geräten ohne Lauf (z. B. Kessel) die letzten 24 Stunden. Der laufende Abschnitt hat als `to` den Zeitpunkt der letzten Abfrage. Der State `phases` wird nur geschrieben, wenn sich ein Abschnitt ändert (neue Phase, Ende eines Abschnitts oder nachträgliche Einordnung).
+- **Was erst nachträglich erscheint:** Eine Phase, die nur an ihrer Höchstdauer erkennbar ist (z. B. „Zwischenschleudern“), steht erst am Ende ihres Abschnitts fest. Live zeigt der State den Oberbegriff des Bandes („Schleudern“), die Zeitleiste enthält danach den genauen Namen. Dasselbe gilt für eine Zündung (Ereignisphase), die nicht bestätigt wird. Geraten wird nie; passt keine Phase, steht der Oberbegriff.
+- **Systemphasen:** „Knitterschutz“ (`antiCrease`), solange der Knitterschutz-Filter den Nachlauf erkennt, „Nachlauf“ (`afterRun`) in der Sperrphase der Schlussphase, „Ruhe“ (`rest`) und „Unbekannt“ (`unknown`, wenn der Leistungs-State ungewöhnlich lange nichts meldet). Ihre Namen sind in der Sprache der Installation.
+- **Ereignis:** Beginn und Ende jeder Phase sind Ereignisse für [Aktionen](#7-aktionen) (`phaseStart`, `phaseEnd`, auf Wunsch gefiltert auf eine Phasen-ID).
+- **Nachrichten:** Nur Phasen mit eingeschalteter Meldung (Beginn und/oder Ende, eigener Text) schicken eine Nachricht, an die Empfänger des Geräts mit Nicht-Stören wie bei Start und Ende. Je Lauf und Phase wird höchstens einmal gemeldet; bei Geräten ohne Lauf höchstens alle 10 Minuten je Phase. Eine nur am Ende erkennbare Phase wird nur „bei Ende“ gemeldet.
+- **Änderung des Phasenmodells:** Ein geändertes Modell gilt zwischen zwei Läufen (und nach der Sperrphase), nie mitten im Lauf.
 
 ### Automatische Optimierung
 
@@ -556,6 +568,10 @@ Gerätezustände sind relativ zum Geräteobjekt `<deviceId>` angegeben. Info-Zus
 | `learning.result` | string | json | r | - | Anlern-Ergebnis | JSON: Schwellwerte, startDurationSec, endDurationSec, durationSec, samples, pauseHoldSec, pauseUntilSec, pauseBelowVal, mode, runs, evaluation (aus der History zusätzlich looDetected, longestPauseSec, current, gapsDropped), bei einer Knitterschutz-Phase zusätzlich trailerBurstSec, trailerGapSec, trailerAfterSec, trailerBlockVal, trailerMaxSec, trailer (none, used, notSeparable), trailerRuns, delays (Ende-Verzögerung je Lauf ab Programmende, s) und falseStarts, oder ein Fehler (tooFewSamples, noRun) |
 | `antiCrease` | boolean | indicator | r | - | Knitterschutz aktiv | True, solange der Knitterschutz nach einem Lauf erkannt wird (Knitterschutz-Filter des Geräts) |
 | `settlingUntil` | number | date | r | - | Sperrphase bis | Ende der laufenden Sperrphase der Schlussphase (frühes Fertig + Höchstdauer), sonst 0; ein Neustart setzt die Sperrphase bis dahin fort. Nur bei eingeschalteter Schlussphase (Werte des Geräts oder optimierte Werte) |
+| `phase` | string | text | r | - | Aktuelle Phase | Name der Phase, in der das Gerät gerade ist (leer außerhalb eines Laufs); nur bei eingeschalteten Phasen, nur beim Wechsel geschrieben |
+| `phaseId` | string | text | r | - | Aktuelle Phase (ID) | ID der Phase (Systemphasen `antiCrease`, `afterRun`, `rest`, `unknown`); nur bei eingeschalteten Phasen |
+| `phaseSince` | number | date | r | - | Aktuelle Phase seit | Beginn der aktuellen Phase; nur bei eingeschalteten Phasen |
+| `phases` | string | json | r | - | Zeitleiste der Phasen | JSON-Array `{id, name, from, to}` des laufenden bzw. letzten Laufs (bei Geräten ohne Lauf der letzten 24 Stunden), höchstens 200 Einträge; nur bei eingeschalteten Phasen |
 | `learning.optimized` | boolean | indicator | r | - | Optimierte Werte aktiv | True, wenn die automatische Optimierung andere Werte als die Erkennungswerte des Geräts verwendet |
 | `learning.parameters` | string | json | r | - | Erkennungsparameter | JSON: base (Grundwerte des Geräts), override (optimierte Werte), effective (wirksame Werte: Grundwerte mit den optimierten Werten), active (Werte der Erkennung: wie effective, bei ausgesetzter Schlussphase mit `finalMinVal` 0) |
 | `learning.lastChange` | string | json | r | - | Letzte Änderung der Optimierung | JSON der letzten Änderung der automatischen Optimierung (kind, from, to, reason, runs, gainSec) |

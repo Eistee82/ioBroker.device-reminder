@@ -1,6 +1,34 @@
 import { DEFAULT_PHASE_NAMES, SYSTEM_PHASES } from "./model.js";
 const BLOCK_MIN_MS = 20_000;
 const MAX_SEGMENTS = 1000;
+function suspectOf(bands, holds) {
+    return bands.map(b => {
+        const h = holds?.find(x => x.band === b.id);
+        return h && h.suspectSec > 0 ? h.suspectSec * 1000 : Infinity;
+    });
+}
+export function phaseHolds(model, base) {
+    if (!base || base.holds.length === 0) {
+        return null;
+    }
+    const out = [];
+    for (const b of model.bands) {
+        let best = null;
+        for (const own of base.bands) {
+            if (own.max <= b.min || own.min >= b.max) {
+                continue;
+            }
+            const h = base.holds.find(x => x.band === own.id);
+            if (h && (!best || h.suspectSec > best.suspectSec)) {
+                best = h;
+            }
+        }
+        if (best) {
+            out.push({ ...best, band: b.id });
+        }
+    }
+    return out.length > 0 ? out : null;
+}
 export class PhaseTracker {
     bands;
     classes;
@@ -37,16 +65,16 @@ export class PhaseTracker {
         this.bands = model.bands;
         this.classes = this.bands.map(b => model.phases.filter(p => p.band === b.id && !p.trigger));
         this.triggers = this.bands.map(b => model.phases.filter(p => p.band === b.id && p.trigger));
-        this.suspectMs = this.bands.map(b => {
-            const h = holds?.find(x => x.band === b.id);
-            return h && h.suspectSec > 0 ? h.suspectSec * 1000 : Infinity;
-        });
+        this.suspectMs = suspectOf(this.bands, holds);
         this.levelIdx = this.bands.flatMap((b, k) => (b.smoothing === "level" ? [k] : []));
         this.windowMs = Math.max(0, ...this.levelIdx.map(k => this.bands[k].windowSec * 1000));
         this.dtCapMs = Math.max(2 * Math.max(1, pollSec), 60) * 1000;
         this.names = { ...DEFAULT_PHASE_NAMES, ...(names ?? {}) };
         this.maxSegments = opts.maxSegments ?? MAX_SEGMENTS;
         this.continuous = model.scope === "continuous";
+    }
+    setHolds(holds) {
+        this.suspectMs = suspectOf(this.bands, holds);
     }
     observe(val, t) {
         if (!Number.isFinite(val) || !Number.isFinite(t)) {

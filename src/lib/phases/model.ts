@@ -122,6 +122,13 @@ export interface PhaseModel {
 const SMOOTHINGS: readonly BandSmoothing[] = ["block", "level", "debounce", "peak"];
 const RESERVED = new Set<string>([...Object.values(SYSTEM_PHASES), ...CONTEXT_IDS]);
 
+/** Entries of the state `phases` (the newest segments). */
+export const PHASES_MAX = 200;
+/** Scope continuous: the state `phases` holds the last 24 h. */
+export const PHASES_CONTINUOUS_MS = 86_400_000;
+/** Scope continuous: a phase message of the same phase is sent at most this often (ms). */
+export const PHASE_NOTIFY_MIN_MS = 600_000;
+
 /**
  * Names of the system phases in one language.
  *

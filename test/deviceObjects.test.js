@@ -5,8 +5,10 @@ import { ensureDeviceObjects } from "../build/lib/deviceObjects.js";
 import { DEVICE_STATES } from "../build/lib/stateDefinitions.js";
 import { deviceConfig, instanceConfig, WASHER } from "./helpers/devices.js";
 import { WM_FINAL } from "./helpers/final.js";
+import { WM_PHASES } from "./helpers/phases.js";
 
 const FIN = { ...WASHER, ...WM_FINAL };
+const PHASE_IDS = ["phase", "phaseId", "phaseSince", "phases"];
 
 function makeWriter() {
 	const objects = {};
@@ -62,22 +64,52 @@ describe("deviceObjects", () => {
 		assert.strictEqual(w.objects.waschmaschine.native.powerId, "x.0.power");
 		assert.strictEqual(w.objects["waschmaschine.config"].type, "channel");
 		assert.strictEqual(w.objects["waschmaschine.learning"].type, "channel");
-		for (const def of DEVICE_STATES.filter(d => d.when !== "historyHtml" && d.when !== "final")) {
+		for (const def of DEVICE_STATES.filter(
+			d => d.when !== "historyHtml" && d.when !== "final" && d.when !== "phases",
+		)) {
 			const obj = w.objects[`waschmaschine.${def.id}`];
 			assert.strictEqual(obj?.type, "state", def.id);
 			assert.strictEqual(obj.common.role, def.role);
 		}
 	});
 
+	it("creates phase states only with enabled phases and removes them again", async () => {
+		const ids = [];
+		const del = [];
+		const w = {
+			extendObject: async id => ids.push(id),
+			setObjectNotExists: async () => {},
+			delObject: async id => del.push(id),
+		};
+		await ensureDeviceObjects(w, "wm", deviceConfig(), instanceConfig());
+		assert.ok(PHASE_IDS.every(id => del.includes(`wm.${id}`)));
+		await ensureDeviceObjects(w, "wm", deviceConfig({ phases: WM_PHASES }), instanceConfig());
+		assert.ok(PHASE_IDS.every(id => ids.includes(`wm.${id}`)));
+		const def = id => DEVICE_STATES.find(d => d.id === id);
+		assert.deepStrictEqual(
+			PHASE_IDS.map(id => [def(id).type, def(id).role]),
+			[
+				["string", "text"],
+				["string", "text"],
+				["number", "date"],
+				["string", "json"],
+			],
+		);
+	});
+
 	it("removes lastOperationsHtml when historyHtml is off and creates it when on", async () => {
 		const off = makeWriter();
 		await ensureDeviceObjects(off, "d", cfg, { ...inst, historyHtml: false });
-		assert.deepStrictEqual(off.deleted, ["d.settlingUntil", "d.lastOperationsHtml"]);
+		assert.deepStrictEqual(off.deleted, [
+			"d.settlingUntil",
+			...PHASE_IDS.map(id => `d.${id}`),
+			"d.lastOperationsHtml",
+		]);
 		assert.strictEqual(off.objects["d.lastOperationsHtml"], undefined);
 
 		const on = makeWriter();
 		await ensureDeviceObjects(on, "d", cfg, { ...inst, historyHtml: true });
-		assert.deepStrictEqual(on.deleted, ["d.settlingUntil"]);
+		assert.deepStrictEqual(on.deleted, ["d.settlingUntil", ...PHASE_IDS.map(id => `d.${id}`)]);
 		assert.strictEqual(on.objects["d.lastOperationsHtml"].common.role, "html");
 	});
 

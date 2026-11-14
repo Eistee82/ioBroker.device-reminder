@@ -21,6 +21,9 @@ export const DEFAULT_PHASE_NAMES = {
 const CONTEXT_IDS = ["idle", "start"];
 const SMOOTHINGS = ["block", "level", "debounce", "peak"];
 const RESERVED = new Set([...Object.values(SYSTEM_PHASES), ...CONTEXT_IDS]);
+export const PHASES_MAX = 200;
+export const PHASES_CONTINUOUS_MS = 86_400_000;
+export const PHASE_NOTIFY_MIN_MS = 600_000;
 export function systemPhaseNames(translate) {
     const out = {};
     for (const id of Object.values(SYSTEM_PHASES)) {
