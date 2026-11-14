@@ -384,14 +384,23 @@ export class DeviceRuntime {
         const now = this.host.now();
         tr.setContext({ inTrailer: this.antiCrease, settling: this.detector.settling === true });
         const edges = tr.advance(now);
+        for (const edge of edges) {
+            this.emit({ kind: "phase", id: edge.id, edge: edge.edge });
+            try {
+                await this.notifyPhase(edge);
+            }
+            catch (err) {
+                this.host.log.error(`Device ${this.cfg.name}: phase message failed: ${errorMessage(err)}`);
+            }
+        }
         const cur = tr.current;
         const id = cur.id ?? "";
         const shown = this.shownPhase;
         if (!shown || shown.id !== id || shown.name !== cur.name || shown.since !== cur.since) {
-            this.shownPhase = { id, name: cur.name, since: cur.since };
             await this.setState("phase", cur.name);
             await this.setState("phaseId", id);
             await this.setState("phaseSince", cur.since);
+            this.shownPhase = { id, name: cur.name, since: cur.since };
         }
         let segs = tr.timeline();
         if (model.scope === "continuous") {
@@ -404,10 +413,6 @@ export class DeviceRuntime {
             await this.setState("phases", JSON.stringify(list));
         }
         this.timelineSig = sig;
-        for (const edge of edges) {
-            this.emit({ kind: "phase", id: edge.id, edge: edge.edge });
-            await this.notifyPhase(edge);
-        }
     }
     async notifyPhase(edge) {
         const model = this.cfg.phases;

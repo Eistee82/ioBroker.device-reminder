@@ -582,7 +582,8 @@ export class DeviceRuntime {
 
 	/**
 	 * Let the phase tracker run to now and write what changed: the phase shown (`phase`, `phaseId`, `phaseSince`) and
-	 * the timeline (`phases`) only when a segment changes, never per poll; then the phase events and messages.
+	 * the timeline (`phases`) only when a segment changes, never per poll; and the phase events and messages. These
+	 * run with the poll, so they lag a run end by at most one poll interval.
 	 */
 	private async publishPhases(): Promise<void> {
 		const tr = this.tracker;
@@ -593,14 +594,23 @@ export class DeviceRuntime {
 		const now = this.host.now();
 		tr.setContext({ inTrailer: this.antiCrease, settling: this.detector.settling === true });
 		const edges = tr.advance(now);
+		// the edges are consumed by advance: deliver them first so a failing state write cannot drop them
+		for (const edge of edges) {
+			this.emit({ kind: "phase", id: edge.id, edge: edge.edge });
+			try {
+				await this.notifyPhase(edge);
+			} catch (err) {
+				this.host.log.error(`Device ${this.cfg.name}: phase message failed: ${errorMessage(err)}`);
+			}
+		}
 		const cur = tr.current;
 		const id = cur.id ?? "";
 		const shown = this.shownPhase;
 		if (!shown || shown.id !== id || shown.name !== cur.name || shown.since !== cur.since) {
-			this.shownPhase = { id, name: cur.name, since: cur.since };
 			await this.setState("phase", cur.name);
 			await this.setState("phaseId", id);
 			await this.setState("phaseSince", cur.since);
+			this.shownPhase = { id, name: cur.name, since: cur.since };
 		}
 		let segs = tr.timeline();
 		if (model.scope === "continuous") {
@@ -614,10 +624,6 @@ export class DeviceRuntime {
 			await this.setState("phases", JSON.stringify(list));
 		}
 		this.timelineSig = sig;
-		for (const edge of edges) {
-			this.emit({ kind: "phase", id: edge.id, edge: edge.edge });
-			await this.notifyPhase(edge);
-		}
 	}
 
 	/**
