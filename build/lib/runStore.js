@@ -2,7 +2,7 @@ import { FINAL_KEYS } from "./detector/types.js";
 import { bandFeaturesOf, baseBandsOf } from "./learn/bands.js";
 import { assignFamilies, featuresOf } from "./learn/families.js";
 import { admitted, checkRuns, sameRun, samplesOf, verdictKey } from "./learn/quality.js";
-import { applyTail, buildLayout, LAYOUT_REV, MAX_PAUSE_MS, median, tailRule } from "./learn/runs.js";
+import { applyTail, buildLayout, LAYOUT_REV, LEVEL_SEP_W, MAX_PAUSE_MS, median, quantile, SPLIT_GAP_MIN_MS, tailRule, } from "./learn/runs.js";
 import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
 import { errorMessage } from "./utils.js";
 export const STORE_VERSION = 1;
@@ -283,16 +283,27 @@ export function reconcileStore(store, hash, step, unitFactor, now) {
 }
 export function pushChange(store, c) {
     store.changes.push(c);
-    if (store.changes.length > MAX_CHANGES) {
-        store.changes.splice(0, store.changes.length - MAX_CHANGES);
+    while (store.changes.length > MAX_CHANGES) {
+        const keys = [...store.runs, ...store.spikes].map(r => r.key);
+        let lastBase = -1;
+        store.changes.forEach((x, i) => {
+            if (x.kind === "adopted" || x.kind === "baseChanged" || x.kind === "typeChanged") {
+                lastBase = i;
+            }
+        });
+        const kept = (x, i) => i === lastBase ||
+            (x.trigger !== undefined && keys.some(k => k === x.trigger || sameRun(k, x.trigger ?? "")));
+        const victim = store.changes.findIndex((x, i) => !kept(x, i));
+        store.changes.splice(victim >= 0 ? victim : 0, 1);
     }
 }
 export function refreshInfo(store) {
     store.info.runs = store.runs.length;
     store.info.spikes = store.spikes.length;
     store.info.families = new Set(store.runs.map(r => r.family)).size;
+    store.info.excluded = [...store.runs, ...store.spikes].filter(r => decisionOf(store, r.key)?.user === "exclude").length;
 }
-export function labelCapture(c, keepAboveW, src = "live") {
+export function labelCapture(c, keepAboveW, src = "live", o = {}) {
     const sW = fromCells(c.cells, c.t0, c.stepMs, c.unitFactor);
     const unclear = { label: "unclear", run: null, endDelaySec: null, trusted: false };
     if (sW.points < 20) {
@@ -301,6 +312,7 @@ export function labelCapture(c, keepAboveW, src = "live") {
     const layout = buildLayout(sW, { recording: true, keepAbove: keepAboveW });
     const starts = c.ev.filter(e => e[1] === "s");
     const ends = c.ev.filter(e => e[1] !== "s");
+    const mark = starts[0]?.[2];
     const q = quantOf(c.unitFactor);
     const base = {
         id: `${c.t0.toString(36)}${c.ev.length.toString(36)}`,
@@ -316,6 +328,7 @@ export function labelCapture(c, keepAboveW, src = "live") {
         key: "",
         rev: LAYOUT_REV,
         ...(c.rep ? { rep: toDiffs(c.rep) } : {}),
+        ...(mark ? { afterFinal: mark } : {}),
     };
     if (layout.runs.length === 0) {
         if (starts.length === 0) {
@@ -388,11 +401,211 @@ export function labelCapture(c, keepAboveW, src = "live") {
             break;
         }
     }
-    const postOk = (c.cells.length - 1 - r.runEnd) * c.stepMs >= POST_ROLL_MS || c.postTruncated;
+    const postOk = (c.cells.length - 1 - r.runEnd) * c.stepMs >= POST_ROLL_MS || c.postTruncated || o.followed === true;
     if (!startOk || !valid || !postOk) {
         return unclear;
     }
     return { label: "run", run, endDelaySec, trusted: !c.postTruncated };
+}
+function wattsOf(c) {
+    return c.cells.map(x => (x.valid && Number.isFinite(x.last) ? x.last * c.unitFactor : Number.NaN));
+}
+function idleOfCapture(w) {
+    const valid = w.filter(x => Number.isFinite(x));
+    if (valid.length === 0) {
+        return 0;
+    }
+    const tail = valid.slice(-Math.max(3, Math.ceil(valid.length * 0.1)));
+    return Math.max(0, Math.min(median(tail), tail.at(-1) ?? 0));
+}
+function pauseLevels(c, w, runLimit, idxOf, need) {
+    const out = [];
+    let runFrom = null;
+    for (const e of c.ev) {
+        if (e[1] === "s") {
+            runFrom ??= idxOf(e[0]);
+            continue;
+        }
+        if (runFrom === null) {
+            continue;
+        }
+        const to = idxOf(e[0]);
+        let k = runFrom;
+        while (k <= to) {
+            if (Number.isFinite(w[k]) && w[k] <= runLimit) {
+                const from = k;
+                while (k <= to && Number.isFinite(w[k]) && w[k] <= runLimit) {
+                    k++;
+                }
+                if (k - from < need) {
+                    out.push(median(w.slice(from, k)));
+                }
+            }
+            else {
+                k++;
+            }
+        }
+        runFrom = null;
+    }
+    return out;
+}
+export function splitCapture(c) {
+    const n = c.cells.length;
+    const step = c.stepMs;
+    const whole = [{ capture: c, ev: c.ev, followed: false }];
+    if (n === 0 || c.ev.filter(e => e[1] === "s").length < 2) {
+        return whole;
+    }
+    const w = wattsOf(c);
+    const idle = idleOfCapture(w);
+    const runLimit = idle * 3 + 2;
+    const idxOf = (t) => Math.max(0, Math.min(n - 1, Math.round((t - c.t0) / step)));
+    const need = Math.ceil(SPLIT_GAP_MIN_MS / step);
+    const pauses = pauseLevels(c, w, runLimit, idxOf, need);
+    const below = pauses.length === 0 || quantile(pauses, 0.9) * 1.5 + LEVEL_SEP_W < idle * 0.8;
+    const above = pauses.length > 0 && quantile(pauses, 0.1) > idle * 1.5 + LEVEL_SEP_W;
+    const lo = pauses.length > 0 && below ? 0.8 * idle : Number.NEGATIVE_INFINITY;
+    const hi = 1.25 * idle + 0.1;
+    const atRest = (k) => (below || above) && Number.isFinite(w[k]) && w[k] >= lo && w[k] <= hi;
+    const cuts = [];
+    let lastEnd = null;
+    for (const e of c.ev) {
+        if (e[1] !== "s") {
+            lastEnd = e;
+            continue;
+        }
+        if (!lastEnd) {
+            continue;
+        }
+        const iE = idxOf(lastEnd[0]);
+        const iS = idxOf(e[0]);
+        lastEnd = null;
+        let best = null;
+        let k = iE + 1;
+        while (k < iS) {
+            if (atRest(k)) {
+                const from = k;
+                while (k < iS && atRest(k)) {
+                    k++;
+                }
+                if (!best || k - from > best.len) {
+                    best = { from, len: k - from };
+                }
+            }
+            else {
+                k++;
+            }
+        }
+        let cut = null;
+        if (best && best.len >= need) {
+            cut = best.from + Math.floor(best.len / 2);
+        }
+        else if (e[2] !== undefined) {
+            cut = iE + 1;
+        }
+        if (cut !== null && cut > (cuts.at(-1) ?? 0) && cut < n) {
+            cuts.push(cut);
+        }
+    }
+    if (cuts.length === 0) {
+        return whole;
+    }
+    const bounds = [0, ...cuts, n];
+    const parts = [];
+    for (let p = 0; p + 1 < bounds.length; p++) {
+        const from = bounds[p];
+        const to = bounds[p + 1];
+        const first = p === 0;
+        const last = p + 2 === bounds.length;
+        const t0 = c.t0 + from * step;
+        const tEnd = c.t0 + to * step;
+        const ev = c.ev.filter(e => (first || e[0] >= t0) && (last || e[0] < tEnd));
+        const capture = {
+            t0,
+            stepMs: step,
+            unitFactor: c.unitFactor,
+            cells: c.cells.slice(from, to),
+            ev,
+            postTruncated: last ? c.postTruncated : false,
+        };
+        if (c.rep) {
+            const lowRep = (from - 1) * step;
+            const highRep = (to - 1) * step;
+            capture.rep = c.rep.filter(t => (first || t > lowRep) && (last || t <= highRep)).map(t => t - from * step);
+        }
+        parts.push({ capture, ev, followed: !last });
+    }
+    return parts;
+}
+const JUDGED_EXITS = ["b", "c", "d", "e", "f", "g"];
+function partSample(c, key, fromMs, startMs, endMs, exit) {
+    const points = [];
+    c.cells.forEach((x, i) => {
+        const ts = c.t0 + i * c.stepMs;
+        if (!x.valid || ts > endMs) {
+            return;
+        }
+        if (ts <= fromMs) {
+            points[0] = { ts: fromMs, val: x.last };
+            return;
+        }
+        if (points.length === 0 || points[points.length - 1].val !== x.last) {
+            points.push({ ts, val: x.last });
+        }
+    });
+    return {
+        points,
+        from: fromMs,
+        to: endMs,
+        key,
+        kind: "run",
+        src: "live",
+        info: null,
+        family: -1,
+        ...(exit ? { afterFinal: exit } : {}),
+        starts: [startMs],
+        facts: {
+            start: startMs,
+            coreEnd: endMs,
+            progEnd: endMs,
+            runEnd: endMs,
+            end: endMs,
+            coreSec: (endMs - startMs) / 1000,
+            feat: null,
+            offSec: null,
+            preLevel: null,
+            postLevel: null,
+            restLevel: null,
+            endBlocks: [],
+            invalidShare: 0,
+            timeJumps: 0,
+        },
+    };
+}
+export function finalSplitPairs(c, deviceId) {
+    const out = [];
+    c.ev.forEach((e, k) => {
+        const exit = e[2];
+        if (e[1] !== "s" || exit === undefined || !JUDGED_EXITS.includes(exit)) {
+            return;
+        }
+        const before = c.ev.slice(0, k);
+        const early = before.findLast(x => x[1] !== "s");
+        const done = c.ev.slice(k + 1).find(x => x[1] !== "s");
+        if (!early || !done) {
+            return;
+        }
+        const begin = before.findLast(x => x[1] === "s" && x[0] <= early[0]);
+        const startMs = begin ? begin[0] : c.t0;
+        const key = verdictKey(deviceId, e[0]);
+        out.push({
+            key,
+            exit,
+            prev: partSample(c, verdictKey(deviceId, startMs), startMs - c.stepMs, startMs, early[0]),
+            next: partSample(c, key, early[0], e[0], done[0], exit),
+        });
+    });
+    return out;
 }
 export function envelopeOf(runs, spikes) {
     const env = emptyEnvelope();
@@ -714,6 +927,9 @@ export function addRun(store, run, o = {}) {
         store.runs.push(run);
     }
     const verdicts = o.ctx && !o.deferred ? recomputeBands(store, o.ctx) : undefined;
+    if (verdicts) {
+        o.onVerdicts?.(verdicts);
+    }
     if (run.label !== "spike") {
         const fam = assignFamilies(store.runs.map(r => r.feat), store.runs.map(r => r.family), store.nextFamily ?? 0);
         store.runs.forEach((r, i) => {

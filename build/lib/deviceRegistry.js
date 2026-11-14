@@ -1,17 +1,21 @@
 import { runActions } from "./actions.js";
+import { finalOn, finalValuesOf } from "./detector/index.js";
 import { DeviceRuntime } from "./deviceRuntime.js";
 import { fill, TEXT } from "./dmTexts.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
+import { admitted, sameRun } from "./learn/quality.js";
 import { effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
+import { checkFinalSplit } from "./learn/finalLearn.js";
 import { simulate } from "./learn/replay.js";
 import { buildLayout } from "./learn/runs.js";
 import { scaled } from "./learn/ticks.js";
 import { LearningRecorder, suggestType } from "./learning.js";
 import { ReminderScheduler } from "./reminder.js";
 import { RunRecorder } from "./runRecorder.js";
-import { addRun, clearLearningData, decisionOf, emptyStore, fitSize, labelCapture, loadStore, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, typeHash, upgradeStore, } from "./runStore.js";
+import { addRun, clearLearningData, convertRuns, decisionOf, detectionOf, emptyStore, finalSplitPairs, fitSize, labelCapture, loadStore, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, splitCapture, storeSamples, typeHash, upgradeStore, } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 const OPTIMIZE_BUDGET_MS = 30_000;
+const CHECKED_MAX = 20;
 function isTrue(val) {
     return val === true || val === 1 || val === "true" || val === "1";
 }
@@ -107,7 +111,10 @@ export class DeviceRegistry {
         if (!store) {
             return;
         }
-        if (!entry.holdOverride) {
+        if (this.modeOf(entry.runtime.config) !== "full") {
+            entry.runtime.setOverride(null);
+        }
+        else if (!entry.holdOverride) {
             entry.runtime.setOverride(store.override);
         }
         const suspended = this.suspendedOf(entry);
@@ -310,6 +317,7 @@ export class DeviceRegistry {
                 entry.reminder.onFinished();
                 void runActions(this.host, cfg.actions, "end");
                 this.persistPending(entry);
+                this.judgeAtEnd(deviceId, entry);
                 break;
             case "abort":
                 break;
@@ -379,6 +387,7 @@ export class DeviceRegistry {
         if (entry?.opt) {
             const cfg = entry.runtime.config;
             entry.runtime.setOverride(null);
+            entry.runtime.setFinalSuspended(false);
             const cleared = clearLearningData(entry.opt.store, keepDecisions);
             cleared.typeId = cfg.template ?? "";
             cleared.typeHash = typeHash(entry.runtime.baseDetection);
@@ -487,10 +496,19 @@ export class DeviceRegistry {
             await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
         }
     }
+    modeOf(cfg) {
+        if (!this.files) {
+            return "off";
+        }
+        if (cfg.autoOptimize === true) {
+            return "full";
+        }
+        return finalOn(detectionOf(cfg.detection)) ? "final" : "off";
+    }
     async syncOptimize(deviceId, entry) {
         const cfg = entry.runtime.config;
-        const want = cfg.autoOptimize === true && this.files !== undefined;
-        if (!want) {
+        const mode = this.modeOf(cfg);
+        if (mode === "off") {
             if (entry.opt) {
                 entry.runtime.attachRecorder(null);
                 entry.runtime.setOverride(null);
@@ -501,8 +519,12 @@ export class DeviceRegistry {
             return;
         }
         if (entry.opt || !this.files) {
+            if (entry.opt && mode !== "full") {
+                entry.runtime.setOverride(null);
+            }
             return;
         }
+        const full = mode === "full";
         const inst = this.getConfig();
         const step = inst.pollIntervalSec * 1000;
         const unitFactor = await this.unitFactorOf(cfg.powerId);
@@ -522,14 +544,20 @@ export class DeviceRegistry {
             this.host.log.info(`${cfg.name}: ${msg}`);
         }
         const hadOverride = store.override !== null;
-        const base = reconcileBase(store, typeHash(type), typeHash(effectiveOf(type, store.override)), now);
+        const base = full
+            ? reconcileBase(store, typeHash(type), typeHash(effectiveOf(type, store.override)), now)
+            : "none";
         if (base === "adopted") {
             this.host.log.info(`${cfg.name}: values in use adopted as base values`);
         }
         const converted = store.step !== step || store.unitFactor !== unitFactor;
-        for (const msg of reconcileStore(store, typeHash(type), step, unitFactor, now)) {
+        const msgs = full
+            ? reconcileStore(store, typeHash(type), step, unitFactor, now)
+            : convertRuns(store, step, unitFactor);
+        for (const msg of msgs) {
             this.host.log.info(`${cfg.name}: ${msg}`);
         }
+        refreshInfo(store);
         if (upgraded.length > 0 || converted) {
             recompute(store, this.qualityContext(store));
         }
@@ -541,7 +569,10 @@ export class DeviceRegistry {
         entry.opt = { store, recorder };
         entry.holdOverride = false;
         entry.runtime.attachRecorder(recorder);
-        if (store.override) {
+        if (!full) {
+            entry.runtime.setOverride(null);
+        }
+        else if (store.override) {
             const g = await gate(store, effectiveOf(type, store.override), this.optimizeContext(entry));
             if (g.ok) {
                 entry.runtime.setOverride(store.override);
@@ -715,30 +746,169 @@ export class DeviceRegistry {
             return;
         }
         const store = opt.store;
-        const res = labelCapture(cap, entry.runtime.effective.endVal * cap.unitFactor);
+        const keepAboveW = entry.runtime.effective.endVal * cap.unitFactor;
         store.pending = null;
-        if (res.label === "unclear" || !res.run) {
-            store.info.unclear++;
-        }
-        else {
-            addRun(store, res.run, { ctx: this.qualityContext(store), now: this.host.now() });
-            if (res.trusted) {
-                store.newSinceChange++;
-                store.lockRuns = Math.max(0, store.lockRuns - 1);
+        let stored = false;
+        let endDelaySec = null;
+        for (const part of splitCapture(cap)) {
+            const res = labelCapture(part.capture, keepAboveW, "live", { followed: part.followed });
+            if (res.label === "unclear" || !res.run) {
+                store.info.unclear++;
             }
+            else {
+                const run = res.run;
+                addRun(store, run, {
+                    ctx: this.qualityContext(store),
+                    now: this.host.now(),
+                    onVerdicts: v => {
+                        if (run.label === "split" && v.get(run.key)?.reasons.some(x => x.code === "merged")) {
+                            run.label = "run";
+                        }
+                    },
+                });
+                stored = true;
+                if (res.trusted) {
+                    store.newSinceChange++;
+                    store.lockRuns = Math.max(0, store.lockRuns - 1);
+                }
+            }
+            endDelaySec = res.endDelaySec ?? endDelaySec;
         }
-        if (res.endDelaySec !== null) {
-            store.info.lastEndDelaySec = res.endDelaySec;
-            await this.host.setOwnState(`${deviceId}.learning.lastEndDelay`, res.endDelaySec);
+        if (endDelaySec !== null) {
+            store.info.lastEndDelaySec = endDelaySec;
+            await this.host.setOwnState(`${deviceId}.learning.lastEndDelay`, endDelaySec);
         }
         refreshInfo(store);
         await this.saveOpt(entry);
-        if (res.run) {
+        if (this.unjudged(store, finalSplitPairs(cap, store.deviceId)).length > 0) {
+            this.enqueue(deviceId, () => this.judgeSplits(deviceId, cap));
+        }
+        if (stored) {
             this.enqueueOptimize(deviceId);
         }
         else {
             await this.writeOptStates(deviceId, entry);
         }
+    }
+    judgeAtEnd(deviceId, entry) {
+        const opt = entry.opt;
+        const snap = opt?.recorder.snapshot();
+        if (!opt || !snap || this.unjudged(opt.store, finalSplitPairs(snap, opt.store.deviceId)).length === 0) {
+            return;
+        }
+        this.enqueue(deviceId, () => this.judgeSplits(deviceId, snap));
+    }
+    unjudged(store, pairs) {
+        const known = [...(store.final?.checked ?? []), ...(store.final?.splits ?? [])];
+        return pairs.filter(p => !known.some(k => k === p.key || sameRun(k, p.key)));
+    }
+    async judgeSplits(deviceId, cap) {
+        const entry = this.devices.get(deviceId);
+        const store = entry?.opt?.store;
+        if (!entry || !store) {
+            return;
+        }
+        const pairs = this.unjudged(store, finalSplitPairs(cap, store.deviceId));
+        if (pairs.length === 0) {
+            return;
+        }
+        const ctx = this.qualityContext(store);
+        const clean = storeSamples(store, ctx)
+            .filter(x => x.sample.kind === "run" && !x.sample.afterFinal && admitted(x.verdict, "final"))
+            .map(x => x.sample);
+        const restVal = finalValuesOf(entry.runtime.effective, this.getConfig().pollIntervalSec).finalRestVal;
+        const final = this.finalOf(entry, store);
+        for (const p of pairs) {
+            final.checked = [...(final.checked ?? []), p.key].slice(-CHECKED_MAX);
+            if (checkFinalSplit(p.prev, p.next, clean, store.bands ?? null, restVal)) {
+                await this.suspendFinalNow(deviceId, "finalSplit", p.key);
+            }
+        }
+        await this.saveOpt(entry);
+        await this.writeOptStates(deviceId, entry);
+    }
+    finalOf(entry, store) {
+        store.final ??= { state: finalOn(entry.runtime.effective) ? "on" : "off", splits: [], suspendedAt: 0 };
+        return store.final;
+    }
+    suspendFinal(deviceId, reason, key) {
+        return this.serialized(async () => {
+            await this.suspendFinalNow(deviceId, reason, key);
+        });
+    }
+    async suspendFinalNow(deviceId, reason, key) {
+        const entry = this.devices.get(deviceId);
+        const store = entry?.opt?.store;
+        if (!entry || !store) {
+            return false;
+        }
+        const final = this.finalOf(entry, store);
+        const was = final.state === "suspended";
+        const now = this.host.now();
+        store.final = {
+            ...final,
+            state: "suspended",
+            splits: final.splits.includes(key) ? final.splits : [...final.splits, key],
+            suspendedAt: was ? final.suspendedAt : now,
+            reason,
+        };
+        entry.runtime.setFinalSuspended(true);
+        pushChange(store, {
+            ts: now,
+            kind: "finalSuspend",
+            from: store.override,
+            to: store.override,
+            reason: `final phase suspended (${reason})`,
+            runs: store.runs.length + store.spikes.length,
+            gainSec: 0,
+            trigger: key,
+        });
+        await this.saveOpt(entry);
+        await this.writeOptStates(deviceId, entry);
+        if (!was) {
+            this.host.log.warn(`${entry.runtime.config.name}: final phase suspended (${reason})`);
+            await this.sendOptimization(entry, TEXT.finalSuspended, {});
+        }
+        return true;
+    }
+    resumeFinal(deviceId, why, key) {
+        return this.serialized(() => this.resumeFinalNow(deviceId, why, key));
+    }
+    async resumeFinalNow(deviceId, why, key) {
+        const entry = this.devices.get(deviceId);
+        const store = entry?.opt?.store;
+        const final = store?.final;
+        if (!entry || !store || !final || (why === "newRun" && !key)) {
+            return false;
+        }
+        const left = why === "newRun" ? final.splits.filter(k => k !== key && !sameRun(k, key ?? "")) : [];
+        final.splits = left;
+        if (left.length > 0 || final.state !== "suspended") {
+            await this.saveOpt(entry);
+            await this.writeOptStates(deviceId, entry);
+            return false;
+        }
+        final.state = finalOn(entry.runtime.effective) ? "on" : "off";
+        final.suspendedAt = 0;
+        delete final.reason;
+        entry.runtime.setFinalSuspended(false);
+        pushChange(store, {
+            ts: this.host.now(),
+            kind: "finalResume",
+            from: store.override,
+            to: store.override,
+            reason: `final phase used again (${why})`,
+            runs: store.runs.length + store.spikes.length,
+            gainSec: 0,
+            ...(key ? { trigger: key } : {}),
+        });
+        await this.saveOpt(entry);
+        await this.writeOptStates(deviceId, entry);
+        this.host.log.info(`${entry.runtime.config.name}: final phase used again (${why})`);
+        if (why === "repair" || why === "endOk") {
+            await this.sendOptimization(entry, TEXT.finalResumed, {});
+        }
+        return true;
     }
     enqueueOptimize(deviceId) {
         this.enqueue(deviceId, () => this.runOptimize(deviceId));
@@ -760,6 +930,11 @@ export class DeviceRegistry {
             return;
         }
         const store = opt.store;
+        if (this.modeOf(entry.runtime.config) !== "full") {
+            await this.saveOpt(entry);
+            await this.writeOptStates(deviceId, entry);
+            return;
+        }
         const trailerBefore = store.info.trailer;
         const ctx = this.optimizeContext(entry);
         const baseHash = typeHash(ctx.type);
@@ -820,9 +995,12 @@ export class DeviceRegistry {
         }
     }
     async notifyOptimization(entry, text, vars, level = "info") {
+        this.host.log[level](fill(text, "en", { device: entry.runtime.config.name, ...vars }));
+        await this.sendOptimization(entry, text, vars);
+    }
+    async sendOptimization(entry, text, vars) {
         const cfg = entry.runtime.config;
         const all = { device: cfg.name, ...vars };
-        this.host.log[level](fill(text, "en", all));
         if (!cfg.optimizeNotify) {
             return;
         }
@@ -841,6 +1019,11 @@ export class DeviceRegistry {
             return;
         }
         const runtime = entry.runtime;
+        const on = finalOn(runtime.effective);
+        if (store.final && store.final.state !== "suspended") {
+            store.final.state = on ? "on" : "off";
+        }
+        store.info.finalState = store.final?.state === "suspended" ? "suspended" : on ? "on" : "off";
         await this.host.setOwnState(`${deviceId}.learning.optimized`, runtime.currentOverride !== null);
         await this.host.setOwnState(`${deviceId}.learning.parameters`, JSON.stringify({
             base: effectiveOf(runtime.baseDetection, null),

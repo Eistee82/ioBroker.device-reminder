@@ -204,8 +204,8 @@ const START_MS = 10 * 60_000;
 /** … and holds the bands at least this share of the clean runs begins with. */
 const START_SHARE = 0.8;
 /**
- * finalSplit: a rest between the parts counts only when it is longer than this (the default rest proof); a dip
- * below the rest level of a few seconds is no unloading (in doubt split).
+ * finalSplit: a rest between the parts counts only when it lasts at least this long (the default rest proof, exit b
+ * of the lock phase); a dip below the rest level of a few seconds is no unloading (in doubt split).
  */
 const SPLIT_REST_MIN_MS = MIN_REST_SEC * 1000;
 
@@ -1132,9 +1132,9 @@ function startBands(u: Unit, start: number, bands: BaseBands): Set<number> {
  * Whether the run after an early end is the rest of the split programme (Spec B.2 `finalSplit`, judged afterwards):
  * it does not begin with the typical start sequence (in its first 10 min one of the base bands is missing that at
  * least 80 % of the clean runs have in theirs), or between the early end and its start there was no rest below
- * `finalRestVal` longer than the longest rest in the programme of the clean runs. In doubt `finalSplit`, but only
- * with comparison data (at least 3 clean runs and base bands); without them only the rest counts, compared with the
- * longest rest in the early part itself.
+ * `finalRestVal` longer than the longest rest in the programme of the clean runs (and at least as long as the default
+ * rest proof of 60 s). In doubt `finalSplit`, but only with comparison data (at least 3 clean runs and base bands);
+ * without them only the rest counts, compared with the longest rest in the early part itself.
  *
  * `next` has to hold the stored values from the early end on (the time between the parts), `prev` those of the
  * early part; values in the unit of the state.
@@ -1156,8 +1156,8 @@ export function checkFinalSplit(
 	const between = longestBelow(joined(prev, next), prev.facts.end, next.facts.start, finalRestVal);
 	if (runs.length < SPLIT_MIN_RUNS || bands === null || bands.bands.length === 0) {
 		return (
-			between <=
-			Math.max(SPLIT_REST_MIN_MS, longestBelow(prev.points, prev.facts.start, prev.facts.end, finalRestVal))
+			between < SPLIT_REST_MIN_MS ||
+			between <= longestBelow(prev.points, prev.facts.start, prev.facts.end, finalRestVal)
 		);
 	}
 	const count = new Map<number, number>();
@@ -1171,9 +1171,9 @@ export function checkFinalSplit(
 	if (typical.some(b => !own.has(b))) {
 		return true;
 	}
-	let longest = SPLIT_REST_MIN_MS;
+	let longest = 0;
 	for (const r of runs) {
 		longest = Math.max(longest, longestBelow(r.points, r.facts.start, r.facts.coreEnd, finalRestVal));
 	}
-	return between <= longest;
+	return between < SPLIT_REST_MIN_MS || between <= longest;
 }

@@ -324,6 +324,9 @@ export class ReminderDeviceManagement extends DeviceManagement {
         else if (cfg.needsReview) {
             warning = TEXT.needsReview(cfg.reviewHint ?? "");
         }
+        else if (this.adapter.registry.learningData(id)?.final?.state === "suspended") {
+            warning = TEXT.finalSuspendedCard;
+        }
         const learning = (await this.adapter.getStateAsync(`${id}.learning.active`))?.val === true;
         const dnd = runtime?.doNotDisturb ?? false;
         const optimize = cfg.autoOptimize === true || (await this.adapter.registry.readLearningData(id)) !== null;
@@ -996,7 +999,19 @@ export function suggestionOf(p) {
             : {}),
     };
 }
-const OPT_KINDS = ["repair", "tighten", "undo", "reset", "adopted", "baseChanged"];
+const OPT_KINDS = [
+    "repair",
+    "tighten",
+    "undo",
+    "reset",
+    "adopted",
+    "baseChanged",
+    "revert",
+    "finalOn",
+    "finalSuspend",
+    "finalResume",
+    "finalRepair",
+];
 function kindText(kind, tr) {
     const k = kind === "typeChanged" ? "baseChanged" : kind;
     return OPT_KINDS.includes(k) ? tr(`dm_optKind_${k}`) : kind;

@@ -475,6 +475,8 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			warning = TEXT.powerMissing(cfg.powerId);
 		} else if (cfg.needsReview) {
 			warning = TEXT.needsReview(cfg.reviewHint ?? "");
+		} else if (this.adapter.registry.learningData(id)?.final?.state === "suspended") {
+			warning = TEXT.finalSuspendedCard;
 		}
 		const learning = (await this.adapter.getStateAsync(`${id}.learning.active`))?.val === true;
 		const dnd = runtime?.doNotDisturb ?? false;
@@ -1336,7 +1338,19 @@ export function suggestionOf(p: DetectionSettings): LearningSuggestion {
 }
 
 /** Status values of the automatic optimisation with their translation keys. */
-const OPT_KINDS = ["repair", "tighten", "undo", "reset", "adopted", "baseChanged"] as const;
+const OPT_KINDS = [
+	"repair",
+	"tighten",
+	"undo",
+	"reset",
+	"adopted",
+	"baseChanged",
+	"revert",
+	"finalOn",
+	"finalSuspend",
+	"finalResume",
+	"finalRepair",
+] as const;
 
 /**
  * Translated kind of a change; entries `typeChanged` of earlier versions are shown like `baseChanged`.

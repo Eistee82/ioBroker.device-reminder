@@ -727,8 +727,8 @@ export function checkFinalSplit(prev, next, clean, bands, finalRestVal) {
     const runs = clean.filter(c => c.kind === "run");
     const between = longestBelow(joined(prev, next), prev.facts.end, next.facts.start, finalRestVal);
     if (runs.length < SPLIT_MIN_RUNS || bands === null || bands.bands.length === 0) {
-        return (between <=
-            Math.max(SPLIT_REST_MIN_MS, longestBelow(prev.points, prev.facts.start, prev.facts.end, finalRestVal)));
+        return (between < SPLIT_REST_MIN_MS ||
+            between <= longestBelow(prev.points, prev.facts.start, prev.facts.end, finalRestVal));
     }
     const count = new Map();
     for (const r of runs) {
@@ -741,10 +741,10 @@ export function checkFinalSplit(prev, next, clean, bands, finalRestVal) {
     if (typical.some(b => !own.has(b))) {
         return true;
     }
-    let longest = SPLIT_REST_MIN_MS;
+    let longest = 0;
     for (const r of runs) {
         longest = Math.max(longest, longestBelow(r.points, r.facts.start, r.facts.coreEnd, finalRestVal));
     }
-    return between <= longest;
+    return between < SPLIT_REST_MIN_MS || between <= longest;
 }
 //# sourceMappingURL=finalLearn.js.map

@@ -1,14 +1,26 @@
 import assert from "node:assert";
 import { DeviceSync } from "../build/lib/deviceSync.js";
 import { fill, TEXT } from "../build/lib/dmTexts.js";
-import { emptyStore, saveStore, typeHash } from "../build/lib/runStore.js";
+import { emptyStore, MAX_CHANGES, pushChange, saveStore, typeHash } from "../build/lib/runStore.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { memoryFiles } from "./helpers/files.js";
 import { washingMachine } from "./helpers/curves.js";
 import { Notifier } from "../build/lib/notifier.js";
 import { DeviceRegistry, formatDate } from "../build/lib/deviceRegistry.js";
-import { deviceConfig, drain, DRYER, feed, instanceConfig, P, registrySetup, WASHER } from "./helpers/devices.js";
+import {
+	deviceConfig,
+	drain,
+	DRYER,
+	feed,
+	feedPoints,
+	instanceConfig,
+	P,
+	pauseRun,
+	registrySetup,
+	WASHER,
+} from "./helpers/devices.js";
 import { syntheticRun, WM_FINAL } from "./helpers/final.js";
+import { layoutOf, loadSeries, restartScenarios } from "./helpers/fixtures.js";
 import { historyOf } from "./helpers/history.js";
 import { runOf } from "./helpers/programmes.js";
 
@@ -402,6 +414,193 @@ describe("base, effective and active values at runtime", function () {
 		await sync.apply("dev", null);
 		assert.strictEqual(ctx.host.own("dev.settlingUntil"), 0);
 		assert.strictEqual(ctx.reg.get("dev"), undefined);
+	});
+});
+
+const W = loadSeries("washer30d");
+const FIN = { ...WASHER, ...WM_FINAL };
+
+/**
+ * Fixture values of the washer from 30 min before run 0 up to `toMs` (exclusive unless `inclusive`), shifted to
+ * the clock of the registry.
+ *
+ * @param {object} ctx registry context
+ * @param {number} toMs end (fixture time)
+ * @param {boolean} [inclusive] the end belongs to the window
+ * @returns {{ ts: number, val: number }[]} points
+ */
+function washerWindow(ctx, toMs, inclusive = false) {
+	const { L, s } = layoutOf(W);
+	const from = s.t0 + (L.runs[0].from - 180) * s.stepMs;
+	const shift = ctx.host.now() - from;
+	return W.filter(p => p.ts >= from && (inclusive ? p.ts <= toMs : p.ts < toMs)).map(p => ({
+		ts: p.ts + shift,
+		val: p.val,
+	}));
+}
+
+/**
+ * Fixture time 30 min before run 1 (the window of run 0 with its trailer).
+ *
+ * @returns {number} time in ms
+ */
+function beforeRun1() {
+	const { L, s } = layoutOf(W);
+	return s.t0 + (L.runs[1].from - 180) * s.stepMs;
+}
+
+describe("judging afterwards (Spec A.3)", function () {
+	this.timeout(600_000);
+	for (const autoOptimize of [false, true]) {
+		it(`Y 30 s: the first split rest suspends the final phase (auto-optimisation ${autoOptimize ? "on" : "off"})`, async () => {
+			const ctx = await registrySetup({ autoOptimize, detection: { ...FIN, finalMinSec: 30 } });
+			await feedPoints(ctx, washerWindow(ctx, beforeRun1()));
+			const st = ctx.reg.learningData("dev");
+			assert.deepStrictEqual(
+				[st.final.state, st.final.splits.length, st.final.reason],
+				["suspended", 1, "finalSplit"],
+			);
+			assert.strictEqual(ctx.reg.get("dev").active.finalMinVal, 0);
+			assert.strictEqual(ctx.reg.get("dev").effective.finalMinVal, 150);
+			assert.ok(ctx.host.logs.warn.some(m => m.includes("final phase suspended (finalSplit)")));
+			assert.deepStrictEqual(
+				ctx.host.sent.filter(x => x.instance === "telegram.0"),
+				[],
+				"no message without optimizeNotify (G14)",
+			);
+			assert.strictEqual(JSON.parse(ctx.host.own("dev.learning.optimizeInfo")).finalState, "suspended");
+			assert.ok(st.changes.some(c => c.kind === "finalSuspend" && c.trigger === st.final.splits[0]));
+		});
+	}
+	it("with optimizeNotify the suspension is sent once", async () => {
+		const ctx = await registrySetup({ autoOptimize: false, notify: true, detection: { ...FIN, finalMinSec: 30 } });
+		await feedPoints(ctx, washerWindow(ctx, beforeRun1()));
+		assert.strictEqual(ctx.host.sent.filter(x => x.instance === "telegram.0").length, 1);
+	});
+	it("a real restart after unloading does not suspend", async () => {
+		const ctx = await registrySetup({ autoOptimize: false, detection: FIN });
+		const sc = restartScenarios().find(x => x.key === "warm/0/5.5/10/18");
+		await feed(ctx, [...sc.values, ...new Array(400).fill(0.5)]);
+		assert.notStrictEqual(ctx.reg.learningData("dev").final?.state, "suspended");
+	});
+	it("'was a new run' resumes only when no other split is left (also without auto-optimisation)", async () => {
+		const ctx = await registrySetup({ autoOptimize: false, detection: { ...FIN, finalMinSec: 30 } });
+		await feedPoints(ctx, washerWindow(ctx, beforeRun1()));
+		const st = ctx.reg.learningData("dev");
+		const first = st.final.splits[0];
+		st.final.splits.push("dev@1");
+		assert.strictEqual(await ctx.reg.resumeFinal("dev", "newRun", first), false, "another split is left");
+		assert.deepStrictEqual(st.final.splits, ["dev@1"]);
+		assert.strictEqual(await ctx.reg.resumeFinal("dev", "newRun", "dev@1"), true);
+		assert.deepStrictEqual(
+			[st.final.state, ctx.reg.get("dev").active.finalMinVal, st.changes.at(-1).kind],
+			["on", 150, "finalResume"],
+		);
+	});
+	it("two real runs 15 min apart in one capture → two stored runs, no change (review/cap.mjs)", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, trailerBurstSec: 0 } });
+		const a = runOf({ device: "washer", programme: "cotton60", shape: "T3", seed: 1, after: 90 }).values;
+		const b = runOf({ device: "washer", programme: "cotton60", shape: "T3", seed: 2, after: 400 }).values;
+		await feed(ctx, [...a, ...b]);
+		const st = ctx.reg.learningData("dev");
+		assert.strictEqual(st.runs.length, 2);
+		assert.ok(
+			st.runs.every(r => r.label === "run"),
+			JSON.stringify(st.runs.map(r => r.label)),
+		);
+		assert.ok(!st.changes.some(c => c.kind === "repair"));
+		assert.strictEqual(st.override, null);
+	});
+	it("a pause inside the programme with a reported end stays one split run (repair trigger)", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, endCount: 20 } });
+		await feed(ctx, pauseRun(4, 25));
+		const st = ctx.reg.learningData("dev");
+		assert.deepStrictEqual(
+			st.runs.map(r => r.label),
+			["split"],
+		);
+	});
+	it("final phase without auto-optimisation: a split run changes no override and repairs nothing", async () => {
+		const ctx = await registrySetup({ autoOptimize: false, detection: { ...FIN, endCount: 20 } });
+		const st0 = ctx.reg.learningData("dev");
+		st0.override = { endCount: 200 };
+		await ctx.reg.upsert("dev", ctx.cfg);
+		assert.strictEqual(
+			ctx.reg.get("dev").currentOverride,
+			null,
+			"the override is never applied without auto-optimisation",
+		);
+		await feed(ctx, pauseRun(4, 25));
+		const st = ctx.reg.learningData("dev");
+		assert.ok(st.runs.length > 0, "the run is stored");
+		assert.ok(!st.changes.some(c => c.kind === "repair" || c.kind === "tighten"));
+		assert.deepStrictEqual(st.override, { endCount: 200 }, "kept untouched in the store");
+	});
+	for (const key of ["warm/0/5.5/10/18", "warm/0/5.5/5/3", "cold/0/5.5/20/36"]) {
+		it(`set up by hand (no comparison runs): restart after unloading ${key} does not suspend`, async () => {
+			const ctx = await registrySetup({ autoOptimize: false, detection: FIN });
+			const sc = restartScenarios().find(x => x.key === key);
+			await feed(ctx, [...sc.values, ...new Array(400).fill(0.5)]);
+			assert.notStrictEqual(ctx.reg.learningData("dev").final?.state, "suspended", key);
+		});
+	}
+	it("the split is judged at the end of the afterFinal run, not when the capture closes", async () => {
+		const ctx = await registrySetup({ autoOptimize: false, detection: { ...FIN, finalMinSec: 30 } });
+		// up to the poll of the second end: the early end, then the end of the rest of the split programme
+		await feedPoints(
+			ctx,
+			washerWindow(ctx, beforeRun1()),
+			10_000,
+			c => c.host.ownHistory("dev.lastFinished").length >= 2,
+		);
+		const snap = ctx.reg.get("dev").runRecorder.snapshot();
+		assert.ok(snap, "the capture is still open");
+		assert.deepStrictEqual(
+			snap.ev.map(e => e[1]),
+			["s", "f", "s", "f"],
+		);
+		assert.strictEqual(ctx.reg.learningData("dev").final?.state, "suspended");
+	});
+	it("a final phase without auto-optimisation reads the history once for comparison runs, applies no override", async () => {
+		const host = createFakeHost({ objects: { [P]: "number" } });
+		const points = historyOf(
+			[washingMachine, washingMachine, washingMachine, washingMachine],
+			host.now() - 2 * DAY,
+		);
+		const history = historyEnv(points);
+		const ctx = await registrySetup({ host, history, autoOptimize: false, detection: FIN });
+		await drain(ctx);
+		const st = ctx.reg.learningData("dev");
+		assert.ok(history.queries > 0, "the history was read");
+		assert.ok(st.runs.length >= 3, `runs taken over: ${st.runs.length}`);
+		assert.strictEqual(ctx.reg.get("dev").currentOverride, null);
+		assert.strictEqual(st.override, null, "nothing optimised");
+		assert.strictEqual(JSON.parse(ctx.host.own("dev.learning.optimizeInfo")).finalState, "on");
+	});
+	it("pushChange keeps the entries of runs still stored and the last base change", () => {
+		const st = emptyStore("dev", "", "x", 10_000, 1);
+		st.runs.push({ key: "dev@100", ts: 0, seg: { startIdx: 0 } });
+		const c = (kind, extra = {}) => ({
+			ts: 0,
+			kind,
+			from: null,
+			to: null,
+			reason: "",
+			runs: 0,
+			gainSec: 0,
+			...extra,
+		});
+		pushChange(st, c("baseChanged"));
+		pushChange(st, c("finalSuspend", { trigger: "dev@101" }));
+		pushChange(st, c("finalSuspend", { trigger: "dev@900" }));
+		for (let k = 0; k < 12; k++) {
+			pushChange(st, c("tighten", { gainSec: k }));
+		}
+		assert.strictEqual(st.changes.length, MAX_CHANGES);
+		assert.strictEqual(st.changes[0].kind, "baseChanged");
+		assert.strictEqual(st.changes[1].trigger, "dev@101", "its run (within 5 min) is still stored");
+		assert.ok(!st.changes.some(x => x.trigger === "dev@900"), "its run is gone");
+		assert.strictEqual(st.changes.at(-1).gainSec, 11);
 	});
 });
 

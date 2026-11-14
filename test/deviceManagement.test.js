@@ -340,6 +340,18 @@ describe("deviceManagement", () => {
 			assert.match(JSON.stringify(devices.find(x => x.id === "d").status), /Kessel/);
 		});
 
+		it("card warning: a suspended final phase (Spec A.3 point 3)", async () => {
+			const ctx = setup({ files: memoryFiles() });
+			await addDevice(ctx, "trockner", deviceCfg({ detection: DRYER, autoOptimize: true }));
+			const st = ctx.registry.learningData("trockner");
+			assert.ok(st, "learning data loaded");
+			let [info] = await load(ctx);
+			assert.notDeepStrictEqual(info.status.warning, TEXT.finalSuspendedCard);
+			st.final = { state: "suspended", splits: ["trockner@1"], suspendedAt: 1, reason: "finalSplit" };
+			[info] = await load(ctx);
+			assert.deepStrictEqual(info.status.warning, TEXT.finalSuspendedCard);
+		});
+
 		it("card model: an active override of the optimisation counts as learned", async () => {
 			const ctx = setup();
 			await addDevice(ctx, "a", deviceCfg({ name: "A" }));

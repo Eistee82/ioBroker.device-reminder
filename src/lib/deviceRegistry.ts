@@ -1,5 +1,6 @@
 import { runActions } from "./actions.js";
 import type { DeviceConfig, InstanceConfig } from "./config.js";
+import { finalOn, finalValuesOf } from "./detector/index.js";
 import type { DetectionSettings } from "./detector/types.js";
 import { DeviceRuntime } from "./deviceRuntime.js";
 import { fill, TEXT } from "./dmTexts.js";
@@ -8,7 +9,9 @@ import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import type { FileIO, MessageSink, NotifierHost, RuntimeEvent, RuntimeListener } from "./host.js";
 import type { GateResult, OptimizeContext, OptimizeOutcome } from "./learn/autoOptimize.js";
 import type { QualityContext } from "./learn/quality.js";
+import { admitted, sameRun } from "./learn/quality.js";
 import { effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
+import { checkFinalSplit } from "./learn/finalLearn.js";
 import { simulate } from "./learn/replay.js";
 import { buildLayout } from "./learn/runs.js";
 import { scaled } from "./learn/ticks.js";
@@ -18,12 +21,15 @@ import type { Notifier } from "./notifier.js";
 import { ReminderScheduler } from "./reminder.js";
 import type { Capture } from "./runRecorder.js";
 import { RunRecorder } from "./runRecorder.js";
-import type { StoreFile } from "./runStore.js";
+import type { FinalState, FinalSplitPair, StoreFile } from "./runStore.js";
 import {
 	addRun,
 	clearLearningData,
+	convertRuns,
 	decisionOf,
+	detectionOf,
 	emptyStore,
+	finalSplitPairs,
 	fitSize,
 	labelCapture,
 	loadStore,
@@ -35,6 +41,8 @@ import {
 	removeStore,
 	saveStore,
 	setDecision,
+	splitCapture,
+	storeSamples,
 	typeHash,
 	upgradeStore,
 } from "./runStore.js";
@@ -59,6 +67,20 @@ interface OptEntry {
 
 /** Time budget of one optimisation job. */
 const OPTIMIZE_BUDGET_MS = 30_000;
+/** Most keys of runs judged afterwards that are remembered (`FinalState.checked`). */
+const CHECKED_MAX = 20;
+
+/** Why the final phase is suspended. */
+export type FinalSuspendReason = "finalSplit" | "earlyEnd";
+/** Why the final phase is used again. */
+export type FinalResumeReason = "user" | "newRun" | "repair" | "endOk" | "cleared";
+
+/**
+ * Learning data of a device: `full` with the automatic optimisation; `final` only for the final phase (the device
+ * has a final phase but no automatic optimisation: runs are recorded and judged afterwards, the only change of the
+ * values is the suspension, an override is never applied or computed); `off` without.
+ */
+type OptMode = "full" | "final" | "off";
 
 /** Optional parts of the registry. */
 export interface RegistryOptions {
@@ -205,7 +227,10 @@ export class DeviceRegistry implements RuntimeListener {
 		if (!store) {
 			return;
 		}
-		if (!entry.holdOverride) {
+		if (this.modeOf(entry.runtime.config) !== "full") {
+			// "automatic optimisation off" means the values of the device; a stored override stays in the store
+			entry.runtime.setOverride(null);
+		} else if (!entry.holdOverride) {
 			entry.runtime.setOverride(store.override);
 		}
 		const suspended = this.suspendedOf(entry);
@@ -478,6 +503,7 @@ export class DeviceRegistry implements RuntimeListener {
 				entry.reminder.onFinished();
 				void runActions(this.host, cfg.actions, "end");
 				this.persistPending(entry);
+				this.judgeAtEnd(deviceId, entry);
 				break;
 			case "abort":
 				break;
@@ -593,6 +619,8 @@ export class DeviceRegistry implements RuntimeListener {
 		if (entry?.opt) {
 			const cfg = entry.runtime.config;
 			entry.runtime.setOverride(null);
+			// the split runs go with the learning data: the final phase is used again
+			entry.runtime.setFinalSuspended(false);
 			const cleared = clearLearningData(entry.opt.store, keepDecisions);
 			cleared.typeId = cfg.template ?? "";
 			cleared.typeHash = typeHash(entry.runtime.baseDetection);
@@ -754,15 +782,31 @@ export class DeviceRegistry implements RuntimeListener {
 	}
 
 	/**
-	 * Start or stop the automatic optimisation of a device according to its configuration.
+	 * What the learning data of a device are kept for (`OptMode`).
+	 *
+	 * @param cfg - Device configuration
+	 */
+	private modeOf(cfg: DeviceConfig): OptMode {
+		if (!this.files) {
+			return "off";
+		}
+		if (cfg.autoOptimize === true) {
+			return "full";
+		}
+		return finalOn(detectionOf(cfg.detection)) ? "final" : "off";
+	}
+
+	/**
+	 * Start or stop the automatic optimisation of a device (or the learning data of its final phase) according to
+	 * its configuration.
 	 *
 	 * @param deviceId - Device id
 	 * @param entry - Entry
 	 */
 	private async syncOptimize(deviceId: string, entry: Entry): Promise<void> {
 		const cfg = entry.runtime.config;
-		const want = cfg.autoOptimize === true && this.files !== undefined;
-		if (!want) {
+		const mode = this.modeOf(cfg);
+		if (mode === "off") {
 			if (entry.opt) {
 				entry.runtime.attachRecorder(null);
 				entry.runtime.setOverride(null);
@@ -773,8 +817,12 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		if (entry.opt || !this.files) {
+			if (entry.opt && mode !== "full") {
+				entry.runtime.setOverride(null);
+			}
 			return;
 		}
+		const full = mode === "full";
 		const inst = this.getConfig();
 		const step = inst.pollIntervalSec * 1000;
 		const unitFactor = await this.unitFactorOf(cfg.powerId);
@@ -798,15 +846,21 @@ export class DeviceRegistry implements RuntimeListener {
 		}
 		const hadOverride = store.override !== null;
 		// an adoption whose learning data was not saved any more (instance stopped in between): the stored override
-		// is already part of the new base values
-		const base = reconcileBase(store, typeHash(type), typeHash(effectiveOf(type, store.override)), now);
+		// is already part of the new base values; only for the final phase the override stays untouched
+		const base = full
+			? reconcileBase(store, typeHash(type), typeHash(effectiveOf(type, store.override)), now)
+			: "none";
 		if (base === "adopted") {
 			this.host.log.info(`${cfg.name}: values in use adopted as base values`);
 		}
 		const converted = store.step !== step || store.unitFactor !== unitFactor;
-		for (const msg of reconcileStore(store, typeHash(type), step, unitFactor, now)) {
+		const msgs = full
+			? reconcileStore(store, typeHash(type), step, unitFactor, now)
+			: convertRuns(store, step, unitFactor);
+		for (const msg of msgs) {
 			this.host.log.info(`${cfg.name}: ${msg}`);
 		}
+		refreshInfo(store);
 		if (upgraded.length > 0 || converted) {
 			recompute(store, this.qualityContext(store));
 		}
@@ -819,7 +873,9 @@ export class DeviceRegistry implements RuntimeListener {
 		entry.opt = { store, recorder };
 		entry.holdOverride = false;
 		entry.runtime.attachRecorder(recorder);
-		if (store.override) {
+		if (!full) {
+			entry.runtime.setOverride(null);
+		} else if (store.override) {
 			const g = await gate(store, effectiveOf(type, store.override), this.optimizeContext(entry));
 			if (g.ok) {
 				entry.runtime.setOverride(store.override);
@@ -1037,28 +1093,227 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		const store = opt.store;
-		const res = labelCapture(cap, entry.runtime.effective.endVal * cap.unitFactor);
+		const keepAboveW = entry.runtime.effective.endVal * cap.unitFactor;
 		store.pending = null;
-		if (res.label === "unclear" || !res.run) {
-			store.info.unclear++;
-		} else {
-			addRun(store, res.run, { ctx: this.qualityContext(store), now: this.host.now() });
-			if (res.trusted) {
-				store.newSinceChange++;
-				store.lockRuns = Math.max(0, store.lockRuns - 1);
+		let stored = false;
+		let endDelaySec: number | null = null;
+		// two real runs shortly one after the other, or a run after an early end, are stored as runs of their own
+		for (const part of splitCapture(cap)) {
+			const res = labelCapture(part.capture, keepAboveW, "live", { followed: part.followed });
+			if (res.label === "unclear" || !res.run) {
+				store.info.unclear++;
+			} else {
+				const run = res.run;
+				addRun(store, run, {
+					ctx: this.qualityContext(store),
+					now: this.host.now(),
+					onVerdicts: v => {
+						// a merged run (two runs grown together) is no detection error (decision 9)
+						if (run.label === "split" && v.get(run.key)?.reasons.some(x => x.code === "merged")) {
+							run.label = "run";
+						}
+					},
+				});
+				stored = true;
+				if (res.trusted) {
+					store.newSinceChange++;
+					store.lockRuns = Math.max(0, store.lockRuns - 1);
+				}
 			}
+			endDelaySec = res.endDelaySec ?? endDelaySec;
 		}
-		if (res.endDelaySec !== null) {
-			store.info.lastEndDelaySec = res.endDelaySec;
-			await this.host.setOwnState(`${deviceId}.learning.lastEndDelay`, res.endDelaySec);
+		if (endDelaySec !== null) {
+			store.info.lastEndDelaySec = endDelaySec;
+			await this.host.setOwnState(`${deviceId}.learning.lastEndDelay`, endDelaySec);
 		}
 		refreshInfo(store);
 		await this.saveOpt(entry);
-		if (res.run) {
+		// a run after an early end that was not judged at its end yet (e.g. restart in between)
+		if (this.unjudged(store, finalSplitPairs(cap, store.deviceId)).length > 0) {
+			this.enqueue(deviceId, () => this.judgeSplits(deviceId, cap));
+		}
+		if (stored) {
 			this.enqueueOptimize(deviceId);
 		} else {
 			await this.writeOptStates(deviceId, entry);
 		}
+	}
+
+	/**
+	 * At the end of a run: judge a run after an early end of the final phase on a snapshot of the open capture
+	 * (Spec A.3 "Beurteilung im Nachhinein"), so that a programme started meanwhile already meets the suspended final
+	 * phase. The capture is stored later as usual; the judgement is not repeated then.
+	 *
+	 * @param deviceId - Device id
+	 * @param entry - Entry
+	 */
+	private judgeAtEnd(deviceId: string, entry: Entry): void {
+		const opt = entry.opt;
+		const snap = opt?.recorder.snapshot();
+		if (!opt || !snap || this.unjudged(opt.store, finalSplitPairs(snap, opt.store.deviceId)).length === 0) {
+			return;
+		}
+		this.enqueue(deviceId, () => this.judgeSplits(deviceId, snap));
+	}
+
+	/**
+	 * Runs after an early end that were not judged yet.
+	 *
+	 * @param store - Store
+	 * @param pairs - Runs after an early end with their early part
+	 */
+	private unjudged(store: StoreFile, pairs: FinalSplitPair[]): FinalSplitPair[] {
+		const known = [...(store.final?.checked ?? []), ...(store.final?.splits ?? [])];
+		return pairs.filter(p => !known.some(k => k === p.key || sameRun(k, p.key)));
+	}
+
+	/**
+	 * Judge the runs of a capture that started after an early end (`checkFinalSplit`): if the run is the rest of the
+	 * split programme, the final phase is suspended (also without the automatic optimisation). Comparison data are
+	 * the stored runs admitted for the final phase and the base bands; without them only the rest between the parts
+	 * counts (Task 16).
+	 *
+	 * @param deviceId - Device id
+	 * @param cap - Capture or snapshot of the open capture
+	 */
+	private async judgeSplits(deviceId: string, cap: Capture): Promise<void> {
+		const entry = this.devices.get(deviceId);
+		const store = entry?.opt?.store;
+		if (!entry || !store) {
+			return;
+		}
+		const pairs = this.unjudged(store, finalSplitPairs(cap, store.deviceId));
+		if (pairs.length === 0) {
+			return;
+		}
+		const ctx = this.qualityContext(store);
+		const clean = storeSamples(store, ctx)
+			.filter(x => x.sample.kind === "run" && !x.sample.afterFinal && admitted(x.verdict, "final"))
+			.map(x => x.sample);
+		const restVal = finalValuesOf(entry.runtime.effective, this.getConfig().pollIntervalSec).finalRestVal;
+		const final = this.finalOf(entry, store);
+		for (const p of pairs) {
+			final.checked = [...(final.checked ?? []), p.key].slice(-CHECKED_MAX);
+			if (checkFinalSplit(p.prev, p.next, clean, store.bands ?? null, restVal)) {
+				await this.suspendFinalNow(deviceId, "finalSplit", p.key);
+			}
+		}
+		await this.saveOpt(entry);
+		await this.writeOptStates(deviceId, entry);
+	}
+
+	/**
+	 * State of the final phase in the store, created if missing (`on`/`off` from the values in use).
+	 *
+	 * @param entry - Entry
+	 * @param store - Store
+	 */
+	private finalOf(entry: Entry, store: StoreFile): FinalState {
+		store.final ??= { state: finalOn(entry.runtime.effective) ? "on" : "off", splits: [], suspendedAt: 0 };
+		return store.final;
+	}
+
+	/**
+	 * Suspend the final phase of a device (Spec A.3, D.3 point 3): only a mask of the values the detector is built
+	 * with, kept in the store until it is used again. Log warning, `optimizeInfo.finalState`, change entry and the
+	 * warning on the card; a message to the recipients only with `optimizeNotify`.
+	 *
+	 * @param deviceId - Device id
+	 * @param reason - `finalSplit` (judged afterwards) or `earlyEnd` (early end when an admitted run was replayed)
+	 * @param key - Key of the run that caused it
+	 */
+	public suspendFinal(deviceId: string, reason: FinalSuspendReason, key: string): Promise<void> {
+		return this.serialized(async () => {
+			await this.suspendFinalNow(deviceId, reason, key);
+		});
+	}
+
+	private async suspendFinalNow(deviceId: string, reason: FinalSuspendReason, key: string): Promise<boolean> {
+		const entry = this.devices.get(deviceId);
+		const store = entry?.opt?.store;
+		if (!entry || !store) {
+			return false;
+		}
+		const final = this.finalOf(entry, store);
+		const was = final.state === "suspended";
+		const now = this.host.now();
+		store.final = {
+			...final,
+			state: "suspended",
+			splits: final.splits.includes(key) ? final.splits : [...final.splits, key],
+			suspendedAt: was ? final.suspendedAt : now,
+			reason,
+		};
+		entry.runtime.setFinalSuspended(true);
+		pushChange(store, {
+			ts: now,
+			kind: "finalSuspend",
+			from: store.override,
+			to: store.override,
+			reason: `final phase suspended (${reason})`,
+			runs: store.runs.length + store.spikes.length,
+			gainSec: 0,
+			trigger: key,
+		});
+		await this.saveOpt(entry);
+		await this.writeOptStates(deviceId, entry);
+		if (!was) {
+			this.host.log.warn(`${entry.runtime.config.name}: final phase suspended (${reason})`);
+			await this.sendOptimization(entry, TEXT.finalSuspended, {});
+		}
+		return true;
+	}
+
+	/**
+	 * Use the suspended final phase again (Spec A.3 point 6, D.5, D.7). With `newRun` (the user confirmed that the
+	 * run after the early end was a new run) only the key of that run is removed, and the final phase is used again
+	 * only when no other split run is left; the other reasons clear all split runs.
+	 *
+	 * @param deviceId - Device id
+	 * @param why - Reason
+	 * @param key - Key of the run (needed with `newRun`)
+	 * @returns whether the final phase is used again
+	 */
+	public resumeFinal(deviceId: string, why: FinalResumeReason, key?: string): Promise<boolean> {
+		return this.serialized(() => this.resumeFinalNow(deviceId, why, key));
+	}
+
+	private async resumeFinalNow(deviceId: string, why: FinalResumeReason, key?: string): Promise<boolean> {
+		const entry = this.devices.get(deviceId);
+		const store = entry?.opt?.store;
+		const final = store?.final;
+		if (!entry || !store || !final || (why === "newRun" && !key)) {
+			return false;
+		}
+		const left =
+			why === "newRun" ? final.splits.filter(k => k !== key && !sameRun(k, key ?? "")) : ([] as string[]);
+		final.splits = left;
+		if (left.length > 0 || final.state !== "suspended") {
+			await this.saveOpt(entry);
+			await this.writeOptStates(deviceId, entry);
+			return false;
+		}
+		final.state = finalOn(entry.runtime.effective) ? "on" : "off";
+		final.suspendedAt = 0;
+		delete final.reason;
+		entry.runtime.setFinalSuspended(false);
+		pushChange(store, {
+			ts: this.host.now(),
+			kind: "finalResume",
+			from: store.override,
+			to: store.override,
+			reason: `final phase used again (${why})`,
+			runs: store.runs.length + store.spikes.length,
+			gainSec: 0,
+			...(key ? { trigger: key } : {}),
+		});
+		await this.saveOpt(entry);
+		await this.writeOptStates(deviceId, entry);
+		this.host.log.info(`${entry.runtime.config.name}: final phase used again (${why})`);
+		if (why === "repair" || why === "endOk") {
+			await this.sendOptimization(entry, TEXT.finalResumed, {});
+		}
+		return true;
 	}
 
 	/**
@@ -1109,6 +1364,12 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		const store = opt.store;
+		if (this.modeOf(entry.runtime.config) !== "full") {
+			// only the final phase: run check and judgement afterwards, no repair, no tightening
+			await this.saveOpt(entry);
+			await this.writeOptStates(deviceId, entry);
+			return;
+		}
 		const trailerBefore = store.info.trailer;
 		const ctx = this.optimizeContext(entry);
 		const baseHash = typeHash(ctx.type);
@@ -1194,9 +1455,25 @@ export class DeviceRegistry implements RuntimeListener {
 		vars: Record<string, string | number>,
 		level: "info" | "warn" = "info",
 	): Promise<void> {
+		this.host.log[level](fill(text, "en", { device: entry.runtime.config.name, ...vars }));
+		await this.sendOptimization(entry, text, vars);
+	}
+
+	/**
+	 * Send a message of the automatic optimisation to the recipients of the device, only if it wants them
+	 * (`optimizeNotify`), in the language of the installation; nothing is logged.
+	 *
+	 * @param entry - Entry
+	 * @param text - Text with the placeholders `{device}` and `vars`
+	 * @param vars - Values of the placeholders
+	 */
+	private async sendOptimization(
+		entry: Entry,
+		text: ioBroker.Translated,
+		vars: Record<string, string | number>,
+	): Promise<void> {
 		const cfg = entry.runtime.config;
 		const all = { device: cfg.name, ...vars };
-		this.host.log[level](fill(text, "en", all));
 		if (!cfg.optimizeNotify) {
 			return;
 		}
@@ -1221,6 +1498,12 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		const runtime = entry.runtime;
+		// only "suspended" is a kept state; on and off follow the values in use
+		const on = finalOn(runtime.effective);
+		if (store.final && store.final.state !== "suspended") {
+			store.final.state = on ? "on" : "off";
+		}
+		store.info.finalState = store.final?.state === "suspended" ? "suspended" : on ? "on" : "off";
 		await this.host.setOwnState(`${deviceId}.learning.optimized`, runtime.currentOverride !== null);
 		await this.host.setOwnState(
 			`${deviceId}.learning.parameters`,

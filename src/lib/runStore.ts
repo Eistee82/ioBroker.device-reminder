@@ -8,7 +8,17 @@ import { assignFamilies, featuresOf } from "./learn/families.js";
 import type { QualityContext, RunSample, Uses, Verdict } from "./learn/quality.js";
 import { admitted, checkRuns, sameRun, samplesOf, verdictKey } from "./learn/quality.js";
 import type { Layout, RunInfo, TailPart } from "./learn/runs.js";
-import { applyTail, buildLayout, LAYOUT_REV, MAX_PAUSE_MS, median, tailRule } from "./learn/runs.js";
+import {
+	applyTail,
+	buildLayout,
+	LAYOUT_REV,
+	LEVEL_SEP_W,
+	MAX_PAUSE_MS,
+	median,
+	quantile,
+	SPLIT_GAP_MIN_MS,
+	tailRule,
+} from "./learn/runs.js";
 import type { TickCell, TickSeries } from "./learn/ticks.js";
 import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
 import type { Capture, CaptureEntry } from "./runRecorder.js";
@@ -127,9 +137,22 @@ export interface Change {
 	ts: number;
 	/**
 	 * Kind (`adopted`: the values in use became the base values; `typeChanged`: entries of earlier versions, shown
-	 * like `baseChanged`).
+	 * like `baseChanged`; `revert`: a repair taken back; `finalOn`/`finalSuspend`/`finalResume`/`finalRepair`: the
+	 * final phase switched on, suspended, used again or repaired).
 	 */
-	kind: "repair" | "tighten" | "undo" | "reset" | "adopted" | "baseChanged" | "typeChanged";
+	kind:
+		| "repair"
+		| "tighten"
+		| "undo"
+		| "reset"
+		| "adopted"
+		| "baseChanged"
+		| "typeChanged"
+		| "revert"
+		| "finalOn"
+		| "finalSuspend"
+		| "finalResume"
+		| "finalRepair";
 	/** Override before. */
 	from: Partial<DetectionSettings> | null;
 	/** Override after. */
@@ -140,10 +163,12 @@ export interface Change {
 	runs: number;
 	/** Mean gain of the end delay in s. */
 	gainSec: number;
+	/** Key of the run that caused the change (kept while the run is stored). */
+	trigger?: string;
 }
 
 /** Status of the automatic optimisation. */
-export type OptimizeStatus = "off" | "collecting" | "ok" | "locked" | "cannotCover" | "drift" | "budget";
+export type OptimizeStatus = "off" | "collecting" | "ok" | "locked" | "cannotCover" | "drift" | "budget" | "review";
 
 /** Status shown in `learning.optimizeInfo`. */
 export interface OptimizeInfo {
@@ -165,6 +190,16 @@ export interface OptimizeInfo {
 	lastEndDelaySec: number;
 	/** Captures that could not be classified. */
 	unclear: number;
+	/** Final phase: off, on, or suspended (derived from the values in use at every write; only `suspended` is kept). */
+	finalState?: "off" | "on" | "suspended";
+	/** Keys of the runs with an open hint (wrongly detected run in quarantine, Spec B.3). */
+	review?: string[];
+	/** Stored runs and false starts excluded by the user. */
+	excluded?: number;
+	/** Optimisation jobs in a row stopped by the time budget. */
+	budget?: number;
+	/** Active computing time of the last job in ms. */
+	jobMs?: number;
 }
 
 /** Decision of the user about one run (kept over its key, also by "clear learning data"). */
@@ -195,8 +230,10 @@ export interface FinalState {
 	splits: string[];
 	/** Time of the suspension (0 = none). */
 	suspendedAt: number;
-	/** Reason of the suspension (English). */
+	/** Reason of the suspension (`finalSplit`, `earlyEnd`). */
 	reason?: string;
+	/** Keys of the runs after an early end already judged afterwards (not judged again when the capture closes). */
+	checked?: string[];
 }
 
 /** Learning data of one device. */
@@ -694,15 +731,27 @@ export function reconcileStore(
 }
 
 /**
- * Append a change (the last MAX_CHANGES are kept).
+ * Append a change. At most MAX_CHANGES are kept: entries whose triggering run is still stored and the last change of
+ * the base values (`adopted`/`baseChanged`, the limit of undo) stay; the oldest other entry goes first.
  *
  * @param store - Store
  * @param c - Change
  */
 export function pushChange(store: StoreFile, c: Change): void {
 	store.changes.push(c);
-	if (store.changes.length > MAX_CHANGES) {
-		store.changes.splice(0, store.changes.length - MAX_CHANGES);
+	while (store.changes.length > MAX_CHANGES) {
+		const keys = [...store.runs, ...store.spikes].map(r => r.key);
+		let lastBase = -1;
+		store.changes.forEach((x, i) => {
+			if (x.kind === "adopted" || x.kind === "baseChanged" || x.kind === "typeChanged") {
+				lastBase = i;
+			}
+		});
+		const kept = (x: Change, i: number): boolean =>
+			i === lastBase ||
+			(x.trigger !== undefined && keys.some(k => k === x.trigger || sameRun(k, x.trigger ?? "")));
+		const victim = store.changes.findIndex((x, i) => !kept(x, i));
+		store.changes.splice(victim >= 0 ? victim : 0, 1);
 	}
 }
 
@@ -715,6 +764,9 @@ export function refreshInfo(store: StoreFile): void {
 	store.info.runs = store.runs.length;
 	store.info.spikes = store.spikes.length;
 	store.info.families = new Set(store.runs.map(r => r.family)).size;
+	store.info.excluded = [...store.runs, ...store.spikes].filter(
+		r => decisionOf(store, r.key)?.user === "exclude",
+	).length;
 }
 
 /** Result of labelling a capture. */
@@ -729,14 +781,32 @@ export interface LabelResult {
 	trusted: boolean;
 }
 
+/** Options of `labelCapture`. */
+export interface LabelOptions {
+	/**
+	 * The capture is a part of a split capture followed by another part (`splitCapture`): it ends at a rest or at an
+	 * early end, so the time after the programme needs no post-roll of MAX_PAUSE_MS.
+	 */
+	followed?: boolean;
+}
+
 /**
- * Classify a closed capture and turn it into a stored run.
+ * Classify a closed capture (or one part of it, `splitCapture`) and turn it into a stored run. `split` means: the
+ * run of the capture has two or more reported starts or ends (or none); whether it is a merged run (no detection
+ * error, Spec B.2 `merged`) decides the run check after it was stored. The mark `afterFinal` of the first start
+ * goes to the stored run.
  *
  * @param c - Capture
  * @param keepAboveW - End threshold of the effective type in W (drying phases above it belong to the run)
  * @param src - Origin
+ * @param o - Options
  */
-export function labelCapture(c: Capture, keepAboveW: number, src: "live" | "history" = "live"): LabelResult {
+export function labelCapture(
+	c: Capture,
+	keepAboveW: number,
+	src: "live" | "history" = "live",
+	o: LabelOptions = {},
+): LabelResult {
 	const sW = fromCells(c.cells, c.t0, c.stepMs, c.unitFactor);
 	const unclear: LabelResult = { label: "unclear", run: null, endDelaySec: null, trusted: false };
 	if (sW.points < 20) {
@@ -745,6 +815,7 @@ export function labelCapture(c: Capture, keepAboveW: number, src: "live" | "hist
 	const layout = buildLayout(sW, { recording: true, keepAbove: keepAboveW });
 	const starts = c.ev.filter(e => e[1] === "s");
 	const ends = c.ev.filter(e => e[1] !== "s");
+	const mark = starts[0]?.[2];
 	const q = quantOf(c.unitFactor);
 	const base = {
 		id: `${c.t0.toString(36)}${c.ev.length.toString(36)}`,
@@ -761,6 +832,7 @@ export function labelCapture(c: Capture, keepAboveW: number, src: "live" | "hist
 		key: "",
 		rev: LAYOUT_REV,
 		...(c.rep ? { rep: toDiffs(c.rep) } : {}),
+		...(mark ? { afterFinal: mark } : {}),
 	};
 	if (layout.runs.length === 0) {
 		if (starts.length === 0) {
@@ -833,11 +905,308 @@ export function labelCapture(c: Capture, keepAboveW: number, src: "live" | "hist
 			break;
 		}
 	}
-	const postOk = (c.cells.length - 1 - r.runEnd) * c.stepMs >= POST_ROLL_MS || c.postTruncated;
+	const postOk = (c.cells.length - 1 - r.runEnd) * c.stepMs >= POST_ROLL_MS || c.postTruncated || o.followed === true;
 	if (!startOk || !valid || !postOk) {
 		return unclear;
 	}
 	return { label: "run", run, endDelaySec, trusted: !c.postTruncated };
+}
+
+/** One part of a capture (`splitCapture`). */
+export interface CapturePart {
+	/** Cells, events and report times of the part. */
+	capture: Capture;
+	/** Events of the part (the same as `capture.ev`). */
+	ev: CaptureEntry[];
+	/** Another part follows (the part ends at a rest or at an early end). */
+	followed: boolean;
+}
+
+/**
+ * Ticks of a capture in W (NaN: invalid).
+ *
+ * @param c - Capture
+ */
+function wattsOf(c: Capture): number[] {
+	return c.cells.map(x => (x.valid && Number.isFinite(x.last) ? x.last * c.unitFactor : Number.NaN));
+}
+
+/**
+ * Level after the end of a capture in W: the end of a capture is its quiet time after the last run (like the idle
+ * level of the recording layout: the lower of the median of the last 10 % and the last value).
+ *
+ * @param w - Ticks in W
+ */
+function idleOfCapture(w: readonly number[]): number {
+	const valid = w.filter(x => Number.isFinite(x));
+	if (valid.length === 0) {
+		return 0;
+	}
+	const tail = valid.slice(-Math.max(3, Math.ceil(valid.length * 0.1)));
+	return Math.max(0, Math.min(median(tail), tail.at(-1) ?? 0));
+}
+
+/**
+ * Levels of the pauses inside the reported runs of a capture in W: stretches at or below the run level that are
+ * shorter than a rest (SPLIT_GAP_MIN_MS), each by its median.
+ *
+ * @param c - Capture
+ * @param w - Ticks in W
+ * @param runLimit - Run level in W
+ * @param idxOf - Cell index of a time
+ * @param need - Ticks of a rest
+ */
+function pauseLevels(
+	c: Capture,
+	w: readonly number[],
+	runLimit: number,
+	idxOf: (t: number) => number,
+	need: number,
+): number[] {
+	const out: number[] = [];
+	let runFrom: number | null = null;
+	for (const e of c.ev) {
+		if (e[1] === "s") {
+			runFrom ??= idxOf(e[0]);
+			continue;
+		}
+		if (runFrom === null) {
+			continue;
+		}
+		const to = idxOf(e[0]);
+		let k = runFrom;
+		while (k <= to) {
+			if (Number.isFinite(w[k]) && w[k] <= runLimit) {
+				const from = k;
+				while (k <= to && Number.isFinite(w[k]) && w[k] <= runLimit) {
+					k++;
+				}
+				if (k - from < need) {
+					out.push(median(w.slice(from, k)));
+				}
+			} else {
+				k++;
+			}
+		}
+		runFrom = null;
+	}
+	return out;
+}
+
+/**
+ * Split a capture into its runs (Spec B.2 "Live-Aufnahme und gespeicherte Läufe"): a capture stays open after an
+ * end, and a start meanwhile extends it, so two real runs shortly one after the other end up in one capture. It is
+ * split between a reported end and the next start where the device rests at its level after an end for at least
+ * SPLIT_GAP_MIN_MS (as `splitGrown` of the history only if the pauses inside the runs are clearly below or above
+ * that level; otherwise a long pause inside a programme would split it and the split run would be hidden), and in
+ * addition at every start with the mark `afterFinal` (there at the rest, otherwise right after the early end, so
+ * that the part after it holds the time between the parts). Events and report times go to the part of their time.
+ * Without a split point the capture is the only part.
+ *
+ * @param c - Closed capture
+ */
+export function splitCapture(c: Capture): CapturePart[] {
+	const n = c.cells.length;
+	const step = c.stepMs;
+	const whole: CapturePart[] = [{ capture: c, ev: c.ev, followed: false }];
+	if (n === 0 || c.ev.filter(e => e[1] === "s").length < 2) {
+		return whole;
+	}
+	const w = wattsOf(c);
+	const idle = idleOfCapture(w);
+	const runLimit = idle * 3 + 2;
+	const idxOf = (t: number): number => Math.max(0, Math.min(n - 1, Math.round((t - c.t0) / step)));
+	const need = Math.ceil(SPLIT_GAP_MIN_MS / step);
+	const pauses = pauseLevels(c, w, runLimit, idxOf, need);
+	// pauses clearly below the level after an end (or none seen), or clearly above it
+	const below = pauses.length === 0 || quantile(pauses, 0.9) * 1.5 + LEVEL_SEP_W < idle * 0.8;
+	const above = pauses.length > 0 && quantile(pauses, 0.1) > idle * 1.5 + LEVEL_SEP_W;
+	const lo = pauses.length > 0 && below ? 0.8 * idle : Number.NEGATIVE_INFINITY;
+	const hi = 1.25 * idle + 0.1;
+	const atRest = (k: number): boolean => (below || above) && Number.isFinite(w[k]) && w[k] >= lo && w[k] <= hi;
+
+	const cuts: number[] = [];
+	let lastEnd: CaptureEntry | null = null;
+	for (const e of c.ev) {
+		if (e[1] !== "s") {
+			lastEnd = e;
+			continue;
+		}
+		if (!lastEnd) {
+			continue;
+		}
+		const iE = idxOf(lastEnd[0]);
+		const iS = idxOf(e[0]);
+		lastEnd = null;
+		// the longest rest between the end and the start
+		let best: { from: number; len: number } | null = null;
+		let k = iE + 1;
+		while (k < iS) {
+			if (atRest(k)) {
+				const from = k;
+				while (k < iS && atRest(k)) {
+					k++;
+				}
+				if (!best || k - from > best.len) {
+					best = { from, len: k - from };
+				}
+			} else {
+				k++;
+			}
+		}
+		let cut: number | null = null;
+		if (best && best.len >= need) {
+			cut = best.from + Math.floor(best.len / 2);
+		} else if (e[2] !== undefined) {
+			cut = iE + 1;
+		}
+		if (cut !== null && cut > (cuts.at(-1) ?? 0) && cut < n) {
+			cuts.push(cut);
+		}
+	}
+	if (cuts.length === 0) {
+		return whole;
+	}
+	const bounds = [0, ...cuts, n];
+	const parts: CapturePart[] = [];
+	for (let p = 0; p + 1 < bounds.length; p++) {
+		const from = bounds[p];
+		const to = bounds[p + 1];
+		const first = p === 0;
+		const last = p + 2 === bounds.length;
+		const t0 = c.t0 + from * step;
+		const tEnd = c.t0 + to * step;
+		const ev = c.ev.filter(e => (first || e[0] >= t0) && (last || e[0] < tEnd));
+		const capture: Capture = {
+			t0,
+			stepMs: step,
+			unitFactor: c.unitFactor,
+			cells: c.cells.slice(from, to),
+			ev,
+			postTruncated: last ? c.postTruncated : false,
+		};
+		if (c.rep) {
+			// a report belongs to the cell of the next poll
+			const lowRep = (from - 1) * step;
+			const highRep = (to - 1) * step;
+			capture.rep = c.rep.filter(t => (first || t > lowRep) && (last || t <= highRep)).map(t => t - from * step);
+		}
+		parts.push({ capture, ev, followed: !last });
+	}
+	return parts;
+}
+
+/** Exits of the lock phase after which the run is judged afterwards (exit a: the inner detector ended itself). */
+const JUDGED_EXITS: readonly FinalExit[] = ["b", "c", "d", "e", "f", "g"];
+
+/** A run after an early end with its early part, for the judgement afterwards (`checkFinalSplit`). */
+export interface FinalSplitPair {
+	/** Key of the run after the early end (its start). */
+	key: string;
+	/** Exit of the lock phase. */
+	exit: FinalExit;
+	/** Early part: run start to the early end. */
+	prev: RunSample;
+	/** Run after the early end, with the stored values from the early end on. */
+	next: RunSample;
+}
+
+/**
+ * Sample of one part of a capture for `checkFinalSplit`: the changes of the held value on the poll grid (unit of the
+ * state) from `fromMs` (with the value held there), the part from `startMs` to `endMs`.
+ *
+ * @param c - Capture
+ * @param key - Key
+ * @param fromMs - Begin of the stored values
+ * @param startMs - Start
+ * @param endMs - End
+ * @param exit - Mark of the start
+ */
+function partSample(
+	c: Capture,
+	key: string,
+	fromMs: number,
+	startMs: number,
+	endMs: number,
+	exit?: FinalExit,
+): RunSample {
+	const points: { ts: number; val: number }[] = [];
+	c.cells.forEach((x, i) => {
+		const ts = c.t0 + i * c.stepMs;
+		if (!x.valid || ts > endMs) {
+			return;
+		}
+		if (ts <= fromMs) {
+			// the value held at the begin
+			points[0] = { ts: fromMs, val: x.last };
+			return;
+		}
+		if (points.length === 0 || points[points.length - 1].val !== x.last) {
+			points.push({ ts, val: x.last });
+		}
+	});
+	return {
+		points,
+		from: fromMs,
+		to: endMs,
+		key,
+		kind: "run",
+		src: "live",
+		info: null,
+		family: -1,
+		...(exit ? { afterFinal: exit } : {}),
+		starts: [startMs],
+		facts: {
+			start: startMs,
+			coreEnd: endMs,
+			progEnd: endMs,
+			runEnd: endMs,
+			end: endMs,
+			coreSec: (endMs - startMs) / 1000,
+			feat: null,
+			offSec: null,
+			preLevel: null,
+			postLevel: null,
+			restLevel: null,
+			endBlocks: [],
+			invalidShare: 0,
+			timeJumps: 0,
+		},
+	};
+}
+
+/**
+ * Runs of a capture that started after an early end of the final phase (mark `afterFinal` b–g) and have ended
+ * since, each with its early part (Spec A.3 "Beurteilung im Nachhinein"): the early part runs from the start before
+ * the early end to the early end, the run after it holds the values from the early end to its end.
+ *
+ * @param c - Capture (closed, or a snapshot of the open one)
+ * @param deviceId - Device id (keys)
+ */
+export function finalSplitPairs(c: Capture, deviceId: string): FinalSplitPair[] {
+	const out: FinalSplitPair[] = [];
+	c.ev.forEach((e, k) => {
+		const exit = e[2];
+		if (e[1] !== "s" || exit === undefined || !JUDGED_EXITS.includes(exit)) {
+			return;
+		}
+		const before = c.ev.slice(0, k);
+		const early = before.findLast(x => x[1] !== "s");
+		const done = c.ev.slice(k + 1).find(x => x[1] !== "s");
+		if (!early || !done) {
+			return;
+		}
+		const begin = before.findLast(x => x[1] === "s" && x[0] <= early[0]);
+		const startMs = begin ? begin[0] : c.t0;
+		const key = verdictKey(deviceId, e[0]);
+		out.push({
+			key,
+			exit,
+			prev: partSample(c, verdictKey(deviceId, startMs), startMs - c.stepMs, startMs, early[0]),
+			next: partSample(c, key, early[0], e[0], done[0], exit),
+		});
+	});
+	return out;
 }
 
 /**
@@ -1353,6 +1722,8 @@ export interface AddRunOptions {
 	now?: number;
 	/** Many runs in a row (history): only the envelope; the caller calls `recompute` (or `recomputeTail`) after. */
 	deferred?: boolean;
+	/** Called with the verdicts of the run check (only with `ctx` and without `deferred`). */
+	onVerdicts?: (verdicts: ReadonlyMap<string, Verdict>) => void;
 }
 
 /**
@@ -1374,6 +1745,9 @@ export function addRun(store: StoreFile, run: StoredRun, o: AddRunOptions = {}):
 		store.runs.push(run);
 	}
 	const verdicts = o.ctx && !o.deferred ? recomputeBands(store, o.ctx) : undefined;
+	if (verdicts) {
+		o.onVerdicts?.(verdicts);
+	}
 	if (run.label !== "spike") {
 		const fam = assignFamilies(
 			store.runs.map(r => r.feat),

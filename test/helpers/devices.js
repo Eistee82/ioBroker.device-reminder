@@ -7,6 +7,7 @@ import { detectionOf } from "../../build/lib/runStore.js";
 import { TEMPLATES, templateDetection } from "../../build/lib/templates.js";
 import { createFakeHost } from "./fakeHost.js";
 import { memoryFiles } from "./files.js";
+import { runOf } from "./programmes.js";
 
 /** Power state of the test device. */
 export const P = "plug.0.power";
@@ -234,17 +235,23 @@ export async function feed(ctx, values) {
  * Feed timed points through the registry (poll every `stepMs`), then wait for the optimisation.
  *
  * @param {object} ctx registry context
- * @param {[number, number][]} points `[ts, value]`, ascending
+ * @param {([number, number] | { ts: number, val: number })[]} points `[ts, value]` or `{ ts, val }` (fixtures),
+ * ascending
  * @param {number} [stepMs] poll interval
+ * @param {(ctx: object) => boolean} [stop] stops after the poll at which it returns true
  */
-export async function feedPoints(ctx, points, stepMs = STEP) {
+export async function feedPoints(ctx, points, stepMs = STEP, stop) {
 	if (points.length > 0) {
-		let nextPoll = points[0][0];
-		for (const [ts, v] of points) {
+		const pairs = points.map(p => (Array.isArray(p) ? p : [p.ts, p.val]));
+		let nextPoll = pairs[0][0];
+		feeding: for (const [ts, v] of pairs) {
 			while (nextPoll <= ts) {
 				await advanceTo(ctx.host, nextPoll);
 				await ctx.reg.tickAll();
 				nextPoll += stepMs;
+				if (stop?.(ctx)) {
+					break feeding;
+				}
 			}
 			await advanceTo(ctx.host, ts);
 			ctx.host.setValue(P, v);
@@ -252,4 +259,20 @@ export async function feedPoints(ctx, points, stepMs = STEP) {
 		}
 	}
 	await drain(ctx);
+}
+
+/**
+ * A washer run with a pause inside the programme: the values of
+ * `runOf({ device: "washer", programme: "cotton60", seed })` with `ticks` ticks of `level` W inserted after tick
+ * `start + 200`.
+ *
+ * @param {number} seed seed
+ * @param {number} ticks length of the pause in ticks
+ * @param {number} [level] level of the pause in W
+ * @returns {number[]} values, one per tick
+ */
+export function pauseRun(seed, ticks, level = 3) {
+	const r = runOf({ device: "washer", programme: "cotton60", seed });
+	const at = r.start + 200;
+	return [...r.values.slice(0, at), ...new Array(ticks).fill(level), ...r.values.slice(at)];
 }
