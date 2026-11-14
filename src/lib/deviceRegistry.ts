@@ -515,8 +515,10 @@ export class DeviceRegistry implements RuntimeListener {
 		if (!entry || !store) {
 			return false;
 		}
-		const last = [...store.changes].reverse().find(c => c.kind === "repair" || c.kind === "tighten");
-		if (!last) {
+		// a change of the base values (also adopting) ends what can be undone: an older override belongs to other
+		// base values
+		const last = [...store.changes].reverse().find(c => c.kind !== "undo" && c.kind !== "reset");
+		if (!last || (last.kind !== "repair" && last.kind !== "tighten")) {
 			return false;
 		}
 		this.setOverrideByUser(entry, store, last.from, "undo", "undo of the last change");
@@ -1102,7 +1104,8 @@ interface StoreFork {
 
 /**
  * Working copy of a store for an optimisation job. The job may assign top-level fields, change `info` and append
- * to `changes`; nested data such as the runs is shared and must not be changed in place by the job.
+ * to `changes`; nested data such as the runs is shared and must not be changed in place by the job (the engine
+ * tests check this with `optimizeShared`).
  *
  * @param store - Store
  */

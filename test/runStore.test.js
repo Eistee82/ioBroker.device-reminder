@@ -319,16 +319,6 @@ describe("run store", () => {
 		);
 	});
 
-	it("reconcileStore catches up an adoption when the instance stopped before the store was saved (P29)", () => {
-		const st = emptyStore("wm", "", typeHash(WASHER), 10000, 1);
-		st.override = { endCount: 30 };
-		const adopted = typeHash({ ...WASHER, endCount: 30 });
-		assert.deepStrictEqual(reconcileStore(st, adopted, 10000, 1, 5, adopted), [
-			"values in use adopted as base values",
-		]);
-		assert.deepStrictEqual([st.override, st.typeHash, st.changes.at(-1).kind], [null, adopted, "adopted"]);
-	});
-
 	describe("hash of the detection values", () => {
 		it("keeps the hashes of existing values", () => {
 			assert.deepStrictEqual(DEFAULT_TYPES.slice(0, 4).map(typeHash), [

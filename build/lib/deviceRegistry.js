@@ -340,8 +340,8 @@ export class DeviceRegistry {
         if (!entry || !store) {
             return false;
         }
-        const last = [...store.changes].reverse().find(c => c.kind === "repair" || c.kind === "tighten");
-        if (!last) {
+        const last = [...store.changes].reverse().find(c => c.kind !== "undo" && c.kind !== "reset");
+        if (!last || (last.kind !== "repair" && last.kind !== "tighten")) {
             return false;
         }
         this.setOverrideByUser(entry, store, last.from, "undo", "undo of the last change");

@@ -318,6 +318,27 @@ function captureWith(run, t0, p) {
 	return { t0, stepMs: STEP, unitFactor: 1, cells, ev, postTruncated: false };
 }
 
+/**
+ * `optimize()` that fails when it changes nested data of the store in place. The registry lets the job work on a
+ * copy that shares the nested data (runs, false starts, envelope, override) with the live store (`forkStore`), so
+ * that a result computed from old base values can be discarded (G13): only top-level fields, `info` and `changes`
+ * may change.
+ *
+ * @param {object} store store
+ * @param {object} ctx context
+ * @returns {Promise<object>} result
+ */
+async function optimizeShared(store, ctx) {
+	const shared = Object.entries(store)
+		.filter(([k, v]) => k !== "info" && k !== "changes" && v !== null && typeof v === "object")
+		.map(([k, v]) => [k, v, JSON.stringify(v)]);
+	const out = await optimize(store, ctx);
+	for (const [k, v, json] of shared) {
+		assert.strictEqual(JSON.stringify(v), json, `optimize() changed store.${k} in place`);
+	}
+	return out;
+}
+
 describe("automatic optimisation engine", function () {
 	this.timeout(300_000);
 	const type = WASHER_VALUES;
@@ -358,7 +379,7 @@ describe("automatic optimisation engine", function () {
 					}
 				}
 				const before = await gate(seen, effectiveOf(type, store.override), ctxOf(now));
-				const out = await optimize(store, ctxOf(now));
+				const out = await optimizeShared(store, ctxOf(now));
 				const q = effectiveOf(type, store.override);
 				assert.ok(withinBounds(q, 10), `seq ${seq} run ${k}: bounds ${JSON.stringify(q)}`);
 				const b = boundsOf(10);
@@ -422,7 +443,7 @@ describe("automatic optimisation engine", function () {
 						store.lockRuns = Math.max(0, store.lockRuns - 1);
 					}
 				}
-				const out = await optimize(store, ctxOf(now));
+				const out = await optimizeShared(store, ctxOf(now));
 				if (out.change) {
 					changes++;
 					changed = true;
@@ -458,7 +479,7 @@ describe("automatic optimisation engine", function () {
 			addRun(store, res.run);
 			store.newSinceChange++;
 			store.lockRuns = Math.max(0, store.lockRuns - 1);
-			const out = await optimize(store, ctxOf(now));
+			const out = await optimizeShared(store, ctxOf(now));
 			const q = effectiveOf(type, store.override);
 			if (out.kind === "tighten" && (q.trailerBurstSec ?? 0) > 0) {
 				filterOn = true;
@@ -507,7 +528,7 @@ describe("automatic optimisation engine", function () {
 		const res = labelCapture(cap, 15);
 		assert.strictEqual(res.label, "split");
 		addRun(store, res.run);
-		const out = await optimize(store, ctxOf(now + 7 * DAY));
+		const out = await optimizeShared(store, ctxOf(now + 7 * DAY));
 		assert.strictEqual(out.kind, "repair");
 		assert.ok((await gate(store, effectiveOf(type, store.override), ctxOf(now))).ok);
 		assert.strictEqual(store.lockRuns, LOCK_RUNS);
@@ -524,12 +545,12 @@ describe("automatic optimisation engine", function () {
 		addRun(store, ok);
 		addRun(store, { ...ok, id: "x", label: "spike" });
 		for (let k = 0; k < 3; k++) {
-			const out = await optimize(store, ctxOf(now));
+			const out = await optimizeShared(store, ctxOf(now));
 			assert.strictEqual(out.kind, k < 2 ? "cannotCover" : "drift");
 		}
-		assert.strictEqual((await optimize(store, ctxOf(now))).kind, "drift");
+		assert.strictEqual((await optimizeShared(store, ctxOf(now))).kind, "drift");
 		const empty = emptyStore("dev", "washing-machine", typeHash(type), STEP, 1);
-		assert.strictEqual((await optimize(empty, ctxOf(now))).kind, "none");
+		assert.strictEqual((await optimizeShared(empty, ctxOf(now))).kind, "none");
 	});
 
 	it("20 runs and 10 false starts are checked within 5 s and yield at least every 50 ms", async () => {
@@ -563,7 +584,7 @@ describe("automatic optimisation engine", function () {
 		store.newSinceChange = 20;
 		const yields = [];
 		const t0 = Date.now();
-		const out = await optimize(store, {
+		const out = await optimizeShared(store, {
 			...ctxOf(now + 30 * DAY),
 			yieldFn: async () => {
 				yields.push(Date.now());
@@ -578,7 +599,7 @@ describe("automatic optimisation engine", function () {
 		const gaps = [t0, ...yields, Date.now()].map((t, i, a) => (i === 0 ? 0 : t - a[i - 1]));
 		assert.ok(Math.max(...gaps) < 50 * slow, `longest stretch without yield ${Math.max(...gaps)} ms`);
 		// a tiny budget stops the job without a change
-		const budget = await optimize(store, { ...ctxOf(now + 60 * DAY), budgetMs: -1 });
+		const budget = await optimizeShared(store, { ...ctxOf(now + 60 * DAY), budgetMs: -1 });
 		assert.strictEqual(budget.kind, "budget");
 	});
 });

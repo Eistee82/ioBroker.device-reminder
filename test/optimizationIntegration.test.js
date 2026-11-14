@@ -2,7 +2,9 @@ import assert from "node:assert";
 import { formatDate } from "../build/lib/deviceRegistry.js";
 import { DeviceSync } from "../build/lib/deviceSync.js";
 import { fill, TEXT } from "../build/lib/dmTexts.js";
+import { emptyStore, saveStore, typeHash } from "../build/lib/runStore.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
+import { memoryFiles } from "./helpers/files.js";
 import { washingMachine } from "./helpers/curves.js";
 import { drain, DRYER, feed, P, registrySetup, WASHER } from "./helpers/devices.js";
 import { historyOf } from "./helpers/history.js";
@@ -259,6 +261,54 @@ describe("base, effective and active values at runtime", function () {
 		assert.deepStrictEqual(ctx.reg.get("dev").effective, before);
 		assert.strictEqual(ctx.reg.get("dev").currentOverride, null);
 		assert.ok(ctx.host.logs.info.some(m => m.includes("adopted as base values")));
+	});
+
+	it("at load an adoption that was not saved any more is caught up and other base values drop the override (P29)", async () => {
+		for (const adopt of [true, false]) {
+			// learning data saved with other base values and an override, e.g. the instance stopped right after
+			// the device was saved with the adopted values
+			const files = memoryFiles();
+			const old = emptyStore("dev", "", typeHash({ ...WASHER, endVal: 7 }), STEP, 1);
+			old.override = { endCount: 30 };
+			await saveStore(files, old);
+			const detection = adopt ? { ...WASHER, endCount: 30 } : { ...WASHER, endVal: 10 };
+			const ctx = await registrySetup({ files, detection, notify: true });
+			const store = ctx.reg.learningData("dev");
+			const what = adopt ? "adopted" : "baseChanged";
+			assert.deepStrictEqual([store.override, store.changes.at(-1).kind], [null, what]);
+			assert.strictEqual(ctx.reg.get("dev").currentOverride, null);
+			const logged = adopt
+				? "values in use adopted as base values"
+				: "detection values changed, optimised values discarded";
+			assert.strictEqual(ctx.host.logs.info.filter(m => m.includes(logged)).length, 1, what);
+			const sent = ctx.host.sent.some(s => JSON.stringify(s.message).includes("Erkennungswerte geändert"));
+			assert.strictEqual(sent, !adopt, `${what}: message to the recipients`);
+		}
+	});
+
+	it("undo does not reach back over a base change or an adoption", async () => {
+		for (const adopt of [true, false]) {
+			const ctx = await registrySetup();
+			const store = ctx.reg.learningData("dev");
+			store.changes.push({
+				ts: ctx.host.now(),
+				kind: "repair",
+				from: { endCount: 40 },
+				to: { endCount: 30 },
+				reason: "test",
+				runs: 1,
+				gainSec: 0,
+			});
+			store.override = { endCount: 30 };
+			ctx.reg.get("dev").setOverride({ endCount: 30 });
+			const detection = adopt ? ctx.reg.get("dev").effective : { ...WASHER, endVal: 10 };
+			await ctx.reg.upsert("dev", { ...ctx.cfg, detection });
+			const what = adopt ? "adopted" : "baseChanged";
+			assert.strictEqual(store.changes.at(-1).kind, what);
+			assert.strictEqual(await ctx.reg.undoOptimization("dev"), false, what);
+			assert.deepStrictEqual([store.override, ctx.reg.get("dev").currentOverride], [null, null], what);
+			assert.strictEqual(store.changes.at(-1).kind, what);
+		}
 	});
 
 	it("an optimisation result is discarded when the base changed meanwhile (G13)", async () => {

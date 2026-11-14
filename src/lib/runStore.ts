@@ -534,16 +534,15 @@ export function reconcileBase(
 
 /**
  * Adapt a loaded store to the current detection values, poll interval and unit. Only the hash of the detection
- * values is compared (the template id may differ, e.g. after the migration). An adoption whose store was not saved
- * any more (instance stopped in between) is caught up here: `effectiveHash` is then the hash of the new base values
- * with the stored override.
+ * values is compared (the template id may differ, e.g. after the migration); other detection values drop the
+ * override. The registry compares the base values with `reconcileBase` before (that also catches up an adoption
+ * whose store was not saved any more) and reports the result itself.
  *
  * @param store - Store
  * @param hash - Hash of the current detection values of the device
  * @param step - Current poll interval in ms
  * @param unitFactor - Current unit factor
  * @param now - Current time
- * @param effectiveHash - Hash of the values in use with the stored override (see `reconcileBase`), or null
  * @returns messages for the log (English)
  */
 export function reconcileStore(
@@ -552,14 +551,10 @@ export function reconcileStore(
 	step: number,
 	unitFactor: number,
 	now: number,
-	effectiveHash: string | null = null,
 ): string[] {
 	const msgs: string[] = [];
 	const hadOverride = store.override !== null;
-	const base = reconcileBase(store, hash, effectiveHash, now);
-	if (base === "adopted") {
-		msgs.push("values in use adopted as base values");
-	} else if (base === "baseChanged" && hadOverride) {
+	if (reconcileBase(store, hash, null, now) === "baseChanged" && hadOverride) {
 		msgs.push("detection values changed, optimised values discarded");
 	}
 	if (store.step !== step || store.unitFactor !== unitFactor) {

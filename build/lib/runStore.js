@@ -237,14 +237,10 @@ export function reconcileBase(store, baseHash, effectiveHash, now) {
     }
     return "baseChanged";
 }
-export function reconcileStore(store, hash, step, unitFactor, now, effectiveHash = null) {
+export function reconcileStore(store, hash, step, unitFactor, now) {
     const msgs = [];
     const hadOverride = store.override !== null;
-    const base = reconcileBase(store, hash, effectiveHash, now);
-    if (base === "adopted") {
-        msgs.push("values in use adopted as base values");
-    }
-    else if (base === "baseChanged" && hadOverride) {
+    if (reconcileBase(store, hash, null, now) === "baseChanged" && hadOverride) {
         msgs.push("detection values changed, optimised values discarded");
     }
     if (store.step !== step || store.unitFactor !== unitFactor) {
