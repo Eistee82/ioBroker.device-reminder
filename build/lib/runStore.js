@@ -201,27 +201,51 @@ export async function removeStore(io, deviceId) {
     await io.remove(slotName(deviceId, "a"));
     await io.remove(slotName(deviceId, "b"));
 }
-export function reconcileStore(store, hash, step, unitFactor, now) {
-    const msgs = [];
-    if (store.typeHash !== hash) {
-        if (store.override) {
-            pushChange(store, {
-                ts: now,
-                kind: "baseChanged",
-                from: store.override,
-                to: null,
-                reason: "detection values changed",
-                runs: store.runs.length,
-                gainSec: 0,
-            });
-            msgs.push("detection values changed, optimised values discarded");
-        }
+export function reconcileBase(store, baseHash, effectiveHash, now) {
+    if (store.typeHash === baseHash) {
+        return "none";
+    }
+    store.typeHash = baseHash;
+    if (store.override && effectiveHash === baseHash) {
+        pushChange(store, {
+            ts: now,
+            kind: "adopted",
+            from: store.override,
+            to: null,
+            reason: "values in use adopted as base values",
+            runs: store.runs.length,
+            gainSec: 0,
+        });
         store.override = null;
-        store.typeHash = hash;
-        store.failStreak = 0;
-        if (store.info.status === "drift") {
-            store.info.status = "collecting";
-        }
+        return "adopted";
+    }
+    if (store.override) {
+        pushChange(store, {
+            ts: now,
+            kind: "baseChanged",
+            from: store.override,
+            to: null,
+            reason: "detection values changed",
+            runs: store.runs.length,
+            gainSec: 0,
+        });
+    }
+    store.override = null;
+    store.failStreak = 0;
+    if (store.info.status === "drift") {
+        store.info.status = "collecting";
+    }
+    return "baseChanged";
+}
+export function reconcileStore(store, hash, step, unitFactor, now, effectiveHash = null) {
+    const msgs = [];
+    const hadOverride = store.override !== null;
+    const base = reconcileBase(store, hash, effectiveHash, now);
+    if (base === "adopted") {
+        msgs.push("values in use adopted as base values");
+    }
+    else if (base === "baseChanged" && hadOverride) {
+        msgs.push("detection values changed, optimised values discarded");
     }
     if (store.step !== step || store.unitFactor !== unitFactor) {
         if (store.runs.length + store.spikes.length > 0) {

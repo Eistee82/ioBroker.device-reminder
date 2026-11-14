@@ -11,6 +11,7 @@ import {
 	loadStore,
 	MAX_RUNS,
 	MAX_STORE_BYTES,
+	reconcileBase,
 	reconcileStore,
 	removeStore,
 	saveStore,
@@ -294,6 +295,38 @@ describe("run store", () => {
 		reconcileStore(st, "0af5b9bf", 10000, 1, 5);
 		assert.strictEqual(st.override, null);
 		assert.strictEqual(st.changes.at(-1).kind, "baseChanged");
+	});
+
+	it("reconcileBase: adopted when the new base equals the old effective values", () => {
+		const st = emptyStore("wm", "", typeHash(WASHER), 10000, 1);
+		st.override = { endCount: 30 };
+		const eff = typeHash({ ...WASHER, endCount: 30 });
+		assert.strictEqual(reconcileBase(st, eff, eff, 7), "adopted");
+		assert.deepStrictEqual([st.override, st.typeHash, st.changes.at(-1).kind], [null, eff, "adopted"]);
+		assert.strictEqual(reconcileBase(st, eff, eff, 8), "none");
+	});
+
+	it("reconcileBase: another base drops the override with baseChanged", () => {
+		const st = emptyStore("wm", "", typeHash(WASHER), 10000, 1);
+		st.override = { endCount: 30 };
+		assert.strictEqual(
+			reconcileBase(st, typeHash({ ...WASHER, endVal: 10 }), typeHash({ ...WASHER, endCount: 30 }), 9),
+			"baseChanged",
+		);
+		assert.deepStrictEqual(
+			[st.override, st.changes.at(-1).kind, st.changes.at(-1).from],
+			[null, "baseChanged", { endCount: 30 }],
+		);
+	});
+
+	it("reconcileStore catches up an adoption when the instance stopped before the store was saved (P29)", () => {
+		const st = emptyStore("wm", "", typeHash(WASHER), 10000, 1);
+		st.override = { endCount: 30 };
+		const adopted = typeHash({ ...WASHER, endCount: 30 });
+		assert.deepStrictEqual(reconcileStore(st, adopted, 10000, 1, 5, adopted), [
+			"values in use adopted as base values",
+		]);
+		assert.deepStrictEqual([st.override, st.typeHash, st.changes.at(-1).kind], [null, adopted, "adopted"]);
 	});
 
 	describe("hash of the detection values", () => {

@@ -4,7 +4,7 @@ import { DeviceSync } from "../build/lib/deviceSync.js";
 import { fill, TEXT } from "../build/lib/dmTexts.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { washingMachine } from "./helpers/curves.js";
-import { drain, DRYER, feed, P, registrySetup } from "./helpers/devices.js";
+import { drain, DRYER, feed, P, registrySetup, WASHER } from "./helpers/devices.js";
 import { historyOf } from "./helpers/history.js";
 import { runOf } from "./helpers/programmes.js";
 
@@ -231,6 +231,65 @@ describe("automatic optimisation in the registry", function () {
 		await play(ctx, run.values);
 		assert.strictEqual(ctx.reg.learningData("dev").changes.at(-1)?.kind, "repair");
 		assert.ok(!ctx.host.sent.some(s => JSON.stringify(s.message).includes("detection")));
+	});
+});
+
+describe("base, effective and active values at runtime", function () {
+	this.timeout(120_000);
+
+	it("a base change at runtime with an override drops it and the new values apply at once", async () => {
+		const ctx = await registrySetup();
+		const store = ctx.reg.learningData("dev");
+		store.override = { endCount: 30 };
+		ctx.reg.get("dev").setOverride({ endCount: 30 });
+		await ctx.reg.upsert("dev", { ...ctx.cfg, detection: { ...WASHER, endVal: 10 } });
+		assert.deepStrictEqual([store.override, store.changes.at(-1).kind], [null, "baseChanged"]);
+		assert.deepStrictEqual([ctx.reg.get("dev").effective.endVal, ctx.reg.get("dev").effective.endCount], [10, 50]);
+		assert.strictEqual(JSON.parse(ctx.host.own("dev.learning.parameters")).override, null);
+	});
+
+	it("adopting the values in use as base keeps them and drops the override without loss", async () => {
+		const ctx = await registrySetup();
+		const store = ctx.reg.learningData("dev");
+		store.override = { endCount: 30 };
+		ctx.reg.get("dev").setOverride({ endCount: 30 });
+		const before = ctx.reg.get("dev").effective;
+		await ctx.reg.upsert("dev", { ...ctx.cfg, detection: before });
+		assert.deepStrictEqual([store.override, store.changes.at(-1).kind], [null, "adopted"]);
+		assert.deepStrictEqual(ctx.reg.get("dev").effective, before);
+		assert.strictEqual(ctx.reg.get("dev").currentOverride, null);
+		assert.ok(ctx.host.logs.info.some(m => m.includes("adopted as base values")));
+	});
+
+	it("an optimisation result is discarded when the base changed meanwhile (G13)", async () => {
+		let changed = false;
+		const ctx = await registrySetup({
+			detection: { ...WASHER, endCount: 20 },
+			// between the result of optimize() and the write: the user changes the base values
+			beforeOptimizeWrite: async () => {
+				if (changed) {
+					return;
+				}
+				changed = true;
+				await ctx.reg.upsert("dev", { ...ctx.cfg, detection: { ...WASHER, endCount: 25 } });
+			},
+		});
+		await feed(ctx, runOf({ device: "washer", programme: "eco4060", seed: 2 }).values);
+		assert.ok(changed, "an optimisation ran");
+		assert.ok(
+			ctx.host.logs.info.some(m => m.includes("base values changed during the optimisation, result discarded")),
+		);
+		assert.strictEqual(ctx.reg.learningData("dev").override, null);
+		assert.strictEqual(ctx.reg.get("dev").effective.endCount, 25);
+	});
+
+	it("learning.parameters holds base, override, effective, active", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, finalMinVal: 150, finalMinSec: 168 } });
+		ctx.reg.get("dev").setFinalSuspended(true);
+		await ctx.reg.upsert("dev", ctx.cfg);
+		const p = JSON.parse(ctx.host.own("dev.learning.parameters"));
+		assert.deepStrictEqual(Object.keys(p), ["base", "override", "effective", "active"]);
+		assert.deepStrictEqual([p.base.finalMinVal, p.effective.finalMinVal, p.active.finalMinVal], [150, 150, 0]);
 	});
 });
 

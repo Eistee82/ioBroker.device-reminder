@@ -1353,7 +1353,7 @@ describe("optimisation in the device manager", function () {
 		assert.ok(options.data.changes[0].kind.length > 0);
 		assert.deepStrictEqual(
 			schema.items.operation.options.map(o => o.value),
-			["", "undo", "reset", "discard", "clear", "saveType"],
+			["", "undo", "reset", "discard", "clear", "adopt"],
 		);
 		assert.ok(schema.items.discardRun.options.length >= 1);
 		assert.deepStrictEqual(action.messages, []);
@@ -1388,27 +1388,40 @@ describe("optimisation in the device manager", function () {
 		assert.strictEqual(ctx.registry.learningData("trockner").spikes.length, 0);
 	});
 
-	it("saves the values in use in the device, without restart", async () => {
+	it("adopt as base writes the device first; failing write keeps the override (P29)", async () => {
 		const ctx = await optSetup();
+		const before = ctx.registry.learningData("trockner").override;
+		assert.ok(before, "the run produced an override");
 		const eff = ctx.registry.get("trockner").effective;
-		const [info] = await load(ctx);
-		const action = fakeAction();
-		action.showForm = async (schema, options) => {
-			action.forms.push({ schema, options });
-			return action.forms.length === 1 ? { operation: "saveType" } : options.data;
-		};
-		await actionOf(info, "optimization").handler("trockner", action);
-		const learn = action.forms[1];
-		assert.strictEqual(learn.options.data.endCount, eff.endCount);
-		assert.strictEqual(learn.schema.items.samples, undefined);
-		assert.strictEqual(learn.options.data.trailerBurstSec, eff.trailerBurstSec);
+		const action = await openDialog(ctx, { operation: "adopt" });
 		assert.strictEqual(action.confirmations.length, 1);
-		assert.ok(action.confirmations[0].en.startsWith(TEXT.optSaveTypeConfirm.en.split("{")[0]), "own confirmation");
+		assert.ok(action.confirmations[0].en.startsWith(TEXT.optAdoptConfirm.en.split("{")[0]), "own confirmation");
 		assert.deepStrictEqual(ctx.adapter.extendedForeign, [], "the instance object is not touched");
-		const saved = ctx.adapter.objects.get(`${NS}.trockner`).native.detection;
-		assert.strictEqual(saved.endCount, eff.endCount);
-		assert.strictEqual(saved.trailerBurstSec, eff.trailerBurstSec);
-		assert.strictEqual(ctx.registry.get("trockner").effective.endCount, eff.endCount, "same values in use");
+		const native = ctx.adapter.objects.get(`${NS}.trockner`).native;
+		assert.deepStrictEqual(detectionOf(native.detection), ctx.registry.get("trockner").effective);
+		assert.deepStrictEqual(ctx.registry.get("trockner").effective, eff, "same values in use");
+		assert.strictEqual(native.learned, true);
+		assert.deepStrictEqual(
+			[ctx.registry.learningData("trockner").override, ctx.registry.learningData("trockner").changes.at(-1).kind],
+			[null, "adopted"],
+		);
+		assert.deepStrictEqual(action.messages, [TEXT.optAdopted]);
+		const again = await openDialog(ctx, { operation: "adopt" });
+		assert.deepStrictEqual(again.messages, [TEXT.optNothingToAdopt]);
+
+		const ctx2 = await optSetup();
+		const ov = ctx2.registry.learningData("trockner").override;
+		ctx2.adapter.setObjectAsync = async () => {
+			throw new Error("disk full");
+		}; // writeDevice writes with setObjectAsync first
+		const failed = await openDialog(ctx2, { operation: "adopt" });
+		assert.deepStrictEqual(ctx2.registry.learningData("trockner").override, ov);
+		assert.deepStrictEqual(failed.messages, [TEXT.optAdoptFailed]);
+
+		const ctx3 = await optSetup();
+		const cancelled = await openDialog(ctx3, { operation: "adopt" }, false);
+		assert.deepStrictEqual(cancelled.messages, []);
+		assert.ok(ctx3.registry.learningData("trockner").override, "cancelled: nothing adopted");
 	});
 
 	it("explains that the optimisation is off when there is no learning data", async () => {
@@ -1473,7 +1486,7 @@ describe("optimisation in the device manager", function () {
 			"dm_optimizeNotify",
 			"dm_optimization",
 			"dm_optClearConfirm",
-			"dm_optSaveValues",
+			"dm_optAdopt",
 			"dm_optNone",
 			"dm_optStatus_drift",
 			"dm_optTrailer_notSeparable",

@@ -399,4 +399,20 @@ describe("DeviceRuntime", () => {
 		assert.strictEqual(ctx.rt.canKeepStateFor(deviceConfig({ powerId: "other.0.power" })), false);
 		ctx.rt.dispose();
 	});
+	it("suspension masks finalMinVal only in active", () => {
+		const ctx = runtimeSetup({ cfg: { detection: { ...WASHER, finalMinVal: 150, finalMinSec: 168 } } });
+		ctx.rt.setOverride({ finalMinSec: 180 });
+		ctx.rt.setFinalSuspended(true);
+		assert.deepStrictEqual(
+			[
+				ctx.rt.active.finalMinVal,
+				ctx.rt.effective.finalMinVal,
+				ctx.rt.baseDetection.finalMinVal,
+				ctx.rt.currentOverride,
+			],
+			[0, 150, 150, { finalMinSec: 180 }],
+		);
+		ctx.rt.setFinalSuspended(false);
+		assert.strictEqual(ctx.rt.active.finalMinVal, 150);
+	});
 });

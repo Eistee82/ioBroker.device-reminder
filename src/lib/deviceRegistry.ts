@@ -1,5 +1,6 @@
 import { runActions } from "./actions.js";
 import type { DeviceConfig, InstanceConfig } from "./config.js";
+import type { DetectionSettings } from "./detector/types.js";
 import { DeviceRuntime } from "./deviceRuntime.js";
 import { fill, TEXT } from "./dmTexts.js";
 import type { HistoryEnv } from "./historySource.js";
@@ -24,6 +25,7 @@ import {
 	labelCapture,
 	loadStore,
 	pushChange,
+	reconcileBase,
 	reconcileStore,
 	refreshInfo,
 	removeStore,
@@ -56,6 +58,11 @@ export interface RegistryOptions {
 	language?: () => string;
 	/** History adapters: runs of the history are taken over when the automatic optimisation starts. */
 	history?: HistoryEnv;
+	/**
+	 * Only for tests: called between the result of an optimisation and the check whether the base values changed
+	 * meanwhile (without it nothing differs).
+	 */
+	beforeOptimizeWrite?: (deviceId: string) => Promise<void>;
 }
 
 function isTrue(val: unknown): boolean {
@@ -111,8 +118,11 @@ export class DeviceRegistry implements RuntimeListener {
 		}
 		if (existing) {
 			if (existing.runtime.canKeepStateFor(cfg)) {
+				const oldBase = existing.runtime.baseDetection;
 				existing.runtime.updateConfig(cfg);
+				await this.reconcileRuntime(existing, oldBase);
 				await this.syncOptimize(deviceId, existing);
+				await this.writeOptStates(deviceId, existing);
 				return;
 			}
 			this.host.log.info(`Device ${cfg.name} reset: power state changed`);
@@ -591,6 +601,39 @@ export class DeviceRegistry implements RuntimeListener {
 	}
 
 	/**
+	 * Compare the changed base values of a running device with its learning data (at runtime, also while the
+	 * learning data is loaded): base values that equal the values in use with the old override ("adopt as base
+	 * values") drop the override without loss, any other change drops it. The detector is rebuilt between two runs.
+	 *
+	 * @param entry - Entry
+	 * @param oldBase - Base values before the change
+	 */
+	private async reconcileRuntime(entry: Entry, oldBase: DetectionSettings): Promise<void> {
+		const store = entry.opt?.store;
+		if (!store || entry.runtime.config.autoOptimize !== true) {
+			return;
+		}
+		const hadOverride = store.override !== null;
+		const kind = reconcileBase(
+			store,
+			typeHash(entry.runtime.baseDetection),
+			typeHash(effectiveOf(oldBase, store.override)),
+			this.host.now(),
+		);
+		if (kind === "none") {
+			return;
+		}
+		refreshInfo(store);
+		entry.runtime.setOverride(store.override);
+		await this.saveOpt(entry);
+		if (kind === "adopted") {
+			this.host.log.info(`${entry.runtime.config.name}: values in use adopted as base values`);
+		} else if (hadOverride) {
+			await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
+		}
+	}
+
+	/**
 	 * Start or stop the automatic optimisation of a device according to its configuration.
 	 *
 	 * @param deviceId - Device id
@@ -629,10 +672,16 @@ export class DeviceRegistry implements RuntimeListener {
 		}
 		const store = loaded ?? emptyStore(deviceId, cfg.template ?? "", typeHash(type), step, unitFactor);
 		const hadOverride = store.override !== null;
+		// an adoption whose learning data was not saved any more (instance stopped in between): the stored override
+		// is already part of the new base values
+		const base = reconcileBase(store, typeHash(type), typeHash(effectiveOf(type, store.override)), now);
+		if (base === "adopted") {
+			this.host.log.info(`${cfg.name}: values in use adopted as base values`);
+		}
 		for (const msg of reconcileStore(store, typeHash(type), step, unitFactor, now)) {
 			this.host.log.info(`${cfg.name}: ${msg}`);
 		}
-		if (hadOverride && store.override === null) {
+		if (base === "baseChanged" && hadOverride) {
 			await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
 		}
 		const recorder = new RunRecorder(step, unitFactor);
@@ -900,16 +949,29 @@ export class DeviceRegistry implements RuntimeListener {
 		if (!entry || !opt) {
 			return;
 		}
-		const trailerBefore = opt.store.info.trailer;
-		const outcome = await optimize(opt.store, this.optimizeContext(entry));
-		if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
+		const store = opt.store;
+		const trailerBefore = store.info.trailer;
+		const ctx = this.optimizeContext(entry);
+		const baseHash = typeHash(ctx.type);
+		// the job works on a copy, so that a result computed from old base values is never written (G13)
+		const fork = forkStore(store);
+		const outcome = await optimize(fork.work, ctx);
+		await this.opts.beforeOptimizeWrite?.(deviceId);
+		if (entry.opt !== opt || opt.store !== store || this.devices.get(deviceId) !== entry) {
 			return;
 		}
-		entry.runtime.setOverride(opt.store.override);
+		if (typeHash(entry.runtime.baseDetection) !== baseHash || store.typeHash !== baseHash) {
+			this.host.log.info(
+				`${entry.runtime.config.name}: base values changed during the optimisation, result discarded`,
+			);
+			return;
+		}
+		mergeFork(store, fork);
+		entry.runtime.setOverride(store.override);
 		await this.saveOpt(entry);
 		await this.writeOptStates(deviceId, entry);
 		await this.reportOutcome(entry, outcome);
-		if (opt.store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
+		if (store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
 			await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
 		}
 	}
@@ -998,14 +1060,15 @@ export class DeviceRegistry implements RuntimeListener {
 		if (!store) {
 			return;
 		}
-		const type = entry.runtime.baseDetection;
-		await this.host.setOwnState(`${deviceId}.learning.optimized`, entry.runtime.currentOverride !== null);
+		const runtime = entry.runtime;
+		await this.host.setOwnState(`${deviceId}.learning.optimized`, runtime.currentOverride !== null);
 		await this.host.setOwnState(
 			`${deviceId}.learning.parameters`,
 			JSON.stringify({
-				type: effectiveOf(type, null),
+				base: effectiveOf(runtime.baseDetection, null),
 				override: store.override,
-				effective: entry.runtime.effective,
+				effective: runtime.effective,
+				active: runtime.active,
 			}),
 		);
 		await this.host.setOwnState(`${deviceId}.learning.lastChange`, JSON.stringify(store.changes.at(-1) ?? null));
@@ -1027,6 +1090,54 @@ export class DeviceRegistry implements RuntimeListener {
 		entry.reminder.dispose();
 		entry.recorder.stop(this.host.now());
 	}
+}
+
+/** Working copy of a store for one optimisation job. */
+interface StoreFork {
+	/** Copy the job works on (`info` and `changes` are copied, everything else is shared). */
+	work: StoreFile;
+	/** Top-level values of the store when the job started. */
+	start: StoreFile;
+}
+
+/**
+ * Working copy of a store for an optimisation job. The job may assign top-level fields, change `info` and append
+ * to `changes`; nested data such as the runs is shared and must not be changed in place by the job.
+ *
+ * @param store - Store
+ */
+function forkStore(store: StoreFile): StoreFork {
+	return {
+		work: { ...store, info: { ...store.info }, changes: [...store.changes] },
+		start: { ...store, info: { ...store.info } },
+	};
+}
+
+/**
+ * Write back what an optimisation job changed in its working copy. Only the fields the job changed are written, so
+ * that runs stored meanwhile (and their counters) stay.
+ *
+ * @param store - Store
+ * @param fork - Working copy and start values
+ */
+function mergeFork(store: StoreFile, fork: StoreFork): void {
+	const { work, start } = fork;
+	const changed = (dst: object, src: object, was: object): void => {
+		const d = dst as Record<string, unknown>;
+		const s = src as Record<string, unknown>;
+		const w = was as Record<string, unknown>;
+		for (const key of Object.keys(s)) {
+			if (key !== "info" && key !== "changes" && s[key] !== w[key]) {
+				d[key] = s[key];
+			}
+		}
+	};
+	changed(store, work, start);
+	changed(store.info, work.info, start.info);
+	if (work.changes.length !== start.changes.length || work.changes.at(-1) !== start.changes.at(-1)) {
+		store.changes = work.changes;
+	}
+	refreshInfo(store);
 }
 
 /**

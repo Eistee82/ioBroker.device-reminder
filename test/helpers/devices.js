@@ -168,6 +168,8 @@ async function advanceTo(host, ts) {
  * @param {boolean} [o.autoOptimize] automatic optimisation
  * @param {boolean} [o.notify] send the changes of the optimisation
  * @param {object} [o.inst] instance fields
+ * @param {(deviceId: string) => Promise<void>} [o.beforeOptimizeWrite] test hook between the result of an
+ * optimisation and its write
  * @returns {Promise<object>} `{ host, files, inst, reg, cfg }`
  */
 export async function registrySetup(o = {}) {
@@ -177,6 +179,7 @@ export async function registrySetup(o = {}) {
 	const reg = new DeviceRegistry(host, new Notifier(host, () => inst.recipients), () => inst, files, {
 		language: () => o.lang ?? "de",
 		...(o.history ? { history: o.history } : {}),
+		...(o.beforeOptimizeWrite ? { beforeOptimizeWrite: o.beforeOptimizeWrite } : {}),
 	});
 	const cfg = deviceConfig({
 		name: "Waschmaschine",

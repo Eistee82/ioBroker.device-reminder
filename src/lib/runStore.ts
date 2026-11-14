@@ -94,8 +94,11 @@ export interface Envelope {
 export interface Change {
 	/** Time in ms. */
 	ts: number;
-	/** Kind (`typeChanged`: entries of earlier versions, shown like `baseChanged`). */
-	kind: "repair" | "tighten" | "undo" | "reset" | "baseChanged" | "typeChanged";
+	/**
+	 * Kind (`adopted`: the values in use became the base values; `typeChanged`: entries of earlier versions, shown
+	 * like `baseChanged`).
+	 */
+	kind: "repair" | "tighten" | "undo" | "reset" | "adopted" | "baseChanged" | "typeChanged";
 	/** Override before. */
 	from: Partial<DetectionSettings> | null;
 	/** Override after. */
@@ -472,15 +475,75 @@ export async function removeStore(io: FileIO, deviceId: string): Promise<void> {
 	await io.remove(slotName(deviceId, "b"));
 }
 
+/** Result of comparing the base values of the device with the store. */
+export type BaseReconcile = "none" | "adopted" | "baseChanged";
+
+/**
+ * Compare the base values of the device with the store (at load and whenever the device configuration changes).
+ * If the new base values equal the values in use with the old override (result of "adopt as base values"), the
+ * override becomes null without loss (`adopted`); any other change of the base values drops the override
+ * (`baseChanged`).
+ *
+ * @param store - Store
+ * @param baseHash - Hash of the new base values of the device
+ * @param effectiveHash - Hash of the values in use with the old override (old base values with `store.override`),
+ * or null if unknown
+ * @param now - Current time
+ */
+export function reconcileBase(
+	store: StoreFile,
+	baseHash: string,
+	effectiveHash: string | null,
+	now: number,
+): BaseReconcile {
+	if (store.typeHash === baseHash) {
+		return "none";
+	}
+	store.typeHash = baseHash;
+	if (store.override && effectiveHash === baseHash) {
+		pushChange(store, {
+			ts: now,
+			kind: "adopted",
+			from: store.override,
+			to: null,
+			reason: "values in use adopted as base values",
+			runs: store.runs.length,
+			gainSec: 0,
+		});
+		store.override = null;
+		return "adopted";
+	}
+	if (store.override) {
+		pushChange(store, {
+			ts: now,
+			kind: "baseChanged",
+			from: store.override,
+			to: null,
+			reason: "detection values changed",
+			runs: store.runs.length,
+			gainSec: 0,
+		});
+	}
+	store.override = null;
+	store.failStreak = 0;
+	if (store.info.status === "drift") {
+		store.info.status = "collecting";
+	}
+	return "baseChanged";
+}
+
 /**
  * Adapt a loaded store to the current detection values, poll interval and unit. Only the hash of the detection
- * values is compared (the template id may differ, e.g. after the migration).
+ * values is compared (the template id may differ, e.g. after the migration). An adoption whose store was not saved
+ * any more (instance stopped in between) is caught up here: `effectiveHash` is then the hash of the new base values
+ * with the stored override.
  *
  * @param store - Store
  * @param hash - Hash of the current detection values of the device
  * @param step - Current poll interval in ms
  * @param unitFactor - Current unit factor
  * @param now - Current time
+ * @param effectiveHash - Hash of the values in use with the stored override (see `reconcileBase`), or null
  * @returns messages for the log (English)
  */
 export function reconcileStore(
@@ -489,27 +552,15 @@ export function reconcileStore(
 	step: number,
 	unitFactor: number,
 	now: number,
+	effectiveHash: string | null = null,
 ): string[] {
 	const msgs: string[] = [];
-	if (store.typeHash !== hash) {
-		if (store.override) {
-			pushChange(store, {
-				ts: now,
-				kind: "baseChanged",
-				from: store.override,
-				to: null,
-				reason: "detection values changed",
-				runs: store.runs.length,
-				gainSec: 0,
-			});
-			msgs.push("detection values changed, optimised values discarded");
-		}
-		store.override = null;
-		store.typeHash = hash;
-		store.failStreak = 0;
-		if (store.info.status === "drift") {
-			store.info.status = "collecting";
-		}
+	const hadOverride = store.override !== null;
+	const base = reconcileBase(store, hash, effectiveHash, now);
+	if (base === "adopted") {
+		msgs.push("values in use adopted as base values");
+	} else if (base === "baseChanged" && hadOverride) {
+		msgs.push("detection values changed, optimised values discarded");
 	}
 	if (store.step !== step || store.unitFactor !== unitFactor) {
 		if (store.runs.length + store.spikes.length > 0) {

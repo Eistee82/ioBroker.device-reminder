@@ -150,7 +150,7 @@ describe("automatic optimisation", function () {
 		assert.ok(changedAt >= 0 && changedAt <= 3, `first change after run ${changedAt}`);
 		assert.strictEqual(ctx.host.own("dev.learning.optimized"), true);
 		const params = JSON.parse(ctx.host.own("dev.learning.parameters"));
-		assert.ok(params.effective.trailerBurstSec > 0 && params.type.trailerBurstSec === 0);
+		assert.ok(params.effective.trailerBurstSec > 0 && params.base.trailerBurstSec === 0);
 		const info = JSON.parse(ctx.host.own("dev.learning.optimizeInfo"));
 		assert.strictEqual(info.trailer, "used");
 		assert.ok(ctx.host.ownHistory("dev.antiCrease").includes(true));

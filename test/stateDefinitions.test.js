@@ -53,4 +53,8 @@ describe("stateDefinitions", () => {
 			assert.strictEqual(allocateDeviceId("Trock ner", new Set(["trock_ner"])), "trock_ner_2");
 		});
 	});
+	it("learning.reset is named after the base values", () => {
+		const def = DEVICE_STATES.find(d => d.id === "learning.reset");
+		assert.strictEqual(def.name.de, "Auf die Grundwerte des Geräts zurücksetzen");
+	});
 });

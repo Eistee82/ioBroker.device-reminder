@@ -931,7 +931,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 
 	/**
 	 * Dialog of the automatic optimisation: status, values, stored runs and changes, with undo, reset,
-	 * discarding a run, clearing the learning data and saving the values in the device.
+	 * discarding a run, clearing the learning data and adopting the values in use as base values of the device.
 	 *
 	 * @param id - Device id
 	 * @param ctx - Action context
@@ -980,9 +980,18 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 					await ctx.showMessage(TEXT.optCleared);
 				}
 				break;
-			case "saveType":
-				await this.applyLearned(id, suggestionOf(runtime.effective), ctx, undefined, TEXT.optSaveTypeConfirm);
+			case "adopt": {
+				const current = registry.get(id);
+				if (!current || current.currentOverride === null) {
+					await ctx.showMessage(TEXT.optNothingToAdopt);
+					break;
+				}
+				const changes = describeChange(current.baseDetection, current.effective) || "-";
+				if (await ctx.showConfirmation(filled(TEXT.optAdoptConfirm, { changes }))) {
+					await ctx.showMessage((await this.adoptAsBase(id)) ? TEXT.optAdopted : TEXT.optAdoptFailed);
+				}
 				break;
+			}
 			default:
 				break;
 		}
@@ -1118,6 +1127,36 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 				(await this.adapter.getForeignStateAsync(`system.adapter.${instance}.alive`))?.val === true,
 			getHistory: (id, options) => this.adapter.getHistoryAsync(id, options),
 		};
+	}
+
+	/**
+	 * "Adopt as base values": write the values in use (base values with the optimised values, never masked) into
+	 * the device first. The registry then sees base values that equal the values in use and drops the override
+	 * without loss (`adopted`); if writing the device fails, everything stays as it was. No restart.
+	 *
+	 * @param id - Device id
+	 * @returns whether the device was written
+	 */
+	public async adoptAsBase(id: Id): Promise<boolean> {
+		const runtime = this.adapter.registry.get(id);
+		const obj = await this.adapter.getObjectAsync(id);
+		const cfg = obj ? this.storedConfigOf(obj) : null;
+		if (!runtime || runtime.currentOverride === null || !cfg) {
+			return false;
+		}
+		const detection = runtime.effective;
+		const changes = describeChange(runtime.baseDetection, detection) || "-";
+		const { template: _template, typeId: _typeId, ...rest } = cfg as DeviceConfig & { typeId?: unknown };
+		try {
+			await this.writeDevice(id, { ...rest, detection, learned: true });
+		} catch (err) {
+			this.adapter.log.warn(
+				`${cfg.name}: values in use not adopted, the device was not saved: ${errorMessage(err)}`,
+			);
+			return false;
+		}
+		this.adapter.log.info(`${cfg.name}: values in use saved as base values of the device (${changes})`);
+		return true;
 	}
 
 	/**
@@ -1295,7 +1334,7 @@ export function suggestionOf(p: DetectionSettings): LearningSuggestion {
 }
 
 /** Status values of the automatic optimisation with their translation keys. */
-const OPT_KINDS = ["repair", "tighten", "undo", "reset", "baseChanged"] as const;
+const OPT_KINDS = ["repair", "tighten", "undo", "reset", "adopted", "baseChanged"] as const;
 
 /**
  * Translated kind of a change; entries `typeChanged` of earlier versions are shown like `baseChanged`.
@@ -1478,7 +1517,7 @@ export function buildOptimizationView(
 	}
 	ops.push({ label: I18n.getTranslatedObject("dm_optClear"), value: "clear" });
 	if (active) {
-		ops.push({ label: I18n.getTranslatedObject("dm_optSaveValues"), value: "saveType" });
+		ops.push({ label: I18n.getTranslatedObject("dm_optAdopt"), value: "adopt" });
 	}
 	items.operation = {
 		type: "select",

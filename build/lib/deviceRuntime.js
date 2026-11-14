@@ -27,6 +27,7 @@ export class DeviceRuntime {
     disposed = false;
     queue = Promise.resolve();
     override = null;
+    finalSuspended = false;
     recorder = null;
     antiCrease = false;
     constructor(host, deviceId, cfg, inst, sink, listener) {
@@ -44,6 +45,10 @@ export class DeviceRuntime {
     get effective() {
         return { ...this.baseDetection, ...(this.override ?? {}) };
     }
+    get active() {
+        const eff = this.effective;
+        return this.finalSuspended ? { ...eff, finalMinVal: 0 } : eff;
+    }
     get baseDetection() {
         return detectionOf(this.cfg.detection);
     }
@@ -55,6 +60,16 @@ export class DeviceRuntime {
             return;
         }
         this.override = o;
+        this.rebuildDetector();
+    }
+    setFinalSuspended(on) {
+        if (on === this.finalSuspended) {
+            return;
+        }
+        this.finalSuspended = on;
+        this.rebuildDetector();
+    }
+    rebuildDetector() {
         if (this.detector.started) {
             this.rebuildDetectorAfterRun = true;
         }
@@ -195,12 +210,7 @@ export class DeviceRuntime {
         const switchChanged = next.switchId !== this.cfg.switchId;
         this.cfg = next;
         if (detectorChanged) {
-            if (this.detector.started) {
-                this.rebuildDetectorAfterRun = true;
-            }
-            else {
-                this.detector = this.buildDetector();
-            }
+            this.rebuildDetector();
         }
         if (switchChanged) {
             this.switchOn = null;
@@ -224,7 +234,7 @@ export class DeviceRuntime {
         await this.host.setOwnState(this.own(rel), val);
     }
     buildDetector() {
-        const settings = this.effective;
+        const settings = this.active;
         this.detectorMode = settings.mode;
         return createDetector(settings, {
             abort: this.cfg.abort,

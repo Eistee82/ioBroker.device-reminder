@@ -9,7 +9,7 @@ import { scaled } from "./learn/ticks.js";
 import { LearningRecorder, suggestType } from "./learning.js";
 import { ReminderScheduler } from "./reminder.js";
 import { RunRecorder } from "./runRecorder.js";
-import { addRun, emptyStore, fitSize, labelCapture, loadStore, pushChange, reconcileStore, refreshInfo, removeStore, saveStore, typeHash, } from "./runStore.js";
+import { addRun, emptyStore, fitSize, labelCapture, loadStore, pushChange, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, typeHash, } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 const OPTIMIZE_BUDGET_MS = 30_000;
 function isTrue(val) {
@@ -46,8 +46,11 @@ export class DeviceRegistry {
         }
         if (existing) {
             if (existing.runtime.canKeepStateFor(cfg)) {
+                const oldBase = existing.runtime.baseDetection;
                 existing.runtime.updateConfig(cfg);
+                await this.reconcileRuntime(existing, oldBase);
                 await this.syncOptimize(deviceId, existing);
+                await this.writeOptStates(deviceId, existing);
                 return;
             }
             this.host.log.info(`Device ${cfg.name} reset: power state changed`);
@@ -391,6 +394,26 @@ export class DeviceRegistry {
             return 1;
         }
     }
+    async reconcileRuntime(entry, oldBase) {
+        const store = entry.opt?.store;
+        if (!store || entry.runtime.config.autoOptimize !== true) {
+            return;
+        }
+        const hadOverride = store.override !== null;
+        const kind = reconcileBase(store, typeHash(entry.runtime.baseDetection), typeHash(effectiveOf(oldBase, store.override)), this.host.now());
+        if (kind === "none") {
+            return;
+        }
+        refreshInfo(store);
+        entry.runtime.setOverride(store.override);
+        await this.saveOpt(entry);
+        if (kind === "adopted") {
+            this.host.log.info(`${entry.runtime.config.name}: values in use adopted as base values`);
+        }
+        else if (hadOverride) {
+            await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
+        }
+    }
     async syncOptimize(deviceId, entry) {
         const cfg = entry.runtime.config;
         const want = cfg.autoOptimize === true && this.files !== undefined;
@@ -422,10 +445,14 @@ export class DeviceRegistry {
         }
         const store = loaded ?? emptyStore(deviceId, cfg.template ?? "", typeHash(type), step, unitFactor);
         const hadOverride = store.override !== null;
+        const base = reconcileBase(store, typeHash(type), typeHash(effectiveOf(type, store.override)), now);
+        if (base === "adopted") {
+            this.host.log.info(`${cfg.name}: values in use adopted as base values`);
+        }
         for (const msg of reconcileStore(store, typeHash(type), step, unitFactor, now)) {
             this.host.log.info(`${cfg.name}: ${msg}`);
         }
-        if (hadOverride && store.override === null) {
+        if (base === "baseChanged" && hadOverride) {
             await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
         }
         const recorder = new RunRecorder(step, unitFactor);
@@ -629,16 +656,26 @@ export class DeviceRegistry {
         if (!entry || !opt) {
             return;
         }
-        const trailerBefore = opt.store.info.trailer;
-        const outcome = await optimize(opt.store, this.optimizeContext(entry));
-        if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
+        const store = opt.store;
+        const trailerBefore = store.info.trailer;
+        const ctx = this.optimizeContext(entry);
+        const baseHash = typeHash(ctx.type);
+        const fork = forkStore(store);
+        const outcome = await optimize(fork.work, ctx);
+        await this.opts.beforeOptimizeWrite?.(deviceId);
+        if (entry.opt !== opt || opt.store !== store || this.devices.get(deviceId) !== entry) {
             return;
         }
-        entry.runtime.setOverride(opt.store.override);
+        if (typeHash(entry.runtime.baseDetection) !== baseHash || store.typeHash !== baseHash) {
+            this.host.log.info(`${entry.runtime.config.name}: base values changed during the optimisation, result discarded`);
+            return;
+        }
+        mergeFork(store, fork);
+        entry.runtime.setOverride(store.override);
         await this.saveOpt(entry);
         await this.writeOptStates(deviceId, entry);
         await this.reportOutcome(entry, outcome);
-        if (opt.store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
+        if (store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
             await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
         }
     }
@@ -699,12 +736,13 @@ export class DeviceRegistry {
         if (!store) {
             return;
         }
-        const type = entry.runtime.baseDetection;
-        await this.host.setOwnState(`${deviceId}.learning.optimized`, entry.runtime.currentOverride !== null);
+        const runtime = entry.runtime;
+        await this.host.setOwnState(`${deviceId}.learning.optimized`, runtime.currentOverride !== null);
         await this.host.setOwnState(`${deviceId}.learning.parameters`, JSON.stringify({
-            type: effectiveOf(type, null),
+            base: effectiveOf(runtime.baseDetection, null),
             override: store.override,
-            effective: entry.runtime.effective,
+            effective: runtime.effective,
+            active: runtime.active,
         }));
         await this.host.setOwnState(`${deviceId}.learning.lastChange`, JSON.stringify(store.changes.at(-1) ?? null));
         await this.host.setOwnState(`${deviceId}.learning.optimizeInfo`, JSON.stringify(store.info));
@@ -721,6 +759,31 @@ export class DeviceRegistry {
         entry.reminder.dispose();
         entry.recorder.stop(this.host.now());
     }
+}
+function forkStore(store) {
+    return {
+        work: { ...store, info: { ...store.info }, changes: [...store.changes] },
+        start: { ...store, info: { ...store.info } },
+    };
+}
+function mergeFork(store, fork) {
+    const { work, start } = fork;
+    const changed = (dst, src, was) => {
+        const d = dst;
+        const s = src;
+        const w = was;
+        for (const key of Object.keys(s)) {
+            if (key !== "info" && key !== "changes" && s[key] !== w[key]) {
+                d[key] = s[key];
+            }
+        }
+    };
+    changed(store, work, start);
+    changed(store.info, work.info, start.info);
+    if (work.changes.length !== start.changes.length || work.changes.at(-1) !== start.changes.at(-1)) {
+        store.changes = work.changes;
+    }
+    refreshInfo(store);
 }
 function formatMinutes(sec) {
     return `${Math.round(sec / 6) / 10} min`;

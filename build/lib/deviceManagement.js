@@ -724,9 +724,18 @@ export class ReminderDeviceManagement extends DeviceManagement {
                     await ctx.showMessage(TEXT.optCleared);
                 }
                 break;
-            case "saveType":
-                await this.applyLearned(id, suggestionOf(runtime.effective), ctx, undefined, TEXT.optSaveTypeConfirm);
+            case "adopt": {
+                const current = registry.get(id);
+                if (!current || current.currentOverride === null) {
+                    await ctx.showMessage(TEXT.optNothingToAdopt);
+                    break;
+                }
+                const changes = describeChange(current.baseDetection, current.effective) || "-";
+                if (await ctx.showConfirmation(filled(TEXT.optAdoptConfirm, { changes }))) {
+                    await ctx.showMessage((await this.adoptAsBase(id)) ? TEXT.optAdopted : TEXT.optAdoptFailed);
+                }
                 break;
+            }
             default:
                 break;
         }
@@ -845,6 +854,26 @@ export class ReminderDeviceManagement extends DeviceManagement {
             alive: async (instance) => (await this.adapter.getForeignStateAsync(`system.adapter.${instance}.alive`))?.val === true,
             getHistory: (id, options) => this.adapter.getHistoryAsync(id, options),
         };
+    }
+    async adoptAsBase(id) {
+        const runtime = this.adapter.registry.get(id);
+        const obj = await this.adapter.getObjectAsync(id);
+        const cfg = obj ? this.storedConfigOf(obj) : null;
+        if (!runtime || runtime.currentOverride === null || !cfg) {
+            return false;
+        }
+        const detection = runtime.effective;
+        const changes = describeChange(runtime.baseDetection, detection) || "-";
+        const { template: _template, typeId: _typeId, ...rest } = cfg;
+        try {
+            await this.writeDevice(id, { ...rest, detection, learned: true });
+        }
+        catch (err) {
+            this.adapter.log.warn(`${cfg.name}: values in use not adopted, the device was not saved: ${errorMessage(err)}`);
+            return false;
+        }
+        this.adapter.log.info(`${cfg.name}: values in use saved as base values of the device (${changes})`);
+        return true;
     }
     async applyLearned(id, suggestion, ctx, unit = "W", confirm = TEXT.learnConfirm) {
         const obj = await this.adapter.getObjectAsync(id);
@@ -966,7 +995,7 @@ export function suggestionOf(p) {
             : {}),
     };
 }
-const OPT_KINDS = ["repair", "tighten", "undo", "reset", "baseChanged"];
+const OPT_KINDS = ["repair", "tighten", "undo", "reset", "adopted", "baseChanged"];
 function kindText(kind, tr) {
     const k = kind === "typeChanged" ? "baseChanged" : kind;
     return OPT_KINDS.includes(k) ? tr(`dm_optKind_${k}`) : kind;
@@ -1104,7 +1133,7 @@ export function buildOptimizationView(store, check, type, effective, active) {
     }
     ops.push({ label: I18n.getTranslatedObject("dm_optClear"), value: "clear" });
     if (active) {
-        ops.push({ label: I18n.getTranslatedObject("dm_optSaveValues"), value: "saveType" });
+        ops.push({ label: I18n.getTranslatedObject("dm_optAdopt"), value: "adopt" });
     }
     items.operation = {
         type: "select",

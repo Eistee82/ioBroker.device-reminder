@@ -43,6 +43,7 @@ export class DeviceRuntime {
 	private disposed = false;
 	private queue: Promise<void> = Promise.resolve();
 	private override: Partial<DetectionSettings> | null = null;
+	private finalSuspended = false;
 	private recorder: RunRecorder | null = null;
 	private antiCrease = false;
 
@@ -71,9 +72,21 @@ export class DeviceRuntime {
 		return this.cfg;
 	}
 
-	/** Detection values in use: the values of the device with the optimised values (if any). */
+	/**
+	 * Detection values in use: the values of the device with the optimised values (if any). Base of the
+	 * optimisation, of "adopt as base values" and of the display; never masked.
+	 */
 	public get effective(): DetectionSettings {
 		return { ...this.baseDetection, ...(this.override ?? {}) };
+	}
+
+	/**
+	 * Values the detector is built with: `effective`, with the final phase off (`finalMinVal = 0`) while it is
+	 * suspended. The mask never reaches the optimisation, the override or the values of the device.
+	 */
+	public get active(): DetectionSettings {
+		const eff = this.effective;
+		return this.finalSuspended ? { ...eff, finalMinVal: 0 } : eff;
 	}
 
 	/** Detection values of the device (without optimised values), all fields filled in. */
@@ -97,6 +110,25 @@ export class DeviceRuntime {
 			return;
 		}
 		this.override = o;
+		this.rebuildDetector();
+	}
+
+	/**
+	 * Suspend the final phase (only a mask of the values the detector is built with) or use it again. The detector
+	 * is rebuilt like with `setOverride`.
+	 *
+	 * @param on - Suspended
+	 */
+	public setFinalSuspended(on: boolean): void {
+		if (on === this.finalSuspended) {
+			return;
+		}
+		this.finalSuspended = on;
+		this.rebuildDetector();
+	}
+
+	/** Rebuild the detector at once between two runs, otherwise after the run. */
+	private rebuildDetector(): void {
 		if (this.detector.started) {
 			this.rebuildDetectorAfterRun = true;
 		} else {
@@ -297,11 +329,7 @@ export class DeviceRuntime {
 		const switchChanged = next.switchId !== this.cfg.switchId;
 		this.cfg = next;
 		if (detectorChanged) {
-			if (this.detector.started) {
-				this.rebuildDetectorAfterRun = true;
-			} else {
-				this.detector = this.buildDetector();
-			}
+			this.rebuildDetector();
 		}
 		if (switchChanged) {
 			this.switchOn = null;
@@ -330,7 +358,7 @@ export class DeviceRuntime {
 	}
 
 	private buildDetector(): Detector {
-		const settings = this.effective;
+		const settings = this.active;
 		this.detectorMode = settings.mode;
 		return createDetector(settings, {
 			abort: this.cfg.abort,
