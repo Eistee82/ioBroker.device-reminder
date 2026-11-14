@@ -1,6 +1,6 @@
 export const FAMILY_DISTANCE = 0.35;
-function vectorOf(f) {
-    return [
+function vectorOf(f, bands) {
+    const v = [
         Math.log(Math.max(1, f.coreSec)),
         Math.log(Math.max(0.001, f.energyWh)),
         f.hiShare,
@@ -9,13 +9,21 @@ function vectorOf(f) {
         f.trailer ? 1 : 0,
         Math.log(Math.max(0, f.blockMean) + 1),
     ];
+    if (bands) {
+        v.push(Math.log(Math.max(0, f.topBandSec ?? 0) + 1), f.finalBandBlocks ?? 0);
+    }
+    return v;
+}
+function hasBandFeatures(f) {
+    return Number.isFinite(f.topBandSec) && Number.isFinite(f.finalBandBlocks);
 }
 export function assignFamilies(features, known, nextId) {
     const n = features.length;
     if (n === 0) {
         return { families: [], nextId };
     }
-    const vecs = features.map(vectorOf);
+    const bands = features.every(hasBandFeatures);
+    const vecs = features.map(f => vectorOf(f, bands));
     const dim = vecs[0].length;
     const mean = Array.from({ length: dim }, (_, d) => vecs.reduce((s, v) => s + v[d], 0) / n);
     const sd = Array.from({ length: dim }, (_, d) => Math.sqrt(vecs.reduce((s, v) => s + (v[d] - mean[d]) ** 2, 0) / n));
