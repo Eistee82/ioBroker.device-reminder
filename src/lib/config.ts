@@ -733,8 +733,10 @@ export function normalizeDetection(raw: unknown, warnings: string[], label: stri
  *
  * Without valid `detection` the values of an old device type are read (`typeId` in `legacyTypes`, nothing is
  * written; the result has no `typeId`). This only happens if the migration of a V4 test installation could not
- * write the device (`applyV4Migration`, retried at the next start). Without both the device gets the values of "Custom" and stays off with a review hint: such a device
- * was ignored before and must not start sending messages.
+ * write the device (`applyV4Migration`, retried at the next start).
+ *
+ * Without both the device gets the values of "Custom" and stays off with a review hint: such a device was
+ * ignored before and must not start sending messages.
  *
  * @param native - Raw device native object
  * @param legacyTypes - Device types of an earlier version (`resolveLegacyTypes` of the instance native)
