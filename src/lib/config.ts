@@ -1,7 +1,8 @@
 import { FINAL_KEYS } from "./detector/types.js";
-import type { DetectionMode, FinalKey, FinalSettings, TypeThresholds } from "./detector/types.js";
-import { allocateDeviceId } from "./ids.js";
+import type { DetectionMode, DetectionSettings, FinalKey, FinalSettings } from "./detector/types.js";
+import type { DeviceTypeConfig } from "./legacyTypes.js";
 import { defaultInstance, fixedTextState, kindFromInstance } from "./messenger/adapters.js";
+import { detectionOf } from "./runStore.js";
 import { parseNumber } from "./utils.js";
 
 /** Messenger kind. */
@@ -18,38 +19,6 @@ export type MessengerKind =
 	| "ntfy"
 	| "pushsafer"
 	| "gotify";
-
-/** Device type config configuration. */
-export interface DeviceTypeConfig extends TypeThresholds {
-	/** Id. */
-	id: string;
-	/** Name. */
-	name: string;
-	/** Builtin. */
-	builtin: boolean;
-	/** Mode. */
-	mode: DetectionMode;
-	/** Start duration (seconds). */
-	startDurationSec: number;
-	/** End duration (seconds). */
-	endDurationSec: number;
-	/** Pause protection: hold time in seconds before a pause counts as the end (0 = off). */
-	pauseHoldSec: number;
-	/** Pause protection: a phase below endVal beginning within this many seconds of the start is a pause (0 = unused). */
-	pauseUntilSec: number;
-	/** Pause protection: a phase below endVal staying below this power is a pause (0 = unused). */
-	pauseBelowVal: number;
-	/** Anti-crease filter: longest drum burst in s (missing or 0 = off; all trailer fields are set only when on). */
-	trailerBurstSec?: number;
-	/** Anti-crease filter: minimum quiet time before a burst in s (0 = automatic). */
-	trailerGapSec?: number;
-	/** Anti-crease filter: bursts are held only this many seconds after the start (0 = unused). */
-	trailerAfterSec?: number;
-	/** Anti-crease filter: bursts are held only after a block of at least this mean power (0 = unused). */
-	trailerBlockVal?: number;
-	/** Anti-crease filter: length of the anti-crease phase after the end in s. */
-	trailerMaxSec?: number;
-}
 
 /** Bounds of the anti-crease fields: [min when on, max]. */
 export const TRAILER_BOUNDS = {
@@ -356,10 +325,8 @@ export interface StatusTexts {
 
 /** Instance config configuration. */
 export interface InstanceConfig {
-	/** Config version. */
-	configVersion: 4;
-	/** Types. */
-	types: DeviceTypeConfig[];
+	/** Config version (5: the detection values live in the devices, `native.types` is only an archive). */
+	configVersion: 5;
 	/** Recipients. */
 	recipients: RecipientConfig[];
 	/** Status texts. */
@@ -403,8 +370,16 @@ export interface DeviceConfig {
 	enabled: boolean;
 	/** Name. */
 	name: string;
-	/** Type ID. */
-	typeId: string;
+	/** Detection values (unit of the power state, all fields filled in). */
+	detection: DetectionSettings;
+	/** Id of the built-in template the values come from; missing once the values differ from it. */
+	template?: string;
+	/** The values could not be taken over exactly: the device stays off until it is checked and saved. */
+	needsReview?: boolean;
+	/** Why the device needs a review (English). */
+	reviewHint?: string;
+	/** Device type of an earlier version (only read when `detection` is missing; removed by the migration). */
+	typeId?: string;
 	/** Source ID. */
 	sourceId?: string;
 	/** Power ID. */
@@ -429,7 +404,7 @@ export interface DeviceConfig {
 	reminder: ReminderConfig;
 	/** Actions. */
 	actions: DeviceAction[];
-	/** Automatic optimisation of the detection (set only when on; off = values of the device type). */
+	/** Automatic optimisation of the detection (set only when on; off = the detection values of the device). */
 	autoOptimize?: boolean;
 	/** Report changes of the automatic optimisation as a message (set only when on). */
 	optimizeNotify?: boolean;
@@ -452,60 +427,6 @@ const MESSENGER_KINDS: readonly MessengerKind[] = [
 const ACTION_EVENTS: readonly ActionEvent[] = ["start", "end", "reminder", "acknowledged"];
 const DETECTION_MODES: readonly DetectionMode[] = ["count", "timed", "combined"];
 const TELEGRAM_TARGETS = ["user", "chatId", "none"] as const;
-
-function builtinType(
-	id: string,
-	name: string,
-	startVal: number,
-	endVal: number,
-	standby: number,
-	startCount: number,
-	endCount: number,
-): DeviceTypeConfig {
-	return {
-		id,
-		name,
-		builtin: true,
-		startVal,
-		endVal,
-		startCount,
-		endCount,
-		standby,
-		mode: "count",
-		startDurationSec: 60,
-		endDurationSec: 300,
-		pauseHoldSec: 0,
-		pauseUntilSec: 0,
-		pauseBelowVal: 0,
-	};
-}
-
-function customType(index: number): DeviceTypeConfig {
-	return {
-		id: `custom${index}`,
-		name: `Custom ${index}`,
-		builtin: false,
-		startVal: 30,
-		endVal: 5,
-		standby: 1,
-		startCount: 1,
-		endCount: 20,
-		mode: "count",
-		startDurationSec: 60,
-		endDurationSec: 300,
-		pauseHoldSec: 0,
-		pauseUntilSec: 0,
-		pauseBelowVal: 0,
-	};
-}
-
-/** D e f a u l t_ t y p e s. */
-export const DEFAULT_TYPES: DeviceTypeConfig[] = [
-	builtinType("washing-machine", "Washing machine", 30, 15, 1, 2, 50),
-	builtinType("dryer", "Dryer", 120, 15, 1, 2, 20),
-	builtinType("dishwasher", "Dishwasher", 15, 0.25, 0.5, 2, 120),
-	...Array.from({ length: 10 }, (_, i) => customType(i + 1)),
-];
 
 /** D e f a u l t_ r e m i n d e r. */
 export const DEFAULT_REMINDER: ReminderConfig = {
@@ -557,33 +478,6 @@ function num(val: unknown, fallback: number): number {
 
 function optNum(val: unknown): number | undefined {
 	return parseNumber(val) ?? undefined;
-}
-
-function normalizeType(raw: unknown, index: number, id: string, warnings: string[]): DeviceTypeConfig | null {
-	if (!isRecord(raw)) {
-		warnings.push(`Device type #${index + 1} ignored: not an object`);
-		return null;
-	}
-	const builtin = DEFAULT_TYPES.find(t => t.id === id);
-	const base = builtin ?? customType(0);
-	const mode = DETECTION_MODES.find(m => m === raw.mode) ?? "count";
-	return {
-		id,
-		name: str(raw.name).trim() || base.name,
-		builtin: builtin?.builtin ?? false,
-		startVal: Math.max(0, num(raw.startVal, base.startVal)),
-		endVal: Math.max(0, num(raw.endVal, base.endVal)),
-		standby: Math.max(0, num(raw.standby, base.standby)),
-		startCount: Math.max(0, num(raw.startCount, base.startCount)),
-		endCount: Math.max(0, num(raw.endCount, base.endCount)),
-		mode,
-		startDurationSec: Math.max(0, num(raw.startDurationSec, 60)),
-		endDurationSec: Math.max(0, num(raw.endDurationSec, 300)),
-		pauseHoldSec: Math.max(0, num(raw.pauseHoldSec, 0)),
-		pauseUntilSec: Math.max(0, num(raw.pauseUntilSec, 0)),
-		pauseBelowVal: Math.max(0, num(raw.pauseBelowVal, 0)),
-		...normalizeTrailer(raw),
-	};
 }
 
 function normalizeRecipient(raw: unknown, index: number, id: string, warnings: string[]): RecipientConfig | null {
@@ -686,8 +580,6 @@ export function recipientFromRow(raw: unknown): { recipient: RecipientConfig | n
 export interface IdPatch {
 	/** Recipients. */
 	recipients?: unknown[];
-	/** Device types. */
-	types?: unknown[];
 }
 
 function generateRecipientId(raw: Record<string, unknown>, index: number, taken: Set<string>): string {
@@ -711,50 +603,14 @@ function generateRecipientId(raw: Record<string, unknown>, index: number, taken:
 export function normalizeInstanceConfig(native: Record<string, unknown>): {
 	config: InstanceConfig;
 	warnings: string[];
-	/** Whether ids were generated for recipients or types that had none (or a duplicate one). */
+	/** Whether ids were generated for recipients that had none (or a duplicate one). */
 	generatedIds: boolean;
-	/** Raw `recipients` / `types` rows with the generated ids filled in; to be stored in the native. */
+	/** Raw `recipients` rows with the generated ids filled in; to be stored in the native. */
 	idPatch: IdPatch;
 } {
 	const warnings: string[] = [];
 	const src = isRecord(native) ? native : {};
 	const idPatch: IdPatch = {};
-
-	let types: DeviceTypeConfig[] = [];
-	if (Array.isArray(src.types)) {
-		const seen = new Set<string>();
-		const taken = new Set<string>([
-			...DEFAULT_TYPES.map(t => t.id),
-			...src.types.map(raw => (isRecord(raw) ? str(raw.id).trim() : "")).filter(id => id !== ""),
-		]);
-		const rawRows: unknown[] = [...src.types];
-		src.types.forEach((raw, i) => {
-			let id = isRecord(raw) ? str(raw.id).trim() : "";
-			if (isRecord(raw) && id === "") {
-				// A type added in the admin table has no id yet: derive a stable one from its name
-				id = allocateDeviceId(str(raw.name).trim() || "custom", taken);
-				taken.add(id);
-				rawRows[i] = { ...raw, id };
-				idPatch.types = rawRows;
-			}
-			const t = normalizeType(raw, i, id, warnings);
-			if (!t) {
-				return;
-			}
-			if (seen.has(t.id)) {
-				warnings.push(`Device type "${t.id}" ignored: duplicate id`);
-				return;
-			}
-			seen.add(t.id);
-			types.push(t);
-		});
-	}
-	if (types.length === 0) {
-		types = DEFAULT_TYPES.map(t => ({ ...t }));
-	} else {
-		const missing = DEFAULT_TYPES.filter(d => d.builtin && !types.some(t => t.id === d.id));
-		types = [...missing.map(t => ({ ...t })), ...types];
-	}
 
 	const recipients: RecipientConfig[] = [];
 	if (Array.isArray(src.recipients)) {
@@ -797,25 +653,97 @@ export function normalizeInstanceConfig(native: Record<string, unknown>): {
 
 	return {
 		config: {
-			configVersion: 4,
-			types,
+			configVersion: 5,
 			recipients,
 			statusTexts,
 			pollIntervalSec,
 			historyHtml: bool(src.historyHtml, false),
 		},
 		warnings,
-		generatedIds: idPatch.recipients !== undefined || idPatch.types !== undefined,
+		generatedIds: idPatch.recipients !== undefined,
 		idPatch,
 	};
 }
 
+/** Values of the template "Custom", used for missing detection values. */
+const CUSTOM_VALUES = {
+	startVal: 30,
+	endVal: 5,
+	standby: 1,
+	startCount: 1,
+	endCount: 20,
+	startDurationSec: 60,
+	endDurationSec: 300,
+} as const;
+
+/** Hint and warning when a device has no detection values. */
+const MISSING_DETECTION = 'detection values missing, using "Custom"';
+
 /**
- * Normalize one device configuration; returns null if it is unusable.
+ * Normalized detection values of a device: thresholds, mode and durations (missing or invalid ones take the value
+ * of the template "Custom" with a warning), pause protection, anti-crease filter and final phase (Spec A.2), all
+ * fields filled in. Null if `raw` is no object.
+ *
+ * @param raw - Raw detection values (`native.detection`)
+ * @param warnings - Receives the warnings `Device "<label>": <field> <old> → <new> (<reason>)`
+ * @param label - Device name for the warnings
+ */
+export function normalizeDetection(raw: unknown, warnings: string[], label: string): DetectionSettings | null {
+	if (!isRecord(raw)) {
+		return null;
+	}
+	const required = (key: keyof typeof CUSTOM_VALUES): number => {
+		const v = parseNumber(raw[key]);
+		if (v === null || !Number.isFinite(v)) {
+			const old = raw[key] === undefined ? "missing" : JSON.stringify(raw[key]);
+			warnings.push(`Device "${label}": ${key} ${old} → ${CUSTOM_VALUES[key]} (not a number)`);
+			return CUSTOM_VALUES[key];
+		}
+		return Math.max(0, v);
+	};
+	const optional = (key: string): number => {
+		const v = parseNumber(raw[key]);
+		return v !== null && Number.isFinite(v) ? Math.max(0, v) : 0;
+	};
+	let mode = DETECTION_MODES.find(m => m === raw.mode);
+	if (!mode) {
+		const old = raw.mode === undefined ? "missing" : JSON.stringify(raw.mode);
+		warnings.push(`Device "${label}": mode ${old} → count (unknown mode)`);
+		mode = "count";
+	}
+	const standby = required("standby");
+	const base: DetectionSettings = {
+		startVal: required("startVal"),
+		endVal: required("endVal"),
+		standby,
+		startCount: required("startCount"),
+		endCount: required("endCount"),
+		mode,
+		startDurationSec: required("startDurationSec"),
+		endDurationSec: required("endDurationSec"),
+		pauseHoldSec: optional("pauseHoldSec"),
+		pauseUntilSec: optional("pauseUntilSec"),
+		pauseBelowVal: optional("pauseBelowVal"),
+		...normalizeTrailer(raw),
+		...normalizeFinal({ ...raw, standby }, warnings, label),
+	};
+	return detectionOf(base);
+}
+
+/**
+ * Normalize one device configuration; returns null if it is unusable (no power state).
+ *
+ * Without valid `detection` the values of an old device type are read (`typeId` in `legacyTypes`, nothing is
+ * written). Without both the device gets the values of "Custom" and stays off with a review hint: such a device
+ * was ignored before and must not start sending messages.
  *
  * @param native - Raw device native object
+ * @param legacyTypes - Device types of an earlier version (`resolveLegacyTypes` of the instance native)
  */
-export function normalizeDeviceConfig(native: Record<string, unknown>): {
+export function normalizeDeviceConfig(
+	native: Record<string, unknown>,
+	legacyTypes?: readonly DeviceTypeConfig[],
+): {
 	config: DeviceConfig | null;
 	warnings: string[];
 } {
@@ -858,10 +786,34 @@ export function normalizeDeviceConfig(native: Record<string, unknown>): {
 		? src.recipients.filter((r): r is string => typeof r === "string" && r !== "")
 		: [];
 
+	let detection = normalizeDetection(src.detection, warnings, name);
+	let template = optStr(src.template);
+	let enabled = bool(src.enabled, true);
+	let needsReview = bool(src.needsReview, false);
+	let reviewHint = optStr(src.reviewHint);
+	const typeId = optStr(src.typeId);
+	if (!detection && typeId !== undefined) {
+		const type = legacyTypes?.find(t => t.id === typeId);
+		if (type) {
+			detection = detectionOf(type);
+			if (type.builtin) {
+				template = type.id;
+			}
+		}
+	}
+	if (!detection) {
+		detection = detectionOf({ ...CUSTOM_VALUES, mode: "count" });
+		template = undefined;
+		enabled = false;
+		needsReview = true;
+		reviewHint = MISSING_DETECTION;
+		warnings.push(`Device "${name}": ${MISSING_DETECTION}, device disabled until it is checked`);
+	}
+
 	const config: DeviceConfig = {
-		enabled: bool(src.enabled, true),
+		enabled,
 		name,
-		typeId: str(src.typeId).trim(),
+		detection,
 		powerId,
 		startText: str(src.startText),
 		endText: str(src.endText),
@@ -887,15 +839,17 @@ export function normalizeDeviceConfig(native: Record<string, unknown>): {
 	if (switchId !== undefined) {
 		config.switchId = switchId;
 	}
+	if (template !== undefined) {
+		config.template = template;
+	}
+	if (needsReview) {
+		config.needsReview = true;
+		if (reviewHint !== undefined) {
+			config.reviewHint = reviewHint;
+		}
+	}
+	if (typeId !== undefined) {
+		config.typeId = typeId;
+	}
 	return { config, warnings };
-}
-
-/**
- * Find a device type by id.
- *
- * @param config - Instance configuration
- * @param typeId - Type id
- */
-export function findType(config: InstanceConfig, typeId: string): DeviceTypeConfig | undefined {
-	return config.types.find(t => t.id === typeId);
 }

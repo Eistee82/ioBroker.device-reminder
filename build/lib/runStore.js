@@ -201,23 +201,22 @@ export async function removeStore(io, deviceId) {
     await io.remove(slotName(deviceId, "a"));
     await io.remove(slotName(deviceId, "b"));
 }
-export function reconcileStore(store, typeId, hash, step, unitFactor, now) {
+export function reconcileStore(store, hash, step, unitFactor, now) {
     const msgs = [];
-    if (store.typeId !== typeId || store.typeHash !== hash) {
+    if (store.typeHash !== hash) {
         if (store.override) {
             pushChange(store, {
                 ts: now,
-                kind: "typeChanged",
+                kind: "baseChanged",
                 from: store.override,
                 to: null,
-                reason: "device type changed",
+                reason: "detection values changed",
                 runs: store.runs.length,
                 gainSec: 0,
             });
-            msgs.push("device type changed, optimised values discarded");
+            msgs.push("detection values changed, optimised values discarded");
         }
         store.override = null;
-        store.typeId = typeId;
         store.typeHash = hash;
         store.failStreak = 0;
         if (store.info.status === "drift") {

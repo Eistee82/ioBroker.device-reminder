@@ -3,6 +3,7 @@ import { ChannelDetector } from "@iobroker/type-detector";
 import { normalizeDeviceConfig, normalizeInstanceConfig } from "../build/lib/config.js";
 import { ensureDeviceObjects } from "../build/lib/deviceObjects.js";
 import { DEVICE_STATES } from "../build/lib/stateDefinitions.js";
+import { WASHER } from "./helpers/devices.js";
 
 function makeWriter() {
 	const objects = {};
@@ -23,7 +24,7 @@ function makeWriter() {
 	};
 }
 
-const cfg = normalizeDeviceConfig({ name: "Waschmaschine", typeId: "washer", powerId: "x.0.power" }).config;
+const cfg = normalizeDeviceConfig({ name: "Waschmaschine", detection: WASHER, powerId: "x.0.power" }).config;
 const inst = normalizeInstanceConfig({}).config;
 
 describe("deviceObjects", () => {

@@ -6,12 +6,14 @@ import { ReminderDeviceManagement } from "./lib/deviceManagement.js";
 import { DeviceRegistry } from "./lib/deviceRegistry.js";
 import { DeviceSync } from "./lib/deviceSync.js";
 import { ensureDeviceObjects } from "./lib/deviceObjects.js";
+import { resolveLegacyTypes } from "./lib/legacyTypes.js";
 import { isLegacyConfig, migrateLegacyConfig, migrateLegacyStates } from "./lib/migration.js";
 import { Notifier } from "./lib/notifier.js";
 import { errorMessage, isNotFound } from "./lib/utils.js";
 const OWN_SUBSCRIPTIONS = ["*.config.*", "*.acknowledge", "*.learning.*"];
 class DeviceReminder extends utils.Adapter {
     instanceConfig = normalizeInstanceConfig({}).config;
+    legacyTypes = [];
     notifier = null;
     registry = null;
     sync = null;
@@ -36,6 +38,7 @@ class DeviceReminder extends utils.Adapter {
                 this.log.warn(w);
             }
             this.instanceConfig = config;
+            this.legacyTypes = resolveLegacyTypes(this.config);
             if (generatedIds) {
                 await this.persistGeneratedIds(idPatch);
             }
@@ -143,11 +146,8 @@ class DeviceReminder extends utils.Adapter {
             if (patch.recipients) {
                 native.recipients = patch.recipients;
             }
-            if (patch.types) {
-                native.types = patch.types;
-            }
             await this.setForeignObjectAsync(objId, obj);
-            this.log.info("Ids generated for new recipients or device types and saved, the adapter restarts once");
+            this.log.info("Ids generated for new recipients and saved, the adapter restarts once");
         }
         catch (err) {
             this.log.warn(`Generated ids could not be saved: ${errorMessage(err)}`);
@@ -266,7 +266,7 @@ class DeviceReminder extends utils.Adapter {
         await this.syncForeignSubscriptions();
     }
     deviceConfigOf(deviceId, obj) {
-        const { config, warnings } = normalizeDeviceConfig(obj.native ?? {});
+        const { config, warnings } = normalizeDeviceConfig(obj.native ?? {}, this.legacyTypes);
         for (const w of warnings) {
             this.log.warn(`${deviceId}: ${w}`);
         }

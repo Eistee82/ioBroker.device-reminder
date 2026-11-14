@@ -1,16 +1,18 @@
 import * as I18n from "@iobroker/adapter-core/i18n";
 import { ACTIONS, DeviceManagement } from "@iobroker/dm-utils";
-import { DEFAULT_REMINDER, findType, normalizeDeviceConfig } from "./config.js";
+import { DEFAULT_REMINDER, normalizeDetection, normalizeDeviceConfig } from "./config.js";
 import { buildDeviceSchema, buildSourceSchema, deviceConfigToForm, formToDeviceConfig } from "./deviceForm.js";
 import { ensureDeviceObjects } from "./deviceObjects.js";
 import { enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
 import { formatDate } from "./deviceRegistry.js";
-import { plain, TEXT } from "./dmTexts.js";
+import { fill, plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import { FINAL_KEYS } from "./detector/types.js";
 import { analyzeHistory } from "./historyLearning.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
-import { BASE_KEYS } from "./runStore.js";
+import { describeChange } from "./learn/autoOptimize.js";
+import { BASE_KEYS, detectionOf } from "./runStore.js";
+import { findTemplate, TEMPLATES } from "./templates.js";
 import { detectFromHost } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
 const RESERVED_IDS = ["info"];
@@ -85,8 +87,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
         if (!cfg) {
             return { error: "unknownDevice" };
         }
-        const inst = this.adapter.instanceConfig;
-        const type = findType(inst, cfg.typeId);
+        const d = detectionOf(cfg.detection);
         const items = {};
         const data = {};
         items.opsHeader = {
@@ -116,54 +117,49 @@ export class ReminderDeviceManagement extends DeviceManagement {
             newLine: true,
             xs: 12,
         };
-        if (type) {
-            const rows = [
-                [I18n.getTranslatedObject("dm_detailsTypeName"), type.name],
-                [I18n.getTranslatedObject("dm_detailsStartVal"), type.startVal, "W"],
-                [I18n.getTranslatedObject("dm_detailsEndVal"), type.endVal, "W"],
-                [I18n.getTranslatedObject("dm_detailsStandby"), type.standby, "W"],
-                [I18n.getTranslatedObject("dm_detailsStartCount"), type.startCount],
-                [I18n.getTranslatedObject("dm_detailsEndCount"), type.endCount],
-                [I18n.getTranslatedObject("dm_detailsMode"), type.mode],
-            ];
-            if (type.mode !== "count") {
-                rows.push([I18n.getTranslatedObject("dm_detailsStartDuration"), type.startDurationSec, "s"], [I18n.getTranslatedObject("dm_detailsEndDuration"), type.endDurationSec, "s"]);
-            }
-            if (type.pauseHoldSec > 0) {
-                rows.push([I18n.getTranslatedObject("dm_detailsPauseHold"), type.pauseHoldSec, "s"], [I18n.getTranslatedObject("dm_detailsPauseUntil"), type.pauseUntilSec, "s"], [I18n.getTranslatedObject("dm_detailsPauseBelow"), type.pauseBelowVal, "W"]);
-            }
-            if ((type.trailerBurstSec ?? 0) > 0) {
-                rows.push([I18n.getTranslatedObject("dm_learnTrailerBurst"), type.trailerBurstSec ?? 0, "s"], [I18n.getTranslatedObject("dm_learnTrailerGap"), type.trailerGapSec ?? 0, "s"], [I18n.getTranslatedObject("dm_learnTrailerAfter"), type.trailerAfterSec ?? 0, "s"], [I18n.getTranslatedObject("dm_learnTrailerBlock"), type.trailerBlockVal ?? 0, "W"], [I18n.getTranslatedObject("dm_learnTrailerMax"), type.trailerMaxSec ?? 0, "s"]);
-            }
-            rows.forEach(([label, value, unit], i) => {
-                items[`type${i}`] = {
-                    type: "staticInfo",
-                    label,
-                    data: value,
-                    ...(unit ? { unit } : {}),
-                    newLine: true,
-                    xs: 12,
-                    sm: 6,
-                };
-            });
-            items.autoOptimize = {
+        if (cfg.needsReview) {
+            items.needsReview = {
+                type: "infoBox",
+                boxType: "warning",
+                text: TEXT.needsReview(cfg.reviewHint ?? ""),
+                newLine: true,
+                xs: 12,
+            };
+        }
+        const rows = [];
+        const template = findTemplate(cfg.template);
+        if (template) {
+            rows.push([I18n.getTranslatedObject("dev_template"), template.name]);
+        }
+        rows.push([I18n.getTranslatedObject("dm_detailsStartVal"), d.startVal, "W"], [I18n.getTranslatedObject("dm_detailsEndVal"), d.endVal, "W"], [I18n.getTranslatedObject("dm_detailsStandby"), d.standby, "W"], [I18n.getTranslatedObject("dm_detailsStartCount"), d.startCount], [I18n.getTranslatedObject("dm_detailsEndCount"), d.endCount], [I18n.getTranslatedObject("dm_detailsMode"), d.mode]);
+        if (d.mode !== "count") {
+            rows.push([I18n.getTranslatedObject("dm_detailsStartDuration"), d.startDurationSec, "s"], [I18n.getTranslatedObject("dm_detailsEndDuration"), d.endDurationSec, "s"]);
+        }
+        if ((d.pauseHoldSec ?? 0) > 0) {
+            rows.push([I18n.getTranslatedObject("dm_detailsPauseHold"), d.pauseHoldSec ?? 0, "s"], [I18n.getTranslatedObject("dm_detailsPauseUntil"), d.pauseUntilSec ?? 0, "s"], [I18n.getTranslatedObject("dm_detailsPauseBelow"), d.pauseBelowVal ?? 0, "W"]);
+        }
+        if ((d.trailerBurstSec ?? 0) > 0) {
+            rows.push([I18n.getTranslatedObject("dm_learnTrailerBurst"), d.trailerBurstSec ?? 0, "s"], [I18n.getTranslatedObject("dm_learnTrailerGap"), d.trailerGapSec ?? 0, "s"], [I18n.getTranslatedObject("dm_learnTrailerAfter"), d.trailerAfterSec ?? 0, "s"], [I18n.getTranslatedObject("dm_learnTrailerBlock"), d.trailerBlockVal ?? 0, "W"], [I18n.getTranslatedObject("dm_learnTrailerMax"), d.trailerMaxSec ?? 0, "s"]);
+        }
+        rows.forEach(([label, value, unit], i) => {
+            items[`type${i}`] = {
                 type: "staticInfo",
-                label: I18n.getTranslatedObject("dm_autoOptimize"),
-                data: cfg.autoOptimize ? TEXT.on : TEXT.off,
+                label,
+                data: value,
+                ...(unit ? { unit } : {}),
                 newLine: true,
                 xs: 12,
                 sm: 6,
             };
-        }
-        else {
-            items.typeUnknown = {
-                type: "infoBox",
-                boxType: "warning",
-                text: I18n.getTranslatedObject("dm_detailsTypeUnknown"),
-                newLine: true,
-                xs: 12,
-            };
-        }
+        });
+        items.autoOptimize = {
+            type: "staticInfo",
+            label: I18n.getTranslatedObject("dm_autoOptimize"),
+            data: cfg.autoOptimize ? TEXT.on : TEXT.off,
+            newLine: true,
+            xs: 12,
+            sm: 6,
+        };
         items.reminderHeader = {
             type: "header",
             text: I18n.getTranslatedObject("dm_detailsReminder"),
@@ -223,12 +219,24 @@ export class ReminderDeviceManagement extends DeviceManagement {
     }
     configOf(obj) {
         const native = (obj.native ?? {});
-        const direct = normalizeDeviceConfig(native).config;
+        const legacy = this.adapter.legacyTypes;
+        const direct = normalizeDeviceConfig(native, legacy).config;
         if (direct) {
             return direct;
         }
-        const repaired = normalizeDeviceConfig({ ...native, powerId: "-" }).config;
+        const repaired = normalizeDeviceConfig({ ...native, powerId: "-" }, legacy).config;
         return repaired ? { ...repaired, powerId: "" } : null;
+    }
+    storedConfigOf(obj) {
+        const cfg = this.configOf(obj);
+        return cfg ? { ...(obj.native ?? {}), ...cfg } : null;
+    }
+    async unitFactorOf(powerId) {
+        if (powerId === "") {
+            return 1;
+        }
+        const unit = (await this.adapter.getForeignObjectAsync(powerId))?.common?.unit;
+        return typeof unit === "string" && unit.trim().toLowerCase() === "kw" ? 1000 : 1;
     }
     objectWriter() {
         return {
@@ -291,9 +299,8 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 actions: this.deviceActions(id, false, false, false, false),
             };
         }
-        const inst = this.adapter.instanceConfig;
-        const type = findType(inst, cfg.typeId);
         const runtime = this.adapter.registry.get(id);
+        const template = findTemplate(cfg.template);
         const powerMissing = cfg.powerId === "" ||
             runtime?.powerMissing === true ||
             !(await this.adapter.getForeignObjectAsync(cfg.powerId));
@@ -301,8 +308,8 @@ export class ReminderDeviceManagement extends DeviceManagement {
         if (powerMissing) {
             warning = TEXT.powerMissing(cfg.powerId);
         }
-        else if (!type) {
-            warning = TEXT.unknownType(cfg.typeId);
+        else if (cfg.needsReview) {
+            warning = TEXT.needsReview(cfg.reviewHint ?? "");
         }
         const learning = (await this.adapter.getStateAsync(`${id}.learning.active`))?.val === true;
         const dnd = runtime?.doNotDisturb ?? false;
@@ -358,7 +365,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             id,
             name: cfg.name,
             identifier: cfg.powerId,
-            model: type?.name ?? cfg.typeId,
+            ...(template ? { model: template.name } : {}),
             icon: GENERIC_ICON,
             enabled: cfg.enabled,
             status: { warning },
@@ -450,17 +457,23 @@ export class ReminderDeviceManagement extends DeviceManagement {
     async updateOf(id) {
         return { update: await this.buildDeviceInfo(id) };
     }
-    async askDevice(ctx, title, data, enums, detection) {
+    async askDevice(ctx, title, data, enums, detection, previous = null) {
         let current = { ...data };
+        const isNew = previous === null;
         for (;;) {
-            const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection, enums), {
+            const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection, enums, isNew), {
                 data: current,
                 title,
             });
             if (!result) {
                 return null;
             }
-            const { config, errors } = formToDeviceConfig(toFormData(result));
+            const form = toFormData(result);
+            const { config, errors } = formToDeviceConfig(form, {
+                isNew,
+                unitFactor: await this.unitFactorOf(textOf(form.powerId).trim()),
+                ...(previous ? { previous } : {}),
+            });
             if (config) {
                 return { config, rooms: idList(result.rooms), functions: idList(result.functions) };
             }
@@ -499,7 +512,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
         const prefill = {
             enabled: true,
             name,
-            typeId: inst.types[0]?.id ?? "",
+            template: TEMPLATES[0].id,
             sourceId: manual ? "" : sourceId,
             powerId: detection?.powerId ?? "",
             switchId: detection?.switchId ?? "",
@@ -529,7 +542,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
     }
     async editDevice(id, ctx) {
         const obj = await this.adapter.getObjectAsync(id);
-        const cfg = obj ? this.configOf(obj) : null;
+        const cfg = obj ? this.storedConfigOf(obj) : null;
         if (!cfg) {
             await ctx.showMessage(TEXT.notFound);
             return { delete: id };
@@ -541,7 +554,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             rooms: membershipOf(enums.members, "rooms", full),
             functions: membershipOf(enums.members, "functions", full),
         };
-        const edited = await this.askDevice(ctx, TEXT.editTitle, form, enums.options);
+        const edited = await this.askDevice(ctx, TEXT.editTitle, form, enums.options, undefined, cfg);
         if (edited) {
             await this.writeDevice(id, edited.config);
             await this.assignEnums(id, enums.members, edited.rooms, edited.functions);
@@ -603,7 +616,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             return this.updateOf(id);
         }
         const check = active ? await registry.checkStoredRuns(id) : null;
-        const view = buildOptimizationView(store, check, detectionSettingsOf(runtime.deviceType), runtime.effective, active);
+        const view = buildOptimizationView(store, check, runtime.baseDetection, runtime.effective, active);
         const result = await ctx.showForm(view.schema, {
             data: view.data,
             title: I18n.getTranslatedObject("dm_optimization"),
@@ -634,7 +647,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 }
                 break;
             case "saveType":
-                await this.saveLearnedType(id, suggestionOf(runtime.effective), ctx, undefined, TEXT.optSaveTypeConfirm);
+                await this.applyLearned(id, suggestionOf(runtime.effective), ctx, undefined, TEXT.optSaveTypeConfirm);
                 break;
             default:
                 break;
@@ -661,7 +674,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             await ctx.showMessage(LEARN_ERRORS[result.error] ?? plain(result.error));
             return this.updateOf(id);
         }
-        await this.saveLearnedType(id, result, ctx);
+        await this.applyLearned(id, result, ctx);
         return this.updateOf(id);
     }
     async learnFromHistory(id, ctx) {
@@ -688,7 +701,6 @@ export class ReminderDeviceManagement extends DeviceManagement {
             updates = updates.then(() => progress.update({ value, label })).catch(() => undefined);
         };
         const cfg = this.adapter.registry.get(id)?.config;
-        const type = cfg ? findType(this.adapter.instanceConfig, cfg.typeId) : undefined;
         const poll = this.adapter.instanceConfig.pollIntervalSec;
         let result;
         let unit = "W";
@@ -709,8 +721,8 @@ export class ReminderDeviceManagement extends DeviceManagement {
                     abortFixed: cfg?.abortFixed,
                     unitFactor: meta.unitFactor,
                     minDelta: meta.minDelta,
-                    currentType: type ? detectionSettingsOf(type) : undefined,
-                    keepCurrentLevel: type?.builtin === true,
+                    currentType: cfg ? detectionOf(cfg.detection) : undefined,
+                    keepCurrentLevel: findTemplate(cfg?.template) !== undefined,
                     yieldFn: () => new Promise(resolve => {
                         this.adapter.setTimeout(resolve, 0);
                     }),
@@ -746,7 +758,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             return false;
         }
         await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);
-        await this.saveLearnedType(id, result, ctx, unit);
+        await this.applyLearned(id, result, ctx, unit);
         return true;
     }
     historyEnv() {
@@ -756,11 +768,15 @@ export class ReminderDeviceManagement extends DeviceManagement {
             getHistory: (id, options) => this.adapter.getHistoryAsync(id, options),
         };
     }
-    async saveLearnedType(id, suggestion, ctx, unit = "W", confirm = TEXT.learnConfirm) {
-        const deviceName = this.adapter.registry.get(id)?.config.name ?? id;
+    async applyLearned(id, suggestion, ctx, unit = "W", confirm = TEXT.learnConfirm) {
+        const obj = await this.adapter.getObjectAsync(id);
+        const cfg = obj ? this.storedConfigOf(obj) : null;
+        if (!cfg) {
+            await ctx.showMessage(TEXT.notFound);
+            return;
+        }
         const withTrailer = (suggestion.trailerBurstSec ?? 0) > 0;
         let data = {
-            name: `${deviceName} (learned)`,
             startVal: suggestion.thresholds.startVal,
             endVal: suggestion.thresholds.endVal,
             standby: suggestion.thresholds.standby,
@@ -794,32 +810,41 @@ export class ReminderDeviceManagement extends DeviceManagement {
         };
         const fromHistory = suggestion.looDetected !== undefined;
         const schema = buildLearnSchema(fromHistory, unit, suggestion.current !== undefined, suggestion.evaluation !== undefined, withTrailer, suggestion.trailer === "notSeparable", suggestion.samples > 0);
-        let type = null;
-        const inst = this.adapter.instanceConfig;
-        while (!type) {
+        const before = detectionOf(cfg.detection);
+        let next = null;
+        while (!next) {
             const result = await ctx.showForm(schema, { data, title: TEXT.learnTitle, ignoreApplyDisabled: true });
             if (!result) {
                 return;
             }
             const parsed = parseLearnForm(result);
-            if (!parsed.type) {
+            if (!parsed.values) {
                 await ctx.showMessage(parsed.error);
                 data = result;
                 continue;
             }
-            const typeId = allocateDeviceId(parsed.type.name, new Set(inst.types.map(t => t.id)));
-            type = { ...parsed.type, id: typeId, builtin: false };
+            const final = {};
+            for (const key of FINAL_KEYS) {
+                final[key] = before[key] ?? 0;
+            }
+            next = normalizeDetection({ ...final, ...parsed.values }, [], cfg.name);
         }
-        if (!(await ctx.showConfirmation(confirm))) {
+        const changes = describeChange(before, next) || "-";
+        if (!(await ctx.showConfirmation(filled(confirm, { changes })))) {
             return;
         }
-        const instanceId = `system.adapter.${this.adapter.namespace}`;
-        const stored = await this.adapter.getForeignObjectAsync(instanceId);
-        const rawTypes = stored?.native?.types;
-        const types = Array.isArray(rawTypes) && rawTypes.length > 0 ? rawTypes : inst.types;
+        const { template: _template, typeId: _typeId, ...rest } = cfg;
+        await this.writeDevice(id, { ...rest, detection: next });
+        this.adapter.log.info(`${cfg.name}: learned detection values saved (${changes})`);
         await ctx.showMessage(TEXT.learnSaved);
-        await this.adapter.extendForeignObjectAsync(instanceId, { native: { types: [...types, type] } });
     }
+}
+function filled(text, vars) {
+    const out = {};
+    for (const lang of Object.keys(text)) {
+        out[lang] = fill(text, lang, vars);
+    }
+    return out;
 }
 const DETECTION_MODES = ["count", "timed", "combined"];
 const MODE_LABELS = { count: "modeCount", timed: "modeTimed", combined: "modeCombined" };
@@ -834,30 +859,6 @@ export function evaluationText(e) {
     const delay = e.detected > 0 ? ` · ${Math.round(e.endDelaySec / 60)} min (max ${Math.round(e.endDelayMaxSec / 60)} min)` : "";
     const spikes = e.falseStarts > 0 ? ` · ${e.falseStarts}×!` : "";
     return `${e.detected}/${e.runs}${delay}${spikes}`;
-}
-function detectionSettingsOf(t) {
-    return {
-        startVal: t.startVal,
-        endVal: t.endVal,
-        standby: t.standby,
-        startCount: t.startCount,
-        endCount: t.endCount,
-        mode: t.mode,
-        startDurationSec: t.startDurationSec,
-        endDurationSec: t.endDurationSec,
-        pauseHoldSec: t.pauseHoldSec,
-        pauseUntilSec: t.pauseUntilSec,
-        pauseBelowVal: t.pauseBelowVal,
-        ...((t.trailerBurstSec ?? 0) > 0
-            ? {
-                trailerBurstSec: t.trailerBurstSec,
-                trailerGapSec: t.trailerGapSec ?? 0,
-                trailerAfterSec: t.trailerAfterSec ?? 0,
-                trailerBlockVal: t.trailerBlockVal ?? 0,
-                trailerMaxSec: t.trailerMaxSec ?? 0,
-            }
-            : {}),
-    };
 }
 export function suggestionOf(p) {
     return {
@@ -887,7 +888,11 @@ export function suggestionOf(p) {
             : {}),
     };
 }
-const OPT_KINDS = ["repair", "tighten", "undo", "reset", "typeChanged"];
+const OPT_KINDS = ["repair", "tighten", "undo", "reset", "baseChanged"];
+function kindText(kind, tr) {
+    const k = kind === "typeChanged" ? "baseChanged" : kind;
+    return OPT_KINDS.includes(k) ? tr(`dm_optKind_${k}`) : kind;
+}
 function fieldText(p, key) {
     const v = p[key];
     return v === undefined ? "0" : String(v);
@@ -1006,7 +1011,7 @@ export function buildOptimizationView(store, check, type, effective, active) {
         };
         data.changes = [...store.changes].reverse().map(c => ({
             date: formatDate(c.ts),
-            kind: OPT_KINDS.includes(c.kind) ? tr(`dm_optKind_${c.kind}`) : c.kind,
+            kind: kindText(c.kind, tr),
             reason: changeText(c),
         }));
     }
@@ -1089,14 +1094,6 @@ export function buildLearnSchema(fromHistory = false, unit = "W", withCurrent = 
         type: "panel",
         items: {
             info: { type: "infoBox", boxType: "info", text: I18n.getTranslatedObject("dm_learnInfo"), xs: 12 },
-            name: {
-                type: "text",
-                label: I18n.getTranslatedObject("dm_learnName"),
-                validator: "data.name && String(data.name).trim() !== ''",
-                validatorErrorText: I18n.translate("dev_required"),
-                newLine: true,
-                xs: 12,
-            },
             startVal: { ...num(I18n.getTranslatedObject("dm_learnStartVal"), 0.05, 0, unit), newLine: true },
             endVal: num(I18n.getTranslatedObject("dm_learnEndVal"), 0.05, 0, unit),
             standby: num(I18n.getTranslatedObject("dm_learnStandby"), 0.05, 0, unit),
@@ -1219,7 +1216,6 @@ const TRAILER_FIELDS = [
     "trailerMaxSec",
 ];
 export function parseLearnForm(data) {
-    const name = textOf(data.name).trim();
     const n = (key) => parseNumber(data[key]) ?? Number.NaN;
     const optional = (key) => (data[key] === undefined || data[key] === "" ? 0 : n(key));
     const parsed = {
@@ -1234,28 +1230,25 @@ export function parseLearnForm(data) {
         pauseUntilSec: optional("pauseUntilSec"),
         pauseBelowVal: optional("pauseBelowVal"),
     };
-    if (name === "") {
-        return { error: TEXT.typeNeedsName };
-    }
     if (Object.values(parsed).some(v => !Number.isFinite(v) || v < 0) || parsed.startCount < 1 || parsed.endCount < 2) {
         return {
             error: TEXT.typeValuesInvalid,
         };
     }
     const mode = DETECTION_MODES.find(m => m === data.mode) ?? "count";
-    const type = { name, mode, ...parsed };
+    const values = { mode, ...parsed };
     if (optional("trailerBurstSec") > 0) {
         for (const key of TRAILER_FIELDS) {
             const v = optional(key);
             if (!Number.isFinite(v) || v < 0) {
                 return { error: TEXT.typeValuesInvalid };
             }
-            type[key] = v;
+            values[key] = v;
         }
     }
     else if (!Number.isFinite(optional("trailerBurstSec")) || optional("trailerBurstSec") < 0) {
         return { error: TEXT.typeValuesInvalid };
     }
-    return { type };
+    return { values };
 }
 //# sourceMappingURL=deviceManagement.js.map

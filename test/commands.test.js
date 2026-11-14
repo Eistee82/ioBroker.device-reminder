@@ -3,6 +3,7 @@ import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.j
 import { handleCommand } from "../build/lib/commands.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import { Notifier } from "../build/lib/notifier.js";
+import { WASHER } from "./helpers/devices.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 
 const P1 = "plug.0.power";
@@ -11,7 +12,7 @@ function makeCfg(over = {}) {
 	return {
 		enabled: true,
 		name: "Washer",
-		typeId: "washing-machine",
+		detection: WASHER,
 		powerId: P1,
 		startText: "",
 		endText: "",

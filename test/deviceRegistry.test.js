@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import { Notifier } from "../build/lib/notifier.js";
+import { registrySetup, WASHER } from "./helpers/devices.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 
 const P1 = "plug.0.power";
@@ -10,23 +11,11 @@ const SW = "plug.0.switch";
 const ACK = "0_userdata.0.ack";
 const ACTION = "0_userdata.0.lamp";
 
-const testType = {
-	id: "test",
-	name: "Test",
-	builtin: false,
-	startVal: 30,
-	endVal: 5,
-	startCount: 1,
-	endCount: 1,
-	standby: 1,
-	mode: "count",
-	startDurationSec: 60,
-	endDurationSec: 300,
-};
+/** Detection values of the test device: 30/5/1/1/1. */
+const testDetection = { ...WASHER, endVal: 5, startCount: 1, endCount: 1 };
 
 function makeInst() {
 	return normalizeInstanceConfig({
-		types: [testType, { ...testType, id: "other", name: "Other" }],
 		recipients: [{ id: "tg", name: "Telegram", enabled: true, kind: "telegram", instance: "telegram.0" }],
 		pollIntervalSec: 10,
 	}).config;
@@ -36,7 +25,7 @@ function makeCfg(over = {}) {
 	return {
 		enabled: true,
 		name: "Washer",
-		typeId: "test",
+		detection: testDetection,
 		powerId: P1,
 		startText: "Started",
 		endText: "Finished",
@@ -123,23 +112,35 @@ describe("DeviceRegistry", () => {
 		assert.strictEqual(before.config.endText, "Fertig");
 	});
 
-	it("resets the device with an info log when the type changes (Review Focus 4)", async () => {
+	it("resets the device with an info log when the power state changes (Review Focus 4)", async () => {
 		const ctx = setup();
 		await ctx.reg.upsert("washer", makeCfg());
 		await feed(ctx, P1, 200, 4);
 		const before = ctx.reg.get("washer");
-		await ctx.reg.upsert("washer", makeCfg({ typeId: "other" }));
+		await ctx.reg.upsert("washer", makeCfg({ powerId: P2 }));
 		const after = ctx.reg.get("washer");
 		assert.notStrictEqual(after, before);
 		assert.strictEqual(after.isRunning, false);
 		assert.ok(ctx.host.logs.info.some(m => m.includes("reset")));
 	});
 
-	it("ignores a device with an unknown type", async () => {
+	it("does not run a disabled device that needs a review and says why (M3)", async () => {
+		const ctx = await registrySetup({
+			autoOptimize: false,
+			cfg: { enabled: false, needsReview: true, reviewHint: 'type "Kessel" not found' },
+		});
+		assert.strictEqual(ctx.reg.get("dev"), undefined);
+		assert.ok(ctx.host.logs.warn.some(m => m.includes('type "Kessel" not found')));
+	});
+
+	it("stops a running device that is saved with a review hint", async () => {
 		const ctx = setup();
-		await ctx.reg.upsert("washer", makeCfg({ typeId: "nope" }));
+		await ctx.reg.upsert("washer", makeCfg());
+		assert.ok(ctx.reg.get("washer"));
+		await ctx.reg.upsert("washer", makeCfg({ enabled: false, needsReview: true, reviewHint: "check" }));
 		assert.strictEqual(ctx.reg.get("washer"), undefined);
-		assert.ok(ctx.host.logs.warn.some(m => m.includes("unknown device type")));
+		await ctx.reg.upsert("washer", makeCfg({ enabled: false, needsReview: true }));
+		assert.ok(ctx.host.logs.warn.some(m => m.includes("values need a check")));
 	});
 
 	it("starts the reminder and runs the end actions at the end of a run", async () => {

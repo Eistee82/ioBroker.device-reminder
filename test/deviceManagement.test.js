@@ -1,5 +1,6 @@
 import assert from "node:assert";
-import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
+import { DEFAULT_REMINDER, normalizeDeviceConfig, normalizeInstanceConfig } from "../build/lib/config.js";
+import { DRYER, WASHER } from "./helpers/devices.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import {
 	buildLearnSchema,
@@ -22,25 +23,14 @@ const NS = "device-reminder.0";
 const POWER = "plug.0.power";
 const INSTANCE_OBJ = `system.adapter.${NS}`;
 
-const testType = {
-	id: "test",
-	name: "Test",
-	builtin: false,
-	startVal: 30,
-	endVal: 5,
-	startCount: 1,
-	endCount: 2,
-	standby: 1,
-	mode: "count",
-	startDurationSec: 60,
-	endDurationSec: 300,
-};
+/** Detection values of the test device: 30/5/1/1/2. */
+const testDetection = { ...WASHER, endVal: 5, startCount: 1, endCount: 2 };
 
 function deviceCfg(over = {}) {
 	return {
 		enabled: true,
 		name: "Trockner",
-		typeId: "test",
+		detection: testDetection,
 		powerId: POWER,
 		startText: "Started",
 		endText: "Finished",
@@ -56,7 +46,7 @@ function deviceCfg(over = {}) {
 }
 
 function formOf(over = {}) {
-	return { ...deviceCfg(), sourceId: "", switchId: "", ...over };
+	return { ...deviceCfg(), template: "custom", sourceId: "", switchId: "", ...over };
 }
 
 function isDeepMergeTarget(v) {
@@ -110,7 +100,11 @@ function createFakeAdapter(host, inst) {
 			objects.set(full, deepExtend(objects.get(full) ?? {}, obj));
 			const object = objects.get(full);
 			if (object.type === "device") {
-				await adapter.registry.upsert(id, object.native);
+				// like the adapter: the normalized configuration reaches the registry
+				const { config } = normalizeDeviceConfig(object.native);
+				if (config) {
+					await adapter.registry.upsert(id, config);
+				}
 			}
 		},
 		async setObjectNotExistsAsync(id, obj) {
@@ -157,7 +151,6 @@ function createFakeAdapter(host, inst) {
 function setup(opts = {}) {
 	const host = createFakeHost({ objects: { [POWER]: "number" } });
 	const inst = normalizeInstanceConfig({
-		types: opts.types ?? [testType],
 		recipients: [
 			{ id: "tg", name: "Telegram", enabled: true, kind: "telegram", instance: "telegram.0" },
 			{ id: "tg2", name: "Telegram 2", enabled: true, kind: "telegram", instance: "telegram.1" },
@@ -260,7 +253,7 @@ describe("deviceManagement", () => {
 			);
 			const info = devices[0];
 			assert.strictEqual(info.name, "Trockner");
-			assert.strictEqual(info.model, "Test");
+			assert.strictEqual(info.model, undefined, "own values, no template");
 			assert.strictEqual(info.identifier, POWER);
 			assert.strictEqual(info.enabled, true);
 			assert.strictEqual(devices[1].enabled, false);
@@ -297,12 +290,25 @@ describe("deviceManagement", () => {
 			assert.strictEqual(info.status.warning.stateId, undefined);
 		});
 
-		it("lists a device with an unknown type with a warning instead of hiding it", async () => {
+		it("lists a device that needs a review with a warning instead of hiding it (M3)", async () => {
 			const ctx = setup();
-			await addDevice(ctx, "trockner", deviceCfg({ typeId: "gone" }));
+			await addDevice(
+				ctx,
+				"trockner",
+				deviceCfg({ enabled: false, needsReview: true, reviewHint: 'type "gone" not found' }),
+			);
 			const [info] = await load(ctx);
 			assert.ok(info.status.warning.en.includes("gone"));
+			assert.ok(!info.status.warning.de.startsWith("Check"), "translated");
 			assert.ok(info.actions.some(a => a.id === "delete"));
+			assert.strictEqual(ctx.registry.get("trockner"), undefined, "it does not run");
+		});
+
+		it("shows the template as model", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner", deviceCfg({ detection: DRYER, template: "dryer" }));
+			const [info] = await load(ctx);
+			assert.strictEqual(info.model, "Dryer");
 		});
 	});
 
@@ -318,6 +324,28 @@ describe("deviceManagement", () => {
 			assert.strictEqual(ctx.adapter.objects.get(`${NS}.trockner_2`).native.name, "Trockner");
 			assert.strictEqual(ctx.adapter.objects.get(`${NS}.trockner_2`).common.name, "Trockner");
 			assert.ok(ctx.adapter.objects.has(`${NS}.trockner`), "the existing device is untouched");
+			const native = ctx.adapter.objects.get(`${NS}.trockner_2`).native;
+			assert.deepStrictEqual(
+				[native.template, native.detection.startVal, native.detection.endCount],
+				["custom", 30, 20],
+			);
+			assert.strictEqual(action.forms[1].schema.items.template.type, "select", "the template is chosen");
+		});
+
+		it("add with a template on a kW state divides the power values", async () => {
+			const ctx = setup();
+			ctx.adapter.foreign.set(POWER, {
+				type: "state",
+				common: { type: "number", role: "value.power", unit: "kW" },
+				native: {},
+			});
+			const action = fakeAction({ forms: [{ manual: true }, formOf({ name: "Trockner", template: "dryer" })] });
+			await ctx.dm.getInstanceInfo().actions[0].handler(action);
+			const native = ctx.adapter.objects.get(`${NS}.trockner`).native;
+			assert.deepStrictEqual(
+				[native.detection.startVal, native.detection.endVal, native.template],
+				[0.12, 0.015, "dryer"],
+			);
 		});
 
 		it("never uses the id of the info channel", async () => {
@@ -400,6 +428,8 @@ describe("deviceManagement", () => {
 			const result = await actionOf(info, "edit").handler("trockner", action);
 			const obj = ctx.adapter.objects.get(`${NS}.trockner`);
 			assert.deepStrictEqual(obj.native.recipients, ["tg"]);
+			assert.deepStrictEqual(obj.native.detection, testDetection, "editing keeps the detection values");
+			assert.strictEqual(action.forms[0].schema.items.template, undefined, "no template when editing");
 			assert.strictEqual(obj.common.name, "Trockner neu");
 			assert.strictEqual(result.update.name, "Trockner neu");
 			assert.strictEqual(action.forms[0].options.data.name, "Trockner", "the form starts with the stored values");
@@ -584,7 +614,7 @@ describe("deviceManagement", () => {
 			assert.strictEqual(action.messages.length, 1);
 		});
 
-		it("shows the suggestion and stores the confirmed one as new custom type", async () => {
+		it("shows the suggestion and writes the confirmed one into the device", async () => {
 			const ctx = setup();
 			await addDevice(ctx, "trockner");
 			await record(ctx);
@@ -609,21 +639,30 @@ describe("deviceManagement", () => {
 			assert.ok(dialog.options.data.startVal > 0, "the suggestion is offered");
 			assert.strictEqual(dialog.options.data.samples, 42);
 			assert.strictEqual(dialog.options.ignoreApplyDisabled, true, "the suggestion can be accepted as is");
-			assert.strictEqual(action.confirmations.length, 1, "the restart is confirmed first");
-			assert.strictEqual(ctx.adapter.extendedForeign.length, 1);
-			const { id, obj } = ctx.adapter.extendedForeign[0];
-			assert.strictEqual(id, INSTANCE_OBJ);
-			const added = obj.native.types.at(-1);
-			assert.strictEqual(added.name, "Mein Trockner");
-			assert.strictEqual(added.id, "mein_trockner");
-			assert.strictEqual(added.builtin, false);
-			assert.strictEqual(added.startVal, 20);
-			assert.strictEqual(added.endCount, 4);
-			assert.strictEqual(obj.native.types.length, ctx.inst.types.length + 1);
+			assert.strictEqual(dialog.schema.items.name, undefined, "no name field any more");
+			assert.strictEqual(action.confirmations.length, 1, "the change is confirmed first");
+			assert.ok(action.confirmations[0].en.includes("startVal 30 → 20"), action.confirmations[0].en);
+			assert.ok(!action.confirmations[0].en.includes("restart"));
+			assert.deepStrictEqual(ctx.adapter.extendedForeign, [], "the instance object is not touched");
+			const native = ctx.adapter.objects.get(`${NS}.trockner`).native;
+			assert.deepStrictEqual(
+				[
+					native.detection.startVal,
+					native.detection.endVal,
+					native.detection.endCount,
+					native.detection.startDurationSec,
+				],
+				[20, 3, 4, 20],
+			);
+			assert.strictEqual(
+				ctx.registry.get("trockner").config.detection.startVal,
+				20,
+				"the runtime uses the values",
+			);
 			assert.strictEqual(ctx.host.own("trockner.learning.active"), false);
 		});
 
-		it("changes nothing when the restart is not confirmed", async () => {
+		it("changes nothing when the values are not confirmed", async () => {
 			const ctx = setup();
 			await addDevice(ctx, "trockner");
 			await record(ctx);
@@ -645,6 +684,7 @@ describe("deviceManagement", () => {
 			});
 			await actionOf(info, "learn").handler("trockner", action);
 			assert.strictEqual(ctx.adapter.extendedForeign.length, 0);
+			assert.deepStrictEqual(ctx.adapter.objects.get(`${NS}.trockner`).native.detection, testDetection);
 		});
 
 		it("asks again for invalid values", async () => {
@@ -662,10 +702,10 @@ describe("deviceManagement", () => {
 				startDurationSec: 1,
 				endDurationSec: 1,
 			};
-			const action = fakeAction({ forms: [{ ...valid, name: " " }, { ...valid, endCount: 1 }, valid] });
+			const action = fakeAction({ forms: [{ ...valid, startVal: -1 }, { ...valid, endCount: 1 }, valid] });
 			await actionOf(info, "learn").handler("trockner", action);
 			assert.strictEqual(action.messages.length, 3, "two validation errors and the saved hint");
-			assert.strictEqual(ctx.adapter.extendedForeign.length, 1);
+			assert.strictEqual(ctx.adapter.objects.get(`${NS}.trockner`).native.detection.endCount, 4);
 		});
 
 		it("reports a recording that is too short", async () => {
@@ -718,7 +758,6 @@ describe("deviceManagement", () => {
 		}
 
 		const learned = {
-			name: "Waschmaschine",
 			startVal: 70,
 			endVal: 1.5,
 			standby: 0.7,
@@ -763,11 +802,40 @@ describe("deviceManagement", () => {
 				values.every((v, i) => i === 0 || v >= values[i - 1]),
 				`progress ${values}`,
 			);
-			const added = ctx.adapter.extendedForeign[0].obj.native.types.at(-1);
-			assert.strictEqual(added.mode, "timed", "the chosen mode is stored");
-			assert.strictEqual(added.endCount, 200);
+			const native = ctx.adapter.objects.get(`${NS}.trockner`).native;
+			assert.strictEqual(native.detection.mode, "timed", "the chosen mode is stored");
+			assert.strictEqual(native.detection.endCount, 200);
 			assert.notStrictEqual(ctx.host.own("trockner.learning.active"), true, "nothing was recorded");
 			assert.ok(JSON.parse(ctx.adapter.states.get("trockner.learning.result")).runs === 3);
+		});
+
+		it("learning writes the values into the device and never touches the instance object (M10)", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner", deviceCfg({ detection: DRYER, template: "dryer" }));
+			withHistory(ctx, historyOf([washingMachine, longPause, washingMachine]));
+			const [info] = await load(ctx);
+			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, learned] });
+			await actionOf(info, "learn").handler("trockner", action);
+			const native = ctx.adapter.objects.get(`${NS}.trockner`).native;
+			assert.deepStrictEqual(
+				[native.detection.mode, native.detection.endCount, native.detection.startVal],
+				["timed", 200, 70],
+			);
+			assert.strictEqual(native.template, undefined);
+			assert.deepStrictEqual(ctx.adapter.extendedForeign, []);
+			assert.strictEqual(action.forms[1].schema.items.name, undefined, "no name field any more");
+		});
+
+		it("learning keeps the final phase of the device", async () => {
+			const ctx = setup();
+			const final = { finalMinVal: 150, finalMinSec: 168 };
+			await addDevice(ctx, "trockner", deviceCfg({ detection: { ...testDetection, ...final } }));
+			withHistory(ctx, historyOf([washingMachine, longPause, washingMachine]));
+			const [info] = await load(ctx);
+			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, learned] });
+			await actionOf(info, "learn").handler("trockner", action);
+			const d = ctx.adapter.objects.get(`${NS}.trockner`).native.detection;
+			assert.deepStrictEqual([d.finalMinVal, d.finalMinSec, d.endCount], [150, 168, 200]);
 		});
 
 		it("rejects an energy meter and records nothing", async () => {
@@ -805,11 +873,11 @@ describe("deviceManagement", () => {
 				endDurationSec: 1,
 			};
 			assert.deepStrictEqual(
-				[parseLearnForm(form).type.pauseHoldSec, parseLearnForm(form).type.pauseBelowVal],
+				[parseLearnForm(form).values.pauseHoldSec, parseLearnForm(form).values.pauseBelowVal],
 				[0, 0],
 			);
-			const { type } = parseLearnForm({ ...form, pauseHoldSec: "1700", pauseUntilSec: 0, pauseBelowVal: 0.25 });
-			assert.deepStrictEqual([type.pauseHoldSec, type.pauseUntilSec, type.pauseBelowVal], [1700, 0, 0.25]);
+			const { values } = parseLearnForm({ ...form, pauseHoldSec: "1700", pauseUntilSec: 0, pauseBelowVal: 0.25 });
+			assert.deepStrictEqual([values.pauseHoldSec, values.pauseUntilSec, values.pauseBelowVal], [1700, 0, 0.25]);
 			assert.ok(parseLearnForm({ ...form, pauseHoldSec: -1 }).error);
 		});
 
@@ -842,7 +910,7 @@ describe("deviceManagement", () => {
 				startDurationSec: 1,
 				endDurationSec: 1,
 			};
-			const plainType = parseLearnForm({ ...form, trailerBurstSec: 0, trailerGapSec: 40 }).type;
+			const plainType = parseLearnForm({ ...form, trailerBurstSec: 0, trailerGapSec: 40 }).values;
 			assert.ok(!("trailerBurstSec" in plainType) && !("trailerGapSec" in plainType), "off: no trailer fields");
 			const withFilter = parseLearnForm({
 				...form,
@@ -851,7 +919,7 @@ describe("deviceManagement", () => {
 				trailerAfterSec: 0,
 				trailerBlockVal: 0,
 				trailerMaxSec: 7200,
-			}).type;
+			}).values;
 			assert.deepStrictEqual(
 				[withFilter.trailerBurstSec, withFilter.trailerGapSec, withFilter.trailerMaxSec],
 				[45, 40, 7200],
@@ -934,7 +1002,7 @@ describe("deviceManagement", () => {
 	});
 
 	describe("getDeviceDetails", () => {
-		it("shows the last operations, the thresholds of the type and the reminder status", async () => {
+		it("shows the last operations, the detection values and the reminder status", async () => {
 			const ctx = setup();
 			await addDevice(
 				ctx,
@@ -980,9 +1048,13 @@ describe("deviceManagement", () => {
 			);
 		});
 
-		it("shows the pause protection of the type when it is on", async () => {
-			const ctx = setup({ types: [{ ...testType, pauseHoldSec: 1700, pauseBelowVal: 0.25 }] });
-			await addDevice(ctx, "trockner");
+		it("shows the pause protection when it is on", async () => {
+			const ctx = setup();
+			await addDevice(
+				ctx,
+				"trockner",
+				deviceCfg({ detection: { ...testDetection, pauseHoldSec: 1700, pauseBelowVal: 0.25 } }),
+			);
 			const details = await ctx.dm.getDeviceDetails("trockner");
 			const values = Object.values(details.schema.items).filter(i => i.type === "staticInfo");
 			assert.ok(
@@ -993,13 +1065,15 @@ describe("deviceManagement", () => {
 			);
 		});
 
-		it("tolerates a broken lastOperations state and an unknown type", async () => {
+		it("tolerates a broken lastOperations state and shows the review hint", async () => {
 			const ctx = setup();
-			await addDevice(ctx, "trockner", deviceCfg({ typeId: "gone" }));
+			const { detection: _d, ...noValues } = deviceCfg({ typeId: "gone" });
+			await addDevice(ctx, "trockner", noValues);
 			ctx.adapter.states.set("trockner.lastOperations", "{not json");
 			const details = await ctx.dm.getDeviceDetails("trockner");
 			assert.deepStrictEqual(details.data.lastOperations, []);
-			assert.strictEqual(details.schema.items.typeUnknown.type, "infoBox");
+			assert.strictEqual(details.schema.items.needsReview.type, "infoBox");
+			assert.ok(details.schema.items.needsReview.text.en.includes("Custom"));
 		});
 
 		it("answers an unknown device with an error", async () => {
@@ -1023,7 +1097,7 @@ describe("texts of the device manager forms", () => {
 
 describe("optimisation in the device manager", function () {
 	this.timeout(120_000);
-	const dryerType = normalizeInstanceConfig({}).config.types.find(t => t.id === "dryer");
+	const dryerType = DRYER;
 
 	/**
 	 * Device manager with a dryer that has the automatic optimisation on.
@@ -1033,8 +1107,8 @@ describe("optimisation in the device manager", function () {
 	 * @returns {Promise<object>} context
 	 */
 	async function optSetup(over = {}, withRun = true) {
-		const ctx = setup({ types: [{ ...dryerType, builtin: false }], files: memoryFiles() });
-		await addDevice(ctx, "trockner", deviceCfg({ typeId: "dryer", autoOptimize: true, ...over }));
+		const ctx = setup({ files: memoryFiles() });
+		await addDevice(ctx, "trockner", deviceCfg({ detection: DRYER, autoOptimize: true, ...over }));
 		if (withRun) {
 			const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 3, after: 400 });
 			for (const v of run.values) {
@@ -1122,7 +1196,7 @@ describe("optimisation in the device manager", function () {
 		assert.strictEqual(ctx.registry.learningData("trockner").spikes.length, 0);
 	});
 
-	it("saves the values in use as a new device type", async () => {
+	it("saves the values in use in the device, without restart", async () => {
 		const ctx = await optSetup();
 		const eff = ctx.registry.get("trockner").effective;
 		const [info] = await load(ctx);
@@ -1136,17 +1210,19 @@ describe("optimisation in the device manager", function () {
 		assert.strictEqual(learn.options.data.endCount, eff.endCount);
 		assert.strictEqual(learn.schema.items.samples, undefined);
 		assert.strictEqual(learn.options.data.trailerBurstSec, eff.trailerBurstSec);
-		assert.deepStrictEqual(action.confirmations, [TEXT.optSaveTypeConfirm], "own confirmation (restart)");
-		const saved = ctx.adapter.extendedForeign.at(-1).obj.native.types.at(-1);
+		assert.strictEqual(action.confirmations.length, 1);
+		assert.ok(action.confirmations[0].en.startsWith(TEXT.optSaveTypeConfirm.en.split("{")[0]), "own confirmation");
+		assert.deepStrictEqual(ctx.adapter.extendedForeign, [], "the instance object is not touched");
+		const saved = ctx.adapter.objects.get(`${NS}.trockner`).native.detection;
 		assert.strictEqual(saved.endCount, eff.endCount);
 		assert.strictEqual(saved.trailerBurstSec, eff.trailerBurstSec);
-		assert.strictEqual(saved.builtin, false);
+		assert.strictEqual(ctx.registry.get("trockner").effective.endCount, eff.endCount, "same values in use");
 	});
 
 	it("explains that the optimisation is off when there is no learning data", async () => {
 		const ctx = await optSetup({}, false);
 		await ctx.registry.deleteLearningData("trockner");
-		await ctx.registry.upsert("trockner", deviceCfg({ typeId: "dryer" }));
+		await ctx.registry.upsert("trockner", deviceCfg({ detection: DRYER }));
 		const action = fakeAction();
 		await ctx.dm.optimization("trockner", action);
 		assert.ok(action.messages[0].en.includes("off"));
@@ -1162,6 +1238,23 @@ describe("optimisation in the device manager", function () {
 		assert.ok(view.schema.items.none);
 		assert.strictEqual(view.schema.items.status.data.en, "Off");
 		assert.strictEqual(suggestionOf(dryerType).trailerBurstSec, undefined);
+	});
+
+	it("shows old 'typeChanged' entries like 'baseChanged'", () => {
+		const change = kind => ({ ts: 1, kind, from: { endCount: 30 }, to: null, reason: "", runs: 0, gainSec: 0 });
+		const store = {
+			runs: [],
+			spikes: [],
+			changes: [change("typeChanged"), change("baseChanged")],
+			info: { status: "ok", trailer: "none" },
+		};
+		const view = buildOptimizationView(store, null, DRYER, DRYER, false);
+		const text = I18n.translate("dm_optKind_baseChanged");
+		assert.ok(!text.startsWith("dm_"), "translated");
+		assert.deepStrictEqual(
+			view.data.changes.map(c => c.kind),
+			[text, text],
+		);
 	});
 
 	it("lists the final phase fields in the value table only when they are used", () => {

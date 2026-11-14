@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { DEFAULT_TYPES } from "../build/lib/config.js";
+import { DEFAULT_TYPES } from "../build/lib/legacyTypes.js";
 import { decodeCells, encodeCells, fromStored, quantOf } from "../build/lib/learn/ticks.js";
 import {
 	addRun,
@@ -268,22 +268,32 @@ describe("run store", () => {
 		assert.ok(sizeOf(store) <= MAX_STORE_BYTES);
 	});
 
-	it("discards the override when the type changes and the runs when poll or unit change", () => {
+	it("discards the override when the detection values change and the runs when poll or unit change", () => {
 		const store = emptyStore("dev", "washing-machine", typeHash(WASHER), STEP, 1);
 		const run = runOf({ device: "washer", programme: "quick30", shape: "T1", seed: 1, after: 400 });
 		addRun(store, labelCapture(captureOf(run, 0), 15).run);
 		store.override = { endCount: 30 };
 		const env = { ...store.envelope };
-		assert.deepStrictEqual(reconcileStore(store, "washing-machine", typeHash(WASHER), STEP, 1, 5), []);
-		const msgs = reconcileStore(store, "washing-machine", typeHash({ ...WASHER, endCount: 40 }), STEP, 1, 5);
+		assert.deepStrictEqual(reconcileStore(store, typeHash(WASHER), STEP, 1, 5), []);
+		const msgs = reconcileStore(store, typeHash({ ...WASHER, endCount: 40 }), STEP, 1, 5);
 		assert.strictEqual(msgs.length, 1);
 		assert.strictEqual(store.override, null);
-		assert.strictEqual(store.changes.at(-1).kind, "typeChanged");
+		assert.strictEqual(store.changes.at(-1).kind, "baseChanged");
 		assert.strictEqual(store.runs.length, 1);
-		reconcileStore(store, "washing-machine", store.typeHash, 60_000, 1, 6);
+		reconcileStore(store, store.typeHash, 60_000, 1, 6);
 		assert.strictEqual(store.runs.length, 0);
 		assert.deepStrictEqual(store.envelope, env);
 		assert.notStrictEqual(typeHash(WASHER), typeHash({ ...WASHER, trailerBurstSec: 30 }));
+	});
+
+	it("keeps the override when only the type id of the store differs (migration, M9)", () => {
+		const st = emptyStore("wm", "washing-machine", "39417b8a", 10000, 1);
+		st.override = { endCount: 30 };
+		assert.deepStrictEqual(reconcileStore(st, "39417b8a", 10000, 1, 0), []);
+		assert.deepStrictEqual(st.override, { endCount: 30 });
+		reconcileStore(st, "0af5b9bf", 10000, 1, 5);
+		assert.strictEqual(st.override, null);
+		assert.strictEqual(st.changes.at(-1).kind, "baseChanged");
 	});
 
 	describe("hash of the detection values", () => {

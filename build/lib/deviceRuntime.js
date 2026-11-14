@@ -1,5 +1,6 @@
 import { createDetector, TrailerFilter } from "./detector/index.js";
 import { renderHistoryHtml } from "./historyHtml.js";
+import { detectionOf, typeHash } from "./runStore.js";
 import { errorMessage, formatDuration, formatTimestamp, parseNumber } from "./utils.js";
 export { renderHistoryHtml } from "./historyHtml.js";
 const MAX_OPERATIONS = 14;
@@ -9,12 +10,12 @@ function isTrue(val) {
 export class DeviceRuntime {
     host;
     deviceId;
-    type;
     inst;
     sink;
     listener;
     cfg;
     detector;
+    detectorMode = "count";
     rebuildDetectorAfterRun = false;
     power = null;
     missingPower = false;
@@ -28,10 +29,9 @@ export class DeviceRuntime {
     override = null;
     recorder = null;
     antiCrease = false;
-    constructor(host, deviceId, cfg, type, inst, sink, listener) {
+    constructor(host, deviceId, cfg, inst, sink, listener) {
         this.host = host;
         this.deviceId = deviceId;
-        this.type = type;
         this.inst = inst;
         this.sink = sink;
         this.listener = listener;
@@ -42,29 +42,10 @@ export class DeviceRuntime {
         return this.cfg;
     }
     get effective() {
-        const t = this.type;
-        return {
-            startVal: t.startVal,
-            endVal: t.endVal,
-            standby: t.standby,
-            startCount: t.startCount,
-            endCount: t.endCount,
-            mode: t.mode,
-            startDurationSec: t.startDurationSec,
-            endDurationSec: t.endDurationSec,
-            pauseHoldSec: t.pauseHoldSec,
-            pauseUntilSec: t.pauseUntilSec,
-            pauseBelowVal: t.pauseBelowVal,
-            trailerBurstSec: t.trailerBurstSec ?? 0,
-            trailerGapSec: t.trailerGapSec ?? 0,
-            trailerAfterSec: t.trailerAfterSec ?? 0,
-            trailerBlockVal: t.trailerBlockVal ?? 0,
-            trailerMaxSec: t.trailerMaxSec ?? 0,
-            ...(this.override ?? {}),
-        };
+        return { ...this.baseDetection, ...(this.override ?? {}) };
     }
-    get deviceType() {
-        return this.type;
+    get baseDetection() {
+        return detectionOf(this.cfg.detection);
     }
     get currentOverride() {
         return this.override;
@@ -132,7 +113,7 @@ export class DeviceRuntime {
         this.power = parsed;
         this.missingPower = false;
         this.recorder?.event(parsed);
-        if (this.effective.mode !== "timed" || !this.detector.feed) {
+        if (this.detectorMode !== "timed" || !this.detector.feed) {
             return;
         }
         await this.enqueue(async () => {
@@ -201,14 +182,16 @@ export class DeviceRuntime {
         }
     }
     canKeepStateFor(next) {
-        return next.typeId === this.cfg.typeId && next.powerId === this.cfg.powerId;
+        return next.powerId === this.cfg.powerId;
     }
     updateConfig(next) {
         if (!this.canKeepStateFor(next)) {
             this.host.log.warn(`Configuration of device ${next.name} cannot be applied without a reset`);
             return;
         }
-        const detectorChanged = next.abort !== this.cfg.abort || next.abortFixed !== this.cfg.abortFixed;
+        const detectorChanged = next.abort !== this.cfg.abort ||
+            next.abortFixed !== this.cfg.abortFixed ||
+            typeHash(next.detection) !== typeHash(this.cfg.detection);
         const switchChanged = next.switchId !== this.cfg.switchId;
         this.cfg = next;
         if (detectorChanged) {
@@ -241,7 +224,9 @@ export class DeviceRuntime {
         await this.host.setOwnState(this.own(rel), val);
     }
     buildDetector() {
-        return createDetector(this.effective, {
+        const settings = this.effective;
+        this.detectorMode = settings.mode;
+        return createDetector(settings, {
             abort: this.cfg.abort,
             abortFixed: this.cfg.abortFixed,
             pollSec: this.inst.pollIntervalSec,

@@ -145,7 +145,7 @@ tests.integration(path.join(__dirname, ".."), {
 				this.timeout(60_000);
 				const migrated = await waitFor(async () => {
 					const obj = await getObj(harness, `system.adapter.${NS}`);
-					return obj?.native?.configVersion === 4 && obj.native.linkedDevice === undefined;
+					return obj?.native?.configVersion === 5 && obj.native.linkedDevice === undefined;
 				}, 20_000);
 				assert.strictEqual(migrated, true, "instance native should be the V4 configuration");
 

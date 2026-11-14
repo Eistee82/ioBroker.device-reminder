@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
+import { DRYER as DRYER_VALUES, WASHER as WASHER_VALUES } from "./helpers/devices.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import { DeviceRuntime } from "../build/lib/deviceRuntime.js";
 import {
@@ -31,22 +32,21 @@ const DRYER = ["cupboard", "iron", "refresh", "heatPump"];
  * Registry with one device on a fake host.
  *
  * @param {object} [o] options
- * @param {string} [o.typeId] device type
+ * @param {object} [o.detection] detection values of the device (default: washing machine)
  * @param {boolean} [o.autoOptimize] automatic optimisation
  * @param {object} [o.files] file io (default: in memory); null = none
  * @param {object} [o.host] fake host to reuse
- * @param {object[]} [o.types] instance types
  * @returns {Promise<object>} context
  */
 async function setup(o = {}) {
 	const host = o.host ?? createFakeHost({ objects: { [P]: "number" } });
 	const files = o.files === null ? undefined : (o.files ?? memoryFiles());
-	const inst = normalizeInstanceConfig({ pollIntervalSec: 10, ...(o.types ? { types: o.types } : {}) }).config;
+	const inst = normalizeInstanceConfig({ pollIntervalSec: 10 }).config;
 	const reg = new DeviceRegistry(host, new Notifier(host, () => inst.recipients), () => inst, files);
 	const cfg = {
 		enabled: true,
 		name: "Dev",
-		typeId: o.typeId ?? "washing-machine",
+		detection: o.detection ?? WASHER_VALUES,
 		powerId: P,
 		startText: "",
 		endText: "",
@@ -109,8 +109,8 @@ describe("automatic optimisation", function () {
 		const runs = [0, 1, 2].map(k =>
 			runOf({ device: "dryer", programme: DRYER[k], shape: SHAPES[k], seed: k + 1, after: 400 }),
 		);
-		const plain = await setup({ typeId: "dryer", autoOptimize: false, files: null });
-		const off = await setup({ typeId: "dryer", autoOptimize: false });
+		const plain = await setup({ detection: DRYER_VALUES, autoOptimize: false, files: null });
+		const off = await setup({ detection: DRYER_VALUES, autoOptimize: false });
 		for (const run of runs) {
 			await play(plain, run);
 			await play(off, run);
@@ -161,7 +161,7 @@ describe("automatic optimisation", function () {
 	});
 
 	it("dryer (default type, bursts every 5 min): the false starts are repaired after one run", async () => {
-		const ctx = await setup({ typeId: "dryer" });
+		const ctx = await setup({ detection: DRYER_VALUES });
 		const first = await play(
 			ctx,
 			runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 }),
@@ -200,7 +200,7 @@ describe("automatic optimisation", function () {
 			return { values, start: r.start, coreEnd: head.length + fake.length + tail.length - 1 };
 		};
 		const ctx = await setup();
-		const typesBefore = JSON.stringify(ctx.inst.types);
+		const instBefore = JSON.stringify(ctx.inst);
 		for (let k = 0; k < 8; k++) {
 			const r = await play(ctx, programme(k + 1));
 			assert.strictEqual(r.starts.length, 1, `run ${k}: starts ${r.starts}`);
@@ -215,31 +215,32 @@ describe("automatic optimisation", function () {
 			// the filter is only on behind a guard that keeps the phase inside the programme
 			assert.ok(eff.trailerBlockVal > 0 || eff.trailerAfterSec > 0 || eff.pauseHoldSec > 0, JSON.stringify(eff));
 		}
-		assert.strictEqual(JSON.stringify(ctx.inst.types), typesBefore, "instance configuration untouched");
+		assert.strictEqual(JSON.stringify(ctx.inst), instBefore, "instance configuration untouched");
 		assert.ok(!ctx.host.writes.some(w => w.id.startsWith("system.adapter.")));
 	});
 
-	it("keeps the optimised values over a restart and discards them when the type changes", async () => {
-		const ctx = await setup({ typeId: "dryer" });
+	it("keeps the optimised values over a restart and discards them when the detection values change", async () => {
+		const ctx = await setup({ detection: DRYER_VALUES });
 		await play(ctx, runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 }));
 		const override = ctx.reg.learningData("dev").override;
 		assert.ok(override);
 		ctx.reg.disposeAll();
-		const again = await setup({ typeId: "dryer", files: ctx.files, host: ctx.host });
+		const again = await setup({ detection: DRYER_VALUES, files: ctx.files, host: ctx.host });
 		assert.deepStrictEqual(again.reg.learningData("dev").override, override);
 		assert.deepStrictEqual(again.reg.get("dev").currentOverride, override);
 		again.reg.disposeAll();
-		const types = normalizeInstanceConfig({}).config.types.map(t =>
-			t.id === "dryer" ? { ...t, endCount: 25 } : t,
-		);
-		const changed = await setup({ typeId: "dryer", files: ctx.files, host: ctx.host, types });
+		const changed = await setup({
+			detection: { ...DRYER_VALUES, endCount: 25 },
+			files: ctx.files,
+			host: ctx.host,
+		});
 		assert.strictEqual(changed.reg.learningData("dev").override, null);
-		assert.strictEqual(changed.reg.learningData("dev").changes.at(-1).kind, "typeChanged");
+		assert.strictEqual(changed.reg.learningData("dev").changes.at(-1).kind, "baseChanged");
 		assert.strictEqual(changed.reg.learningData("dev").runs.length, 1);
 	});
 
 	it("undo and reset restore the values and lock the tightening", async () => {
-		const ctx = await setup({ typeId: "dryer" });
+		const ctx = await setup({ detection: DRYER_VALUES });
 		await play(ctx, runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 }));
 		const store = ctx.reg.learningData("dev");
 		assert.ok(store.override);
@@ -258,7 +259,7 @@ describe("automatic optimisation", function () {
 		assert.strictEqual(ctx.files.files.size, 0);
 		assert.strictEqual(await ctx.reg.undoOptimization("dev"), false);
 		assert.strictEqual(await ctx.reg.resetOptimization("nope"), false);
-		// switching the option off goes back to the type values
+		// switching the option off goes back to the values of the device
 		ctx.reg.get("dev").setOverride({ endCount: 30 });
 		await ctx.reg.upsert("dev", { ...ctx.cfg, autoOptimize: undefined });
 		assert.strictEqual(ctx.reg.get("dev").currentOverride, null);
@@ -268,12 +269,10 @@ describe("automatic optimisation", function () {
 	it("changes the values only while no run is in progress", async () => {
 		const host = createFakeHost({ objects: { [P]: "number" } });
 		const inst = normalizeInstanceConfig({ pollIntervalSec: 10 }).config;
-		const type = inst.types.find(t => t.id === "washing-machine");
 		const rt = new DeviceRuntime(
 			host,
 			"dev",
-			{ name: "Dev", powerId: P, typeId: "washing-machine", abort: false, abortFixed: false, recipients: [] },
-			type,
+			{ name: "Dev", powerId: P, detection: WASHER_VALUES, abort: false, abortFixed: false, recipients: [] },
 			inst,
 			{ send: async () => {} },
 			{ onRuntimeEvent: () => {} },
@@ -321,7 +320,7 @@ function captureWith(run, t0, p) {
 
 describe("automatic optimisation engine", function () {
 	this.timeout(300_000);
-	const type = normalizeInstanceConfig({}).config.types.find(t => t.id === "washing-machine");
+	const type = WASHER_VALUES;
 	const ctxOf = now => ({
 		type,
 		pollSec: 10,
@@ -336,8 +335,8 @@ describe("automatic optimisation engine", function () {
 	it("property: after every change all runs seen so far pass, no run gets later, values stay in bounds", async () => {
 		let changes = 0;
 		for (let seq = 0; seq < 4; seq++) {
-			const store = emptyStore("dev", type.id, typeHash(type), STEP, 1);
-			const seen = emptyStore("dev", type.id, typeHash(type), STEP, 1);
+			const store = emptyStore("dev", "washing-machine", typeHash(type), STEP, 1);
+			const seen = emptyStore("dev", "washing-machine", typeHash(type), STEP, 1);
 			let now = 1_700_000_000_000;
 			let lastTighten = 0;
 			for (let k = 0; k < 12; k++) {
@@ -392,7 +391,7 @@ describe("automatic optimisation engine", function () {
 		let changes = 0;
 		for (let seq = 0; seq < 3; seq++) {
 			const rnd = lcg(seq * 7919 + 13);
-			const store = emptyStore("dev", type.id, typeHash(type), STEP, 1);
+			const store = emptyStore("dev", "washing-machine", typeHash(type), STEP, 1);
 			let now = 1_700_000_000_000;
 			let changed = false;
 			for (let k = 0; k < 8; k++) {
@@ -443,7 +442,7 @@ describe("automatic optimisation engine", function () {
 	it("a tightening switches the anti-crease filter on only behind a terminal block", async () => {
 		// quick programmes and spinning only with anti-crease phases: the filter must not swallow the
 		// soaking of the eco programme that comes later and was never seen
-		const store = emptyStore("dev", type.id, typeHash(type), STEP, 1);
+		const store = emptyStore("dev", "washing-machine", typeHash(type), STEP, 1);
 		let now = 1_700_000_000_000;
 		const seenRuns = [
 			["quick30", "T4"],
@@ -480,7 +479,7 @@ describe("automatic optimisation engine", function () {
 
 	it("a new programme that ends too early is repaired at once and locks the tightening", async () => {
 		const now = 1_700_000_000_000;
-		const store = emptyStore("dev", type.id, typeHash(type), STEP, 1);
+		const store = emptyStore("dev", "washing-machine", typeHash(type), STEP, 1);
 		// a short end wait that the long pauses of the wool programme do not survive
 		const tight = {
 			endCount: 12,
@@ -518,7 +517,7 @@ describe("automatic optimisation engine", function () {
 
 	it("reports cannotCover and then drift when no setting detects the runs", async () => {
 		const now = 1_700_000_000_000;
-		const store = emptyStore("dev", type.id, typeHash(type), STEP, 1);
+		const store = emptyStore("dev", "washing-machine", typeHash(type), STEP, 1);
 		const run = runOf({ device: "washer", programme: "quick30", seed: 1, after: 400 });
 		const ok = labelCapture(captureWith(run, now, type), 15).run;
 		// the same run once as a run and once as a false start: no setting can satisfy both
@@ -529,13 +528,13 @@ describe("automatic optimisation engine", function () {
 			assert.strictEqual(out.kind, k < 2 ? "cannotCover" : "drift");
 		}
 		assert.strictEqual((await optimize(store, ctxOf(now))).kind, "drift");
-		const empty = emptyStore("dev", type.id, typeHash(type), STEP, 1);
+		const empty = emptyStore("dev", "washing-machine", typeHash(type), STEP, 1);
 		assert.strictEqual((await optimize(empty, ctxOf(now))).kind, "none");
 	});
 
 	it("20 runs and 10 false starts are checked within 5 s and yield at least every 50 ms", async () => {
 		const now = 1_700_000_000_000;
-		const store = emptyStore("dev", type.id, typeHash(type), STEP, 1);
+		const store = emptyStore("dev", "washing-machine", typeHash(type), STEP, 1);
 		for (let k = 0; k < 20; k++) {
 			const run = runOf({
 				device: "washer",

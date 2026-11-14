@@ -1,6 +1,8 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { DEFAULT_REMINDER, DEFAULT_TYPES, findType, normalizeInstanceConfig } from "../build/lib/config.js";
+import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
+import { DEFAULT_TYPES, findType } from "../build/lib/legacyTypes.js";
+import { detectionOf } from "../build/lib/runStore.js";
 import {
 	isLegacyConfig,
 	LEGACY_LEAVES,
@@ -127,6 +129,8 @@ describe("migration", () => {
 			assert.deepStrictEqual(device(result, "waschmaschine").config, {
 				enabled: true,
 				name: "Waschmaschine",
+				detection: detectionOf(findType(result.types, "washing-machine")),
+				template: "washing-machine",
 				typeId: "washing-machine",
 				powerId: "shelly.0.SHPLG-S#1A2B3C#1.Relay0.Power",
 				switchId: "shelly.0.SHPLG-S#1A2B3C#1.Relay0.Switch",
@@ -143,6 +147,8 @@ describe("migration", () => {
 			assert.deepStrictEqual(device(result, "trockner").config, {
 				enabled: true,
 				name: "Trockner",
+				detection: detectionOf(findType(result.types, "dryer")),
+				template: "dryer",
 				typeId: "dryer",
 				powerId: "sonoff.0.Trockner.ENERGY_Power",
 				startText: "Trockner gestartet",
@@ -292,12 +298,12 @@ describe("migration", () => {
 		});
 
 		it("takes over types with the 3.1.2 values and the status texts", () => {
-			assert.strictEqual(result.instance.configVersion, 4);
+			assert.strictEqual(result.instance.configVersion, 5);
 			assert.deepStrictEqual(
-				result.instance.types.map(t => t.id),
+				result.types.map(t => t.id),
 				DEFAULT_TYPES.map(t => t.id),
 			);
-			assert.deepStrictEqual(findType(result.instance, "washing-machine"), {
+			assert.deepStrictEqual(findType(result.types, "washing-machine"), {
 				id: "washing-machine",
 				name: "Washing machine",
 				builtin: true,
@@ -313,12 +319,12 @@ describe("migration", () => {
 				pauseUntilSec: 0,
 				pauseBelowVal: 0,
 			});
-			const dish = findType(result.instance, "dishwasher");
+			const dish = findType(result.types, "dishwasher");
 			assert.deepStrictEqual(
 				[dish.startVal, dish.endVal, dish.standby, dish.startCount, dish.endCount],
 				[15, 0.25, 0.5, 2, 120],
 			);
-			const c1 = findType(result.instance, "custom1");
+			const c1 = findType(result.types, "custom1");
 			assert.deepStrictEqual(
 				[c1.name, c1.builtin, c1.startVal, c1.endVal, c1.standby, c1.startCount, c1.endCount],
 				["Custom 1", false, 30, 5, 1, 1, 20],
@@ -368,7 +374,7 @@ describe("migration", () => {
 				off: "switched off",
 			});
 			// custom table missing -> V4 custom types
-			assert.strictEqual(result.instance.types.length, DEFAULT_TYPES.length);
+			assert.strictEqual(result.types.length, DEFAULT_TYPES.length);
 			assert.deepStrictEqual(result.warnings, [
 				'Device "Trockner": recipient telegram #0 does not exist, removed',
 			]);
@@ -379,7 +385,7 @@ describe("migration", () => {
 			assert.deepStrictEqual(result.devices, []);
 			assert.deepStrictEqual(result.instance.recipients, []);
 			assert.deepStrictEqual(
-				result.instance.types.map(t => t.id),
+				result.types.map(t => t.id),
 				DEFAULT_TYPES.map(t => t.id),
 			);
 			assert.deepStrictEqual(result.instance.statusTexts, {
@@ -398,7 +404,7 @@ describe("migration", () => {
 				{ status: { ids: [null] }, default: { ids: "nope" }, custom: { ids: [{ name: 3 }] } },
 			]) {
 				const result = migrateLegacyConfig(native);
-				assert.strictEqual(result.instance.configVersion, 4);
+				assert.strictEqual(result.instance.configVersion, 5);
 			}
 			const result = migrateLegacyConfig({
 				linkedDevice: { finalIds: { 0: null } },
@@ -416,16 +422,16 @@ describe("migration", () => {
 
 		it("renamedCustom: custom ids kept, renamed names kept, lookup by name", () => {
 			const result = migrateLegacyConfig(fixture("renamedCustom"));
-			const c2 = findType(result.instance, "custom2");
+			const c2 = findType(result.types, "custom2");
 			assert.deepStrictEqual(
 				[c2.name, c2.startVal, c2.endVal, c2.standby, c2.startCount, c2.endCount],
 				["Kaffeemaschine", 800, 20, 2, 1, 6],
 			);
-			assert.strictEqual(findType(result.instance, "custom10").name, "Pumpe");
-			assert.strictEqual(findType(result.instance, "custom10").startVal, 100);
-			assert.strictEqual(findType(result.instance, "custom5").name, "Custom 5");
-			assert.strictEqual(findType(result.instance, "custom5").startVal, 1500);
-			const dish = findType(result.instance, "dishwasher");
+			assert.strictEqual(findType(result.types, "custom10").name, "Pumpe");
+			assert.strictEqual(findType(result.types, "custom10").startVal, 100);
+			assert.strictEqual(findType(result.types, "custom5").name, "Custom 5");
+			assert.strictEqual(findType(result.types, "custom5").startVal, 1500);
+			const dish = findType(result.types, "dishwasher");
 			assert.deepStrictEqual(
 				[dish.name, dish.startVal, dish.endVal, dish.standby, dish.startCount, dish.endCount],
 				["Dishwasher", 12.5, 1, 0.3, 3, 90],
@@ -434,6 +440,14 @@ describe("migration", () => {
 			assert.strictEqual(device(result, "heizluefter").config.typeId, "custom5");
 			assert.strictEqual(device(result, "spueler").config.typeId, "dishwasher");
 			assert.strictEqual(device(result, "pool").config.typeId, "");
+			// a device without a type ran never in 3.1.2: values of "Custom", off until it is checked (M3)
+			const pool = device(result, "pool").config;
+			assert.deepStrictEqual([pool.enabled, pool.needsReview, pool.detection.startVal], [false, true, 30]);
+			assert.match(pool.reviewHint, /not found/);
+			assert.strictEqual(
+				device(result, "kaffee").config.detection.startVal,
+				findType(result.types, "custom2").startVal,
+			);
 			assert.deepStrictEqual(result.warnings, ['Device "Pool": device type "Poolpumpe" not found']);
 		});
 
@@ -512,12 +526,12 @@ describe("migration", () => {
 					["discord-2", "discord", "discord.0", "user_b"],
 				],
 			);
-			const dryer = findType(result.instance, "dryer");
+			const dryer = findType(result.types, "dryer");
 			assert.deepStrictEqual(
 				[dryer.startVal, dryer.endVal, dryer.standby, dryer.startCount, dryer.endCount],
 				[120, 15, 1, 2, 50],
 			);
-			const dish = findType(result.instance, "dishwasher");
+			const dish = findType(result.types, "dishwasher");
 			assert.deepStrictEqual([dish.startVal, dish.endVal], [15, 10]);
 			assert.deepStrictEqual(result.instance.statusTexts, {
 				running: "in action",

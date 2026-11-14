@@ -1,5 +1,8 @@
-import { DEFAULT_REMINDER, DEFAULT_TYPES, normalizeInstanceConfig, } from "./config.js";
+import { DEFAULT_REMINDER, normalizeInstanceConfig, } from "./config.js";
 import { allocateDeviceId } from "./ids.js";
+import { DEFAULT_TYPES } from "./legacyTypes.js";
+import { detectionOf } from "./runStore.js";
+import { CUSTOM_TEMPLATE } from "./templates.js";
 import { DEVICE_STATES } from "./stateDefinitions.js";
 import { errorMessage, parseNumber } from "./utils.js";
 export const LEGACY_STATE_MAP = {
@@ -251,7 +254,7 @@ function convertTypes(native) {
     }
     return { types, byName };
 }
-function convertDevice(raw, byName, recipientIds, warnings) {
+function convertDevice(raw, byName, types, recipientIds, warnings) {
     const name = str(raw.name);
     const label = `Device "${name}"`;
     for (const key of Object.keys(raw)) {
@@ -261,7 +264,8 @@ function convertDevice(raw, byName, recipientIds, warnings) {
     }
     const typeName = str(raw.type);
     const typeId = byName.get(typeName);
-    if (typeId === undefined) {
+    const type = typeId === undefined ? undefined : types.find(t => t.id === typeId);
+    if (!type) {
         warnings.push(`${label}: device type "${typeName}" not found`);
     }
     const recipients = [];
@@ -285,8 +289,9 @@ function convertDevice(raw, byName, recipientIds, warnings) {
         warnings.push(`${label}: no power state configured`);
     }
     const config = {
-        enabled: bool(raw.enabled),
+        enabled: type ? bool(raw.enabled) : false,
         name,
+        detection: detectionOf(type ?? CUSTOM_TEMPLATE.detection),
         typeId: typeId ?? "",
         powerId,
         startText: typeof raw.startText === "string" ? raw.startText : "",
@@ -302,6 +307,13 @@ function convertDevice(raw, byName, recipientIds, warnings) {
     const switchId = str(raw.pathSwitch);
     if (switchId !== "") {
         config.switchId = switchId;
+    }
+    if (type?.builtin) {
+        config.template = type.id;
+    }
+    if (!type) {
+        config.needsReview = true;
+        config.reviewHint = `3.1.2 type "${typeName}" not found; values taken from template Custom`;
     }
     return config;
 }
@@ -324,7 +336,6 @@ export function migrateLegacyConfig(native) {
     const statusRow = rows(src, "status")[0];
     const status = isRecord(statusRow) ? statusRow : {};
     const normalized = normalizeInstanceConfig({
-        types,
         recipients,
         statusTexts: { running: str(status.stateAction), standby: str(status.stateStandby), off: str(status.stateOff) },
     });
@@ -340,14 +351,14 @@ export function migrateLegacyConfig(native) {
                 warnings.push(`Device #${key} ignored: not an object`);
                 continue;
             }
-            const config = convertDevice(raw, byName, recipientIds, warnings);
+            const config = convertDevice(raw, byName, types, recipientIds, warnings);
             const id = allocateDeviceId(config.name, taken);
             taken.add(id);
             const oldName = typeof raw.name === "string" && raw.name !== "" ? raw.name : config.name;
             devices.push({ id, oldName, config });
         }
     }
-    return { instance, devices, warnings };
+    return { instance, types, devices, warnings };
 }
 function coerce(newLeaf, val) {
     const type = DEVICE_STATES.find(d => d.id === newLeaf)?.type;

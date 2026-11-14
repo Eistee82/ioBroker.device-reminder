@@ -1,5 +1,7 @@
 import * as I18n from "@iobroker/adapter-core/i18n";
-import { DEFAULT_REMINDER, } from "./config.js";
+import { DEFAULT_REMINDER, normalizeDetection, } from "./config.js";
+import { detectionOf, typeHash } from "./runStore.js";
+import { findTemplate, templateDetection, TEMPLATES } from "./templates.js";
 import { parseNumber } from "./utils.js";
 const ACTION_EVENT_KEYS = {
     start: "dev_eventStart",
@@ -38,7 +40,7 @@ export function buildSourceSchema() {
         },
     };
 }
-export function buildDeviceSchema(cfg, detection, enums) {
+export function buildDeviceSchema(cfg, detection, enums, isNew = false) {
     const items = {};
     if (detection?.hint) {
         items.hint = {
@@ -66,14 +68,17 @@ export function buildDeviceSchema(cfg, detection, enums) {
         sm: 8,
         md: 5,
     };
-    items.typeId = {
-        type: "select",
-        label: I18n.getTranslatedObject("dev_typeId"),
-        options: cfg.types.map(t => ({ label: t.name, value: t.id })),
-        xs: 12,
-        sm: 6,
-        md: 4,
-    };
+    if (isNew) {
+        items.template = {
+            type: "select",
+            label: I18n.getTranslatedObject("dev_template"),
+            help: I18n.getTranslatedObject("dev_templateHelp"),
+            options: TEMPLATES.map(t => ({ label: t.name, value: t.id })),
+            xs: 12,
+            sm: 6,
+            md: 4,
+        };
+    }
     items.sourceId = {
         type: "objectId",
         label: I18n.getTranslatedObject("dev_sourceId"),
@@ -272,16 +277,55 @@ function toNumber(val) {
 function toText(val) {
     return typeof val === "string" ? val : "";
 }
-export function formToDeviceConfig(f) {
+const FORM_KEYS = [
+    "enabled",
+    "name",
+    "detection",
+    "template",
+    "sourceId",
+    "powerId",
+    "switchId",
+    "startText",
+    "endText",
+    "abort",
+    "abortFixed",
+    "autoOff",
+    "autoOffMinutes",
+    "recipients",
+    "reminder",
+    "actions",
+    "autoOptimize",
+    "optimizeNotify",
+    "needsReview",
+    "reviewHint",
+    "typeId",
+];
+export function formToDeviceConfig(f, o) {
     const errors = [];
     const name = toText(f.name).trim();
-    const typeId = toText(f.typeId).trim();
     const powerId = toText(f.powerId).trim();
     if (name === "") {
         errors.push("The device needs a name.");
     }
-    if (typeId === "") {
-        errors.push("Select a device type.");
+    let detection;
+    let template;
+    if (o.isNew) {
+        template = toText(f.template).trim();
+        detection = templateDetection(template, o.unitFactor);
+        if (!detection) {
+            errors.push("Select a template.");
+        }
+    }
+    else {
+        detection = normalizeDetection(f.detection ?? o.previous?.detection, [], name);
+        const candidate = o.previous ? o.previous.template : toText(f.template).trim();
+        const values = candidate ? templateDetection(candidate, o.unitFactor) : null;
+        if (detection && values && typeHash(values) === typeHash(detection)) {
+            template = candidate;
+        }
+        if (!detection) {
+            errors.push("The device has no detection values.");
+        }
     }
     if (powerId === "") {
         errors.push("The device needs a power state.");
@@ -315,13 +359,18 @@ export function formToDeviceConfig(f) {
         }
         actions.push({ event, stateId, value });
     });
-    if (errors.length > 0) {
+    if (errors.length > 0 || !detection) {
         return { config: null, errors };
     }
+    const kept = { ...(o.isNew ? {} : (o.previous ?? {})) };
+    for (const key of FORM_KEYS) {
+        delete kept[key];
+    }
     const config = {
+        ...kept,
         enabled: f.enabled !== false,
         name,
-        typeId,
+        detection,
         powerId,
         startText: toText(f.startText),
         endText: toText(f.endText),
@@ -353,13 +402,17 @@ export function formToDeviceConfig(f) {
             config.optimizeNotify = true;
         }
     }
+    if (template !== undefined && findTemplate(template)) {
+        config.template = template;
+    }
     return { config, errors };
 }
 export function deviceConfigToForm(c) {
     return {
         enabled: c.enabled,
         name: c.name,
-        typeId: c.typeId,
+        template: c.template ?? "",
+        detection: detectionOf(c.detection),
         sourceId: c.sourceId ?? "",
         powerId: c.powerId,
         switchId: c.switchId ?? "",

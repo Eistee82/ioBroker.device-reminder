@@ -94,8 +94,8 @@ export interface Envelope {
 export interface Change {
 	/** Time in ms. */
 	ts: number;
-	/** Kind. */
-	kind: "repair" | "tighten" | "undo" | "reset" | "typeChanged";
+	/** Kind (`typeChanged`: entries of earlier versions, shown like `baseChanged`). */
+	kind: "repair" | "tighten" | "undo" | "reset" | "baseChanged" | "typeChanged";
 	/** Override before. */
 	from: Partial<DetectionSettings> | null;
 	/** Override after. */
@@ -141,9 +141,9 @@ export interface StoreFile {
 	seq: number;
 	/** Device id. */
 	deviceId: string;
-	/** Device type id. */
+	/** Template id of the device when the store was created (informational, not compared). */
 	typeId: string;
-	/** Hash of the detection fields of the type. */
+	/** Hash of the detection values of the device (`typeHash`). */
 	typeHash: string;
 	/** Poll interval in ms. */
 	step: number;
@@ -157,7 +157,7 @@ export interface StoreFile {
 	pending: Capture | null;
 	/** Extremes of all runs. */
 	envelope: Envelope;
-	/** Optimised values (differences to the type), or null. */
+	/** Optimised values (differences to the detection values of the device), or null. */
 	override: Partial<DetectionSettings> | null;
 	/** Last changes (oldest first). */
 	changes: Change[];
@@ -268,8 +268,8 @@ export function emptyEnvelope(): Envelope {
  * New empty store.
  *
  * @param deviceId - Device id
- * @param typeId - Type id
- * @param hash - Type hash
+ * @param typeId - Template id of the device (informational)
+ * @param hash - Hash of the detection values of the device
  * @param step - Poll interval in ms
  * @param unitFactor - Factor from the unit of the state to W
  */
@@ -473,11 +473,11 @@ export async function removeStore(io: FileIO, deviceId: string): Promise<void> {
 }
 
 /**
- * Adapt a loaded store to the current type, poll interval and unit.
+ * Adapt a loaded store to the current detection values, poll interval and unit. Only the hash of the detection
+ * values is compared (the template id may differ, e.g. after the migration).
  *
  * @param store - Store
- * @param typeId - Current type id
- * @param hash - Current type hash
+ * @param hash - Hash of the current detection values of the device
  * @param step - Current poll interval in ms
  * @param unitFactor - Current unit factor
  * @param now - Current time
@@ -485,28 +485,26 @@ export async function removeStore(io: FileIO, deviceId: string): Promise<void> {
  */
 export function reconcileStore(
 	store: StoreFile,
-	typeId: string,
 	hash: string,
 	step: number,
 	unitFactor: number,
 	now: number,
 ): string[] {
 	const msgs: string[] = [];
-	if (store.typeId !== typeId || store.typeHash !== hash) {
+	if (store.typeHash !== hash) {
 		if (store.override) {
 			pushChange(store, {
 				ts: now,
-				kind: "typeChanged",
+				kind: "baseChanged",
 				from: store.override,
 				to: null,
-				reason: "device type changed",
+				reason: "detection values changed",
 				runs: store.runs.length,
 				gainSec: 0,
 			});
-			msgs.push("device type changed, optimised values discarded");
+			msgs.push("detection values changed, optimised values discarded");
 		}
 		store.override = null;
-		store.typeId = typeId;
 		store.typeHash = hash;
 		store.failStreak = 0;
 		if (store.info.status === "drift") {

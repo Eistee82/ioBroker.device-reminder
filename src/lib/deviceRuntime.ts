@@ -1,9 +1,10 @@
-import type { DeviceConfig, DeviceTypeConfig, InstanceConfig } from "./config.js";
+import type { DeviceConfig, InstanceConfig } from "./config.js";
 import { createDetector, TrailerFilter } from "./detector/index.js";
 import type { DetectionSettings, Detector, TickResult } from "./detector/types.js";
 import { renderHistoryHtml } from "./historyHtml.js";
 import type { DeviceHost, MessageSink, RuntimeEvent, RuntimeListener } from "./host.js";
 import type { CaptureEvent, RunRecorder } from "./runRecorder.js";
+import { detectionOf, typeHash } from "./runStore.js";
 import { errorMessage, formatDuration, formatTimestamp, parseNumber } from "./utils.js";
 
 export type { DeviceHost, MessageSink, RuntimeEvent, RuntimeListener } from "./host.js";
@@ -29,6 +30,8 @@ function isTrue(val: unknown): boolean {
 export class DeviceRuntime {
 	private cfg: DeviceConfig;
 	private detector: Detector;
+	/** Detection mode the detector was built with (time-based modes are also fed with every new value). */
+	private detectorMode: DetectionSettings["mode"] = "count";
 	private rebuildDetectorAfterRun = false;
 	private power: number | null = null;
 	private missingPower = false;
@@ -46,8 +49,7 @@ export class DeviceRuntime {
 	/**
 	 * @param host - Adapter access
 	 * @param deviceId - Stable device id (object id below the namespace)
-	 * @param cfg - Device configuration
-	 * @param type - Device type with thresholds
+	 * @param cfg - Device configuration (with the detection values)
 	 * @param inst - Instance configuration
 	 * @param sink - Receives start and end messages
 	 * @param listener - Receives lifecycle events
@@ -56,7 +58,6 @@ export class DeviceRuntime {
 		private readonly host: DeviceHost,
 		private readonly deviceId: string,
 		cfg: DeviceConfig,
-		private readonly type: DeviceTypeConfig,
 		private readonly inst: InstanceConfig,
 		private readonly sink: MessageSink,
 		private readonly listener: RuntimeListener,
@@ -70,33 +71,14 @@ export class DeviceRuntime {
 		return this.cfg;
 	}
 
-	/** Detection values in use: the device type with the optimised values (if any). */
+	/** Detection values in use: the values of the device with the optimised values (if any). */
 	public get effective(): DetectionSettings {
-		const t = this.type;
-		return {
-			startVal: t.startVal,
-			endVal: t.endVal,
-			standby: t.standby,
-			startCount: t.startCount,
-			endCount: t.endCount,
-			mode: t.mode,
-			startDurationSec: t.startDurationSec,
-			endDurationSec: t.endDurationSec,
-			pauseHoldSec: t.pauseHoldSec,
-			pauseUntilSec: t.pauseUntilSec,
-			pauseBelowVal: t.pauseBelowVal,
-			trailerBurstSec: t.trailerBurstSec ?? 0,
-			trailerGapSec: t.trailerGapSec ?? 0,
-			trailerAfterSec: t.trailerAfterSec ?? 0,
-			trailerBlockVal: t.trailerBlockVal ?? 0,
-			trailerMaxSec: t.trailerMaxSec ?? 0,
-			...(this.override ?? {}),
-		};
+		return { ...this.baseDetection, ...(this.override ?? {}) };
 	}
 
-	/** Device type (without optimised values). */
-	public get deviceType(): DeviceTypeConfig {
-		return this.type;
+	/** Detection values of the device (without optimised values), all fields filled in. */
+	public get baseDetection(): DetectionSettings {
+		return detectionOf(this.cfg.detection);
 	}
 
 	/** Optimised values in use, or null. */
@@ -105,7 +87,7 @@ export class DeviceRuntime {
 	}
 
 	/**
-	 * Use optimised values (null = the values of the device type). The detector is rebuilt at once
+	 * Use optimised values (null = the values of the device). The detector is rebuilt at once
 	 * when no run is in progress, otherwise after the run.
 	 *
 	 * @param o - Optimised values or null
@@ -198,7 +180,7 @@ export class DeviceRuntime {
 		this.power = parsed;
 		this.missingPower = false;
 		this.recorder?.event(parsed);
-		if (this.effective.mode !== "timed" || !this.detector.feed) {
+		if (this.detectorMode !== "timed" || !this.detector.feed) {
 			return;
 		}
 		await this.enqueue(async () => {
@@ -289,16 +271,17 @@ export class DeviceRuntime {
 	}
 
 	/**
-	 * Whether the running state survives a configuration change (same type and power state).
+	 * Whether the running state survives a configuration change (same power state).
 	 *
 	 * @param next - New device configuration
 	 */
 	public canKeepStateFor(next: DeviceConfig): boolean {
-		return next.typeId === this.cfg.typeId && next.powerId === this.cfg.powerId;
+		return next.powerId === this.cfg.powerId;
 	}
 
 	/**
-	 * Apply a changed configuration without resetting the cycle.
+	 * Apply a changed configuration without resetting the cycle. Changed detection values or abort options
+	 * rebuild the detector at once between two runs, otherwise after the run.
 	 *
 	 * @param next - New device configuration (must pass `canKeepStateFor`)
 	 */
@@ -307,7 +290,10 @@ export class DeviceRuntime {
 			this.host.log.warn(`Configuration of device ${next.name} cannot be applied without a reset`);
 			return;
 		}
-		const detectorChanged = next.abort !== this.cfg.abort || next.abortFixed !== this.cfg.abortFixed;
+		const detectorChanged =
+			next.abort !== this.cfg.abort ||
+			next.abortFixed !== this.cfg.abortFixed ||
+			typeHash(next.detection) !== typeHash(this.cfg.detection);
 		const switchChanged = next.switchId !== this.cfg.switchId;
 		this.cfg = next;
 		if (detectorChanged) {
@@ -344,7 +330,9 @@ export class DeviceRuntime {
 	}
 
 	private buildDetector(): Detector {
-		return createDetector(this.effective, {
+		const settings = this.effective;
+		this.detectorMode = settings.mode;
+		return createDetector(settings, {
 			abort: this.cfg.abort,
 			abortFixed: this.cfg.abortFixed,
 			pollSec: this.inst.pollIntervalSec,

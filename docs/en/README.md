@@ -8,7 +8,7 @@ Documentation of the device-reminder adapter (version 4). [Deutsche Version](../
 
 1. [Overview](#1-overview)
 2. [Setup](#2-setup)
-3. [Device types and detection](#3-device-types-and-detection)
+3. [Detection values and templates](#3-detection-values-and-templates)
 4. [Adding devices](#4-adding-devices)
 5. [Recipients](#5-recipients)
 6. [Reminders and acknowledgement](#6-reminders-and-acknowledgement)
@@ -34,7 +34,7 @@ Everything is configured in the instance settings. Devices are managed in the De
 1. Install the adapter and create an instance.
 2. Open the instance settings. The tabs are:
    - **Devices**: the Device Manager (see [Adding devices](#4-adding-devices)).
-   - **Device types**: thresholds and detection mode per type (see [Device types and detection](#3-device-types-and-detection)).
+   - **Device types**: the types of earlier versions. They are only read while a device has no detection values of its own yet; the values live in the device (see [Detection values and templates](#3-detection-values-and-templates)).
    - **Recipients**: who receives messages (see [Recipients](#5-recipients)).
    - **General**: status texts, polling interval and the optional HTML history.
 3. Create at least one recipient, then add a device in the Device Manager and select the recipient in the device form.
@@ -47,9 +47,13 @@ General settings:
 | Polling interval | 10 s | How often the detection evaluates the last power value |
 | History as HTML | off | Additionally writes `lastOperationsHtml` (HTML table of the last operations) |
 
-## 3. Device types and detection
+## 3. Detection values and templates
 
-Every device uses a device type. A type holds the thresholds and the detection mode. The adapter ships the types **Washing machine**, **Dryer** and **Dishwasher** plus ten editable custom types. You can fill a custom type by hand or by [learning](#8-learning-mode).
+Every device has detection values of its own: thresholds, detection mode, pause protection and anti-crease filter. They live in the device, no longer in a device type shared by several devices. Changing the values of a device changes only this device.
+
+When you add a device you choose a **template** that gives the first values: **Washing machine**, **Dryer** and **Dishwasher** with the values of 3.1.2, and **Custom** (30 / 5 / 1 / 1 / 20) for every other device. If the power state measures kW, the power values of the template are divided by 1000. Then you adapt the values to your device by [learning](#8-learning-mode); learning writes the values directly into the device, without restarting the instance.
+
+A device without valid detection values (for example because its device type no longer exists) gets the values of **Custom** and is **disabled**: it did not run before and must not start sending messages. The device card and the log give the reason. Check the device, save it in the device form and enable it again.
 
 | Threshold | Meaning |
 | --- | --- |
@@ -93,7 +97,7 @@ The values are usually set by [learning](#8-learning-mode); you can change them 
 
 - A power value that is not a number (for example `null`, `true` or an empty string) is ignored and the last valid value is kept. Numeric strings such as `"12,5"` are parsed.
 - If the power state does not exist (for example a deleted plug), one warning is logged per device, the device stays "switched off" and the Device Manager card shows a warning.
-- Editing a running device keeps the current run as long as device type and power state stay the same. Otherwise the device is reset and an info message is logged.
+- Editing a running device keeps the current run as long as the power state stays the same. Changed detection values apply from the next run. A new power state resets the device and an info message is logged.
 
 ## 4. Adding devices
 
@@ -110,7 +114,7 @@ The device form contains:
 | Field | Meaning |
 | --- | --- |
 | Name | Used for the object ID. IDs are unique and valid: umlauts are transliterated, spaces and dots become `_`, duplicates get `_2`, `_3` ... |
-| Device type | One of the types of the **Device types** tab |
+| Template | Only when adding: gives the detection values of the new device (see [Detection values and templates](#3-detection-values-and-templates)). Editing keeps the values of the device |
 | Power state | State with the power in W (required) |
 | Switch state | Optional, needed for auto-off |
 | Start text / End text | Message texts |
@@ -125,7 +129,7 @@ The device form contains:
 
 Required fields are checked before saving.
 
-Each device card shows status, power, runtime, a running and a finished indicator and a warning if the power state is missing. On the card you can edit, delete, enable or disable the device, switch do-not-disturb, acknowledge, send a test message and start learning. The details list the last runs, the thresholds of the type and the reminder status.
+Each device card shows status, power, runtime, a running and a finished indicator and a warning if the power state is missing. On the card you can edit, delete, enable or disable the device, switch do-not-disturb, acknowledge, send a test message and start learning. The details list the last runs, the template and the detection values of the device and the reminder status. A device that needs a check shows a warning with the reason.
 
 ### Run behaviour
 
@@ -243,14 +247,14 @@ If the power state is logged by a history adapter (history, SQL, InfluxDB or any
 - Per mode: runs detected correctly / runs found · mean (maximum) time until the end is reported. The mode that detects the most runs with the fewest false starts is preselected; if several are equally reliable and their end is reported within one minute of each other, count (the 3.1.2 behaviour) wins.
 - **Cross-check** x/y: this many runs would also have been detected if that run had been missing from the history. If it is lower than the number of runs, a programme (e.g. one with a long pause) occurred only once; learn again after more runs.
 - Comparison with the current device type over the same runs, and the longest pause in a run.
-- You can change every value, the pause protection and the mode before saving the new custom device type.
+- You can change every value, the pause protection and the mode before saving. The confirmation lists every change as old → new. The values are written into the device (no restart, the instance settings stay untouched); a final phase of the device is kept.
 
 ### Recording a run
 
 1. Start learning from the device card (**Learn**) or write `learning.start` of the device.
 2. Run a complete cycle of the machine. The recording stops automatically after 12 hours or 10,000 samples.
 3. Stop learning in the Device Manager or write `learning.stop`.
-4. The recording is analysed with the same logic as the history, with one run. After the last sample that value is taken to stay (as at runtime), so the recording can also be stopped shortly after the end. If no mode detects the run (e.g. the recording was stopped while the device was still running), there is no suggestion. The suggested settings are written as JSON to `learning.result` (thresholds, start and end duration, run duration, number of samples, mode, result per mode and pause protection). The Device Manager shows them and can store them as a new custom device type.
+4. The recording is analysed with the same logic as the history, with one run. After the last sample that value is taken to stay (as at runtime), so the recording can also be stopped shortly after the end. If no mode detects the run (e.g. the recording was stopped while the device was still running), there is no suggestion. The suggested settings are written as JSON to `learning.result` (thresholds, start and end duration, run duration, number of samples, mode, result per mode and pause protection). The Device Manager shows them and writes them into the device after a confirmation.
 
 If fewer than 20 samples were recorded or no run is recognised, `learning.result` contains an error (`tooFewSamples` or `noRun`). `learning.active` is true while recording.
 
@@ -281,10 +285,10 @@ The device option **Automatic optimisation** (off by default, device dialog → 
 - Every candidate is replayed with the real detection over **all** stored runs and false starts; a change is applied only if every run is detected exactly once, no false start starts a run and the end is never reported before the programme end. Programmes that occurred before can therefore not be broken.
 - **Repair** (looser values) right after one run that was not detected correctly (end reported too early, false start, e.g. by anti-crease bursts). A repair never shortens a wait of the current values and keeps the start longer than the longest burst ever seen and the end longer than the longest pause ever seen, as long as such values detect every stored run. Afterwards no tightening for 5 runs and 14 days.
 - **Tightening** (end reported earlier, e.g. the anti-crease filter on) only with at least 4 runs, 2 new runs and 24 hours since the last change, with values changing by at most 25 % (thresholds 30 %) per step, a cross-check without each programme group, slightly changed input (±10 % power, one poll later, missing values) and limits from the longest pause and burst ever seen. It needs a gain of at least one minute (or fewer false starts). A tightening switches the anti-crease filter on only behind a terminal block like the ones seen (`trailerBlockVal`), so that a programme with soaking that was not seen yet keeps its drum movements.
-- The optimised values are stored per device and apply only while the option is on; switching it off means the values of the device type again (3.1.2 behaviour). If the device type is edited, the optimised values are discarded. Deleting the device (also in the object browser) deletes its learning data. If the learning data cannot be read at the start, the optimisation stays off until the next start (warning in the log), so that the stored data is not overwritten.
+- The optimised values are stored per device and apply only while the option is on; switching it off means the values of the device type again (3.1.2 behaviour). If the detection values of the device are changed, the optimised values are discarded. Deleting the device (also in the object browser) deletes its learning data. If the learning data cannot be read at the start, the optimisation stays off until the next start (warning in the log), so that the stored data is not overwritten.
 - If no setting detects all stored runs, nothing changes (warning in the log); after 3 such runs in a row the optimisation pauses until the learning data is cleared.
 - States: `learning.optimized`, `learning.parameters`, `learning.lastChange`, `learning.optimizeInfo`, `learning.lastEndDelay`; `learning.undo` undoes the last change, `learning.reset` goes back to the values of the device type (both lock the tightening for 14 days). With the option "Report changes as a message" every change is also sent to the recipients of the device, in the language of the installation (the log is in English).
-- The action **Optimisation** on the device card (shown while the option is on or learning data exists) shows the status, the anti-crease handling, every value of the device type next to the value in use (changed values are marked with `*`), the stored runs (date, duration, programme group, end delay, classification and whether the current values detect it) and the last changes. Under **Action** you can undo the last change, reset to the values of the device type, discard one stored run (e.g. a run that was no normal use; the limits of all runs ever seen stay), clear the learning data (after a confirmation) or save the values in use as a new device type (this restarts the instance). While the option is off, only clearing is offered.
+- The action **Optimisation** on the device card (shown while the option is on or learning data exists) shows the status, the anti-crease handling, every value of the device type next to the value in use (changed values are marked with `*`), the stored runs (date, duration, programme group, end delay, classification and whether the current values detect it) and the last changes. Under **Action** you can undo the last change, reset to the values of the device type, discard one stored run (e.g. a run that was no normal use; the limits of all runs ever seen stay), clear the learning data (after a confirmation) or save the values in use as the detection values of the device (no restart). While the option is off, only clearing is offered.
 
 Limits: a restart of the adapter during a run loses that run (a restart after the end is resumed); a programme never seen before is only protected by the limits and margins and is repaired after one faulty run; changing the poll interval or the unit of the power state discards the stored runs.
 

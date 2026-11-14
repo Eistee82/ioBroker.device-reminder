@@ -1,6 +1,5 @@
 import { runActions } from "./actions.js";
 import type { DeviceConfig, InstanceConfig } from "./config.js";
-import { findType } from "./config.js";
 import { DeviceRuntime } from "./deviceRuntime.js";
 import { fill, TEXT } from "./dmTexts.js";
 import type { HistoryEnv } from "./historySource.js";
@@ -93,30 +92,35 @@ export class DeviceRegistry implements RuntimeListener {
 
 	/**
 	 * Add a device, replace it, or apply a changed configuration while keeping its state
-	 * (same type and power state).
+	 * (same power state). A disabled device that needs a review is not run.
 	 *
 	 * @param deviceId - Device id below the namespace
 	 * @param cfg - Normalized device configuration
 	 */
 	public async upsert(deviceId: string, cfg: DeviceConfig): Promise<void> {
 		const existing = this.devices.get(deviceId);
+		if (cfg.needsReview && !cfg.enabled) {
+			if (existing) {
+				this.disposeEntry(existing);
+				this.devices.delete(deviceId);
+			}
+			this.host.log.warn(
+				`Device ${cfg.name} not started: ${cfg.reviewHint ?? "values need a check"}. Check and save it in the device settings.`,
+			);
+			return;
+		}
 		if (existing) {
 			if (existing.runtime.canKeepStateFor(cfg)) {
 				existing.runtime.updateConfig(cfg);
 				await this.syncOptimize(deviceId, existing);
 				return;
 			}
-			this.host.log.info(`Device ${cfg.name} reset: type or power state changed`);
+			this.host.log.info(`Device ${cfg.name} reset: power state changed`);
 			this.disposeEntry(existing);
 			this.devices.delete(deviceId);
 		}
 
 		const inst = this.getConfig();
-		const type = findType(inst, cfg.typeId);
-		if (!type) {
-			this.host.log.warn(`Device ${cfg.name} ignored: unknown device type "${cfg.typeId}"`);
-			return;
-		}
 		const sink: MessageSink = {
 			send: async (id: string, text: string): Promise<void> => {
 				const entry = this.devices.get(id);
@@ -129,7 +133,7 @@ export class DeviceRegistry implements RuntimeListener {
 				});
 			},
 		};
-		const runtime = new DeviceRuntime(this.host, deviceId, cfg, type, inst, sink, this);
+		const runtime = new DeviceRuntime(this.host, deviceId, cfg, inst, sink, this);
 		const entry: Entry = {
 			runtime,
 			recorder: new LearningRecorder(),
@@ -323,7 +327,7 @@ export class DeviceRegistry implements RuntimeListener {
 		const result = await suggestType(samples, inst.pollIntervalSec, {
 			abort: cfg.abort,
 			abortFixed: cfg.abortFixed,
-			currentType: findType(inst, cfg.typeId),
+			currentType: entry.runtime.baseDetection,
 			unitFactor: await this.unitFactorOf(cfg.powerId),
 		});
 		await this.host.setOwnState(`${deviceId}.learning.active`, false);
@@ -469,8 +473,8 @@ export class DeviceRegistry implements RuntimeListener {
 			entry.runtime.setOverride(null);
 			entry.opt.store = emptyStore(
 				deviceId,
-				cfg.typeId,
-				typeHash(entry.runtime.deviceType),
+				cfg.template ?? "",
+				typeHash(entry.runtime.baseDetection),
 				entry.opt.store.step,
 				entry.opt.store.unitFactor,
 			);
@@ -513,7 +517,7 @@ export class DeviceRegistry implements RuntimeListener {
 	}
 
 	/**
-	 * Back to the values of the device type (locks the tightening for 14 days).
+	 * Back to the detection values of the device (locks the tightening for 14 days).
 	 *
 	 * @param deviceId - Device id
 	 */
@@ -527,10 +531,12 @@ export class DeviceRegistry implements RuntimeListener {
 		if (!entry || !store) {
 			return false;
 		}
-		this.setOverrideByUser(entry, store, null, "reset", "reset to the device type values");
+		this.setOverrideByUser(entry, store, null, "reset", "reset to the detection values of the device");
 		await this.saveOpt(entry);
 		await this.writeOptStates(deviceId, entry);
-		this.host.log.info(`${entry.runtime.config.name}: optimised values reset to the device type`);
+		this.host.log.info(
+			`${entry.runtime.config.name}: optimised values reset to the detection values of the device`,
+		);
 		return true;
 	}
 
@@ -609,7 +615,7 @@ export class DeviceRegistry implements RuntimeListener {
 		const inst = this.getConfig();
 		const step = inst.pollIntervalSec * 1000;
 		const unitFactor = await this.unitFactorOf(cfg.powerId);
-		const type = entry.runtime.deviceType;
+		const type = entry.runtime.baseDetection;
 		const now = this.host.now();
 		let loaded: StoreFile | null;
 		try {
@@ -621,13 +627,13 @@ export class DeviceRegistry implements RuntimeListener {
 			);
 			return;
 		}
-		const store = loaded ?? emptyStore(deviceId, cfg.typeId, typeHash(type), step, unitFactor);
+		const store = loaded ?? emptyStore(deviceId, cfg.template ?? "", typeHash(type), step, unitFactor);
 		const hadOverride = store.override !== null;
-		for (const msg of reconcileStore(store, cfg.typeId, typeHash(type), step, unitFactor, now)) {
+		for (const msg of reconcileStore(store, typeHash(type), step, unitFactor, now)) {
 			this.host.log.info(`${cfg.name}: ${msg}`);
 		}
 		if (hadOverride && store.override === null) {
-			await this.notifyOptimization(entry, TEXT.optTypeChanged, {});
+			await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
 		}
 		const recorder = new RunRecorder(step, unitFactor);
 		entry.opt = { store, recorder };
@@ -765,7 +771,7 @@ export class DeviceRegistry implements RuntimeListener {
 	private optimizeContext(entry: Entry): OptimizeContext {
 		const cfg = entry.runtime.config;
 		return {
-			type: entry.runtime.deviceType,
+			type: entry.runtime.baseDetection,
 			pollSec: this.getConfig().pollIntervalSec,
 			abort: cfg.abort,
 			abortFixed: cfg.abortFixed,
@@ -992,7 +998,7 @@ export class DeviceRegistry implements RuntimeListener {
 		if (!store) {
 			return;
 		}
-		const type = entry.runtime.deviceType;
+		const type = entry.runtime.baseDetection;
 		await this.host.setOwnState(`${deviceId}.learning.optimized`, entry.runtime.currentOverride !== null);
 		await this.host.setOwnState(
 			`${deviceId}.learning.parameters`,

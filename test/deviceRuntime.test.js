@@ -1,88 +1,12 @@
 import assert from "node:assert";
-import { DEFAULT_REMINDER, DEFAULT_TYPES } from "../build/lib/config.js";
-import { DeviceRuntime } from "../build/lib/deviceRuntime.js";
 import { renderHistoryHtml } from "../build/lib/historyHtml.js";
 import { washingMachine } from "./helpers/curves.js";
-import { createFakeHost } from "./helpers/fakeHost.js";
+import { deviceConfig, P as POWER, play, runtimeSetup, SW as SWITCH, STEP, WASHER } from "./helpers/devices.js";
+import { runOf } from "./helpers/programmes.js";
 
-const POWER = "plug.0.power";
-const SWITCH = "plug.0.switch";
 const ID = "washer";
-const STEP = 10_000;
-
-// 3.1.2 defaults of the washing machine (set explicitly, independent of DEFAULT_TYPES).
-const washerType = {
-	...DEFAULT_TYPES.find(t => t.id === "washing-machine"),
-	startVal: 30,
-	endVal: 15,
-	standby: 1,
-	startCount: 2,
-	endCount: 50,
-};
-
-function makeCfg(over = {}) {
-	return {
-		enabled: true,
-		name: "Washer",
-		typeId: "washing-machine",
-		powerId: POWER,
-		startText: "Started",
-		endText: "Finished",
-		abort: false,
-		abortFixed: false,
-		autoOff: false,
-		autoOffMinutes: 0,
-		recipients: [],
-		reminder: { ...DEFAULT_REMINDER },
-		actions: [],
-		...over,
-	};
-}
-
-function makeInst(over = {}) {
-	return {
-		configVersion: 4,
-		types: DEFAULT_TYPES,
-		recipients: [],
-		statusTexts: { running: "in action", standby: "standby", off: "switched off" },
-		pollIntervalSec: 10,
-		historyHtml: false,
-		...over,
-	};
-}
-
-function setup({ cfg = {}, inst = {}, type = washerType, hostOpts = {} } = {}) {
-	const host = createFakeHost({ objects: [POWER, SWITCH], ...hostOpts });
-	const messages = [];
-	const events = [];
-	const sink = {
-		async send(deviceId, text) {
-			messages.push({ deviceId, text });
-		},
-	};
-	const listener = {
-		onRuntimeEvent(deviceId, ev) {
-			events.push(`${deviceId}:${ev}`);
-		},
-	};
-	const rt = new DeviceRuntime(host, ID, makeCfg(cfg), type, makeInst(inst), sink, listener);
-	return { host, rt, messages, events };
-}
-
-/**
- * Play a curve: one power value and one poll per 10 s.
- *
- * @param {ReturnType<typeof setup>} ctx setup result
- * @param {number[]} curve power values
- */
-async function play(ctx, curve) {
-	for (const p of curve) {
-		ctx.host.setValue(POWER, p);
-		await ctx.rt.onPower(p);
-		await ctx.rt.tick();
-		await ctx.host.advance(STEP);
-	}
-}
+const makeCfg = deviceConfig;
+const setup = runtimeSetup;
 
 /**
  * Play a curve and stop right after the end event (before the next clock step).
@@ -400,9 +324,8 @@ describe("DeviceRuntime", () => {
 	});
 
 	it("time-based mode: onPower raises the events without a tick", async () => {
-		const timedType = {
-			...washerType,
-			id: "timed",
+		const timed = {
+			...WASHER,
 			mode: "timed",
 			startVal: 30,
 			endVal: 15,
@@ -410,7 +333,7 @@ describe("DeviceRuntime", () => {
 			startDurationSec: 60,
 			endDurationSec: 120,
 		};
-		const ctx = setup({ type: timedType, cfg: { typeId: "timed" } });
+		const ctx = setup({ cfg: { detection: timed } });
 		await ctx.rt.init();
 		await ctx.rt.onPower(100);
 		assert.deepStrictEqual(ctx.events, []);
@@ -447,7 +370,7 @@ describe("DeviceRuntime", () => {
 		assert.strictEqual(ctx.host.ownWrites.length, writes);
 	});
 
-	it("keeps the cycle on a config change with the same type and power state", async () => {
+	it("keeps the cycle on a config change with the same power state", async () => {
 		const ctx = setup();
 		await ctx.rt.init();
 		await play(ctx, washingMachine.slice(3, 10));
@@ -458,7 +381,22 @@ describe("DeviceRuntime", () => {
 		assert.strictEqual(ctx.rt.config.endText, "New end");
 		assert.strictEqual(ctx.rt.isRunning, true);
 		assert.strictEqual(ctx.rt.canKeepStateFor(makeCfg({ powerId: "other.0.power" })), false);
-		assert.strictEqual(ctx.rt.canKeepStateFor(makeCfg({ typeId: "dryer" })), false);
+		assert.strictEqual(ctx.rt.canKeepStateFor(makeCfg({ template: "dryer" })), true, "the template is no reason");
+		ctx.rt.dispose();
+	});
+
+	it("keeps the cycle when only the detection values change; the new values apply after the run", async () => {
+		const ctx = runtimeSetup();
+		await ctx.rt.init();
+		const run = runOf({ device: "washer", programme: "cotton60", seed: 1 });
+		await play(ctx, run.values.slice(0, run.start + 20));
+		assert.strictEqual(ctx.rt.isRunning, true);
+		assert.strictEqual(ctx.rt.canKeepStateFor(deviceConfig({ detection: { ...WASHER, endVal: 10 } })), true);
+		ctx.rt.updateConfig(deviceConfig({ detection: { ...WASHER, endVal: 10 } }));
+		assert.strictEqual(ctx.rt.isRunning, true);
+		assert.deepStrictEqual(ctx.events, ["washer:start"]);
+		assert.strictEqual(ctx.rt.effective.endVal, 10);
+		assert.strictEqual(ctx.rt.canKeepStateFor(deviceConfig({ powerId: "other.0.power" })), false);
 		ctx.rt.dispose();
 	});
 });

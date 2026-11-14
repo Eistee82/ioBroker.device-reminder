@@ -10,6 +10,8 @@ import type { ObjectWriter } from "./lib/deviceObjects.js";
 import { DeviceSync } from "./lib/deviceSync.js";
 import { ensureDeviceObjects } from "./lib/deviceObjects.js";
 import type { FileIO, NotifierHost } from "./lib/host.js";
+import type { DeviceTypeConfig } from "./lib/legacyTypes.js";
+import { resolveLegacyTypes } from "./lib/legacyTypes.js";
 import type { LegacyStateIo } from "./lib/migration.js";
 import { isLegacyConfig, migrateLegacyConfig, migrateLegacyStates } from "./lib/migration.js";
 import { Notifier } from "./lib/notifier.js";
@@ -20,6 +22,8 @@ const OWN_SUBSCRIPTIONS = ["*.config.*", "*.acknowledge", "*.learning.*"];
 
 class DeviceReminder extends utils.Adapter {
 	private instanceConfig: InstanceConfig = normalizeInstanceConfig({}).config;
+	/** Device types of an earlier version (`native.types`): read for devices that still have a `typeId`. */
+	private legacyTypes: DeviceTypeConfig[] = [];
 	private notifier: Notifier | null = null;
 	private registry: DeviceRegistry | null = null;
 	private sync: DeviceSync | null = null;
@@ -50,6 +54,7 @@ class DeviceReminder extends utils.Adapter {
 				this.log.warn(w);
 			}
 			this.instanceConfig = config;
+			this.legacyTypes = resolveLegacyTypes(this.config as unknown as Record<string, unknown>);
 			if (generatedIds) {
 				await this.persistGeneratedIds(idPatch);
 			}
@@ -167,10 +172,10 @@ class DeviceReminder extends utils.Adapter {
 	}
 
 	/**
-	 * Store ids that were generated for new recipients or device types in the instance native, so
-	 * references of devices stay valid when rows are deleted or reordered (js-controller restarts the instance).
+	 * Store ids that were generated for new recipients in the instance native, so references of devices stay
+	 * valid when rows are deleted or reordered (js-controller restarts the instance).
 	 *
-	 * @param patch - Raw `recipients` / `types` rows with the generated ids
+	 * @param patch - Raw `recipients` rows with the generated ids
 	 */
 	private async persistGeneratedIds(patch: IdPatch): Promise<void> {
 		try {
@@ -183,11 +188,8 @@ class DeviceReminder extends utils.Adapter {
 			if (patch.recipients) {
 				native.recipients = patch.recipients;
 			}
-			if (patch.types) {
-				native.types = patch.types;
-			}
 			await this.setForeignObjectAsync(objId, obj);
-			this.log.info("Ids generated for new recipients or device types and saved, the adapter restarts once");
+			this.log.info("Ids generated for new recipients and saved, the adapter restarts once");
 		} catch (err) {
 			this.log.warn(`Generated ids could not be saved: ${errorMessage(err)}`);
 		}
@@ -198,7 +200,7 @@ class DeviceReminder extends utils.Adapter {
 		if (!this.registry || !this.notifier) {
 			return;
 		}
-		// The device manager reads `instanceConfig`, `registry` and `notifier` of this adapter (all set at this point)
+		// The device manager reads `instanceConfig`, `legacyTypes`, `registry` and `notifier` of this adapter (all set at this point)
 		// and answers the `dm:*` messages, which `onMessage` leaves alone.
 		new ReminderDeviceManagement(this as unknown as DeviceReminderLike);
 		this.log.debug("Device manager ready");
@@ -333,7 +335,7 @@ class DeviceReminder extends utils.Adapter {
 	 * @param obj - Device object
 	 */
 	private deviceConfigOf(deviceId: string, obj: ioBroker.Object): DeviceConfig | null {
-		const { config, warnings } = normalizeDeviceConfig(obj.native ?? {});
+		const { config, warnings } = normalizeDeviceConfig(obj.native ?? {}, this.legacyTypes);
 		for (const w of warnings) {
 			this.log.warn(`${deviceId}: ${w}`);
 		}

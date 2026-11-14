@@ -8,7 +8,7 @@ Dokumentation des device-reminder-Adapters (Version 4). [English version](../en/
 
 1. [Überblick](#1-überblick)
 2. [Einrichtung](#2-einrichtung)
-3. [Gerätetypen und Erkennung](#3-gerätetypen-und-erkennung)
+3. [Erkennungswerte und Vorlagen](#3-erkennungswerte-und-vorlagen)
 4. [Geräte anlegen](#4-geräte-anlegen)
 5. [Empfänger](#5-empfänger)
 6. [Erinnerungen und Quittierung](#6-erinnerungen-und-quittierung)
@@ -34,7 +34,7 @@ Alles wird in den Instanz-Einstellungen konfiguriert. Geräte verwaltest du im D
 1. Adapter installieren und eine Instanz anlegen.
 2. Instanz-Einstellungen öffnen. Die Reiter sind:
    - **Geräte**: der Device Manager (siehe [Geräte anlegen](#4-geräte-anlegen)).
-   - **Gerätetypen**: Schwellwerte und Erkennungsmodus je Typ (siehe [Gerätetypen und Erkennung](#3-gerätetypen-und-erkennung)).
+   - **Gerätetypen**: die Typen früherer Versionen. Sie werden nur noch gelesen, wenn ein Gerät noch keine eigenen Erkennungswerte hat; die Werte stehen im Gerät (siehe [Erkennungswerte und Vorlagen](#3-erkennungswerte-und-vorlagen)).
    - **Empfänger**: wer Nachrichten erhält (siehe [Empfänger](#5-empfänger)).
    - **Allgemein**: Statustexte, Abfrageintervall und die optionale HTML-Historie.
 3. Mindestens einen Empfänger anlegen, dann im Device Manager ein Gerät hinzufügen und den Empfänger im Formular auswählen.
@@ -47,9 +47,13 @@ Allgemeine Einstellungen:
 | Abfrageintervall | 10 s | Wie oft die Erkennung den letzten Leistungswert auswertet |
 | Historie als HTML | aus | Schreibt zusätzlich `lastOperationsHtml` (HTML-Tabelle der letzten Läufe) |
 
-## 3. Gerätetypen und Erkennung
+## 3. Erkennungswerte und Vorlagen
 
-Jedes Gerät nutzt einen Gerätetyp. Ein Typ enthält die Schwellwerte und den Erkennungsmodus. Mitgeliefert sind **Waschmaschine**, **Trockner** und **Geschirrspüler** sowie zehn bearbeitbare eigene Typen. Einen eigenen Typ füllst du von Hand oder durch [Anlernen](#8-anlernen).
+Jedes Gerät hat seine eigenen Erkennungswerte: Schwellwerte, Erkennungsmodus, Pausenschutz und Knitterschutz. Sie stehen im Gerät, nicht mehr in einem Gerätetyp, den sich mehrere Geräte teilen. Ändern sich die Werte eines Geräts, gilt das nur für dieses Gerät.
+
+Beim Anlegen wählst du eine **Vorlage**, die die Startwerte liefert: **Waschmaschine**, **Trockner** und **Geschirrspüler** mit den Werten von 3.1.2 und **Benutzerdefiniert** (30 / 5 / 1 / 1 / 20) für jedes andere Gerät. Misst der Leistungs-State in kW, werden die Leistungswerte der Vorlage durch 1000 geteilt. Danach passt du die Werte durch [Anlernen](#8-anlernen) an das eigene Gerät an; das Anlernen schreibt die Werte direkt ins Gerät, ohne Neustart der Instanz.
+
+Ein Gerät ohne gültige Erkennungswerte (zum Beispiel, weil sein Gerätetyp nicht mehr existiert) bekommt die Werte von **Benutzerdefiniert** und wird **deaktiviert**: Es lief vorher nicht und soll nicht plötzlich Nachrichten senden. Die Gerätekarte und das Log nennen den Grund. Prüfe das Gerät, speichere es im Geräteformular und aktiviere es wieder.
 
 | Schwellwert | Bedeutung |
 | --- | --- |
@@ -93,7 +97,7 @@ Die Werte setzt normalerweise das [Anlernen](#8-anlernen); du kannst sie in der 
 
 - Ein Leistungswert, der keine Zahl ist (zum Beispiel `null`, `true` oder ein leerer String), wird ignoriert, der letzte gültige Wert bleibt. Numerische Strings wie `"12,5"` werden gelesen.
 - Existiert der Leistungs-State nicht (zum Beispiel eine gelöschte Steckdose), erscheint pro Gerät genau eine Warnung im Log, das Gerät bleibt „switched off“ und die Karte im Device Manager zeigt eine Warnung.
-- Bearbeitest du ein laufendes Gerät, läuft der aktuelle Zyklus weiter, solange Gerätetyp und Leistungs-State gleich bleiben. Sonst wird das Gerät zurückgesetzt und eine Info-Meldung geloggt.
+- Bearbeitest du ein laufendes Gerät, läuft der aktuelle Zyklus weiter, solange der Leistungs-State gleich bleibt. Geänderte Erkennungswerte gelten ab dem nächsten Lauf. Ein neuer Leistungs-State setzt das Gerät zurück, dazu wird eine Info-Meldung geloggt.
 
 ## 4. Geräte anlegen
 
@@ -110,7 +114,7 @@ Das Gerätformular enthält:
 | Feld | Bedeutung |
 | --- | --- |
 | Name | Grundlage der Objekt-ID. IDs sind eindeutig und gültig: Umlaute werden umgeschrieben, Leerzeichen und Punkte werden zu `_`, Duplikate erhalten `_2`, `_3` ... |
-| Gerätetyp | Einer der Typen aus dem Reiter **Gerätetypen** |
+| Vorlage | Nur beim Anlegen: liefert die Erkennungswerte des neuen Geräts (siehe [Erkennungswerte und Vorlagen](#3-erkennungswerte-und-vorlagen)). Beim Bearbeiten bleiben die Werte des Geräts erhalten |
 | Leistungs-State | State mit der Leistung in W (Pflicht) |
 | Schalt-State | Optional, für Auto-Aus nötig |
 | Starttext / Endtext | Nachrichtentexte |
@@ -125,7 +129,7 @@ Das Gerätformular enthält:
 
 Pflichtfelder werden vor dem Speichern geprüft.
 
-Jede Gerätekarte zeigt Status, Leistung, Laufzeit, Anzeigen für „läuft“ und „fertig“ und eine Warnung bei fehlendem Leistungs-State. Auf der Karte kannst du das Gerät bearbeiten, löschen, aktivieren oder deaktivieren, Nicht stören schalten, quittieren, eine Testnachricht senden und das Anlernen starten. Die Details zeigen die letzten Läufe, die Schwellwerte des Typs und den Erinnerungsstatus.
+Jede Gerätekarte zeigt Status, Leistung, Laufzeit, Anzeigen für „läuft“ und „fertig“ und eine Warnung bei fehlendem Leistungs-State. Auf der Karte kannst du das Gerät bearbeiten, löschen, aktivieren oder deaktivieren, Nicht stören schalten, quittieren, eine Testnachricht senden und das Anlernen starten. Die Details zeigen die letzten Läufe, die Vorlage und die Erkennungswerte des Geräts sowie den Erinnerungsstatus. Ein Gerät, das geprüft werden muss, trägt eine Warnung mit dem Grund.
 
 ### Ablauf
 
@@ -243,14 +247,14 @@ Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, In
 - Je Modus: richtig erkannte / gefundene Läufe · mittlere (maximale) Zeit, bis das Ende gemeldet wird. Vorausgewählt ist der Modus, der die meisten Läufe mit den wenigsten Fehlstarts erkennt; sind mehrere gleich zuverlässig und melden das Ende innerhalb einer Minute, gewinnt Anzahl (Verhalten von 3.1.2).
 - **Gegenprobe** x/y: so viele Läufe wären auch erkannt worden, wenn der jeweilige Lauf in der History gefehlt hätte. Ist der Wert kleiner als die Zahl der Läufe, kommt ein Programm (z. B. mit langer Pause) nur einmal vor; lerne nach weiteren Läufen erneut an.
 - Vergleich mit dem aktuellen Gerätetyp über dieselben Läufe und die längste Pause in einem Lauf.
-- Vor dem Speichern als neuer eigener Gerätetyp kannst du jeden Wert, den Pausenschutz und den Modus ändern.
+- Vor dem Speichern kannst du jeden Wert, den Pausenschutz und den Modus ändern. Die Rückfrage nennt jede Änderung als alt → neu. Die Werte werden ins Gerät geschrieben (ohne Neustart, die Instanz-Einstellungen bleiben unberührt); eine Schlussphase des Geräts bleibt erhalten.
 
 ### Einen Lauf aufzeichnen
 
 1. Anlernen auf der Gerätekarte starten (**Anlernen**) oder `learning.start` des Geräts schreiben.
 2. Einen kompletten Zyklus der Maschine laufen lassen. Die Aufnahme endet automatisch nach 12 Stunden oder 10 000 Messwerten.
 3. Anlernen im Device Manager beenden oder `learning.stop` schreiben.
-4. Die Aufnahme wird mit derselben Logik ausgewertet wie die History, mit einem Lauf. Nach dem letzten Messwert gilt dieser Wert als weiter bestehend (wie im Betrieb); so kann die Aufnahme auch kurz nach dem Ende gestoppt werden. Erkennt kein Modus den Lauf (z. B. Aufnahme gestoppt, während das Gerät noch lief), gibt es keinen Vorschlag. Die vorgeschlagenen Einstellungen stehen als JSON in `learning.result` (Schwellwerte, Start- und Enddauer, Laufdauer, Anzahl der Messwerte, Modus, Auswertung je Modus und Pausenschutz). Der Device Manager zeigt sie an und kann sie als neuen eigenen Gerätetyp speichern.
+4. Die Aufnahme wird mit derselben Logik ausgewertet wie die History, mit einem Lauf. Nach dem letzten Messwert gilt dieser Wert als weiter bestehend (wie im Betrieb); so kann die Aufnahme auch kurz nach dem Ende gestoppt werden. Erkennt kein Modus den Lauf (z. B. Aufnahme gestoppt, während das Gerät noch lief), gibt es keinen Vorschlag. Die vorgeschlagenen Einstellungen stehen als JSON in `learning.result` (Schwellwerte, Start- und Enddauer, Laufdauer, Anzahl der Messwerte, Modus, Auswertung je Modus und Pausenschutz). Der Device Manager zeigt sie an und schreibt sie nach einer Rückfrage ins Gerät.
 
 Wurden weniger als 20 Messwerte aufgenommen oder wird kein Lauf erkannt, enthält `learning.result` einen Fehler (`tooFewSamples` oder `noRun`). `learning.active` ist true, solange aufgenommen wird.
 
@@ -281,10 +285,10 @@ Die Geräte-Option **Automatische Optimierung** (standardmäßig aus, Gerätedia
 - Jeder Kandidat wird mit der echten Erkennung über **alle** gespeicherten Läufe und Fehlstarts nachgespielt; eine Änderung wird nur übernommen, wenn jeder Lauf genau einmal erkannt wird, kein Fehlstart einen Lauf startet und das Ende nie vor dem Programmende gemeldet wird. Bereits gesehene Programme können dadurch nicht kaputtgehen.
 - **Reparatur** (vorsichtigere Werte) sofort nach einem Lauf, der nicht richtig erkannt wurde (Ende zu früh, Fehlstart, z. B. durch Knitterschutz-Bursts). Eine Reparatur verkürzt nie eine Wartezeit der aktuellen Werte und hält den Start länger als den längsten je gesehenen Burst und das Ende länger als die längste je gesehene Pause, solange solche Werte jeden gespeicherten Lauf erkennen. Danach 5 Läufe und 14 Tage keine Verschärfung.
 - **Verschärfung** (Ende früher, z. B. Knitterschutz-Filter an) erst ab 4 Läufen, 2 neuen Läufen und 24 Stunden seit der letzten Änderung, mit höchstens 25 % Änderung je Schritt (Schwellwerte 30 %), Gegenprobe ohne jede Programmgruppe, leicht veränderten Eingangsdaten (±10 % Leistung, eine Abfrage später, fehlende Werte) und Grenzen aus der längsten je gesehenen Pause und dem längsten Burst. Sie braucht mindestens eine Minute Gewinn (oder weniger Fehlstarts). Eine Verschärfung schaltet den Knitterschutz-Filter nur hinter einem Endblock wie den gesehenen ein (`trailerBlockVal`), damit ein noch nicht gesehenes Programm mit Einweichen seine Trommelbewegungen behält.
-- Die optimierten Werte werden je Gerät gespeichert und gelten nur, solange die Option an ist; aus bedeutet wieder die Werte des Gerätetyps (Verhalten von 3.1.2). Wird der Gerätetyp geändert, werden die optimierten Werte verworfen. Wird das Gerät gelöscht (auch in der Objektansicht), werden seine Anlerndaten gelöscht. Können die Anlerndaten beim Start nicht gelesen werden, bleibt die Optimierung bis zum nächsten Start aus (Warnung im Log), damit die gespeicherten Daten nicht überschrieben werden.
+- Die optimierten Werte werden je Gerät gespeichert und gelten nur, solange die Option an ist; aus bedeutet wieder die Werte des Gerätetyps (Verhalten von 3.1.2). Werden die Erkennungswerte des Geräts geändert, werden die optimierten Werte verworfen. Wird das Gerät gelöscht (auch in der Objektansicht), werden seine Anlerndaten gelöscht. Können die Anlerndaten beim Start nicht gelesen werden, bleibt die Optimierung bis zum nächsten Start aus (Warnung im Log), damit die gespeicherten Daten nicht überschrieben werden.
 - Erkennt keine Einstellung alle gespeicherten Läufe, ändert sich nichts (Warnung im Log); nach 3 solchen Läufen in Folge pausiert die Optimierung, bis die Anlerndaten gelöscht werden.
 - States: `learning.optimized`, `learning.parameters`, `learning.lastChange`, `learning.optimizeInfo`, `learning.lastEndDelay`; `learning.undo` macht die letzte Änderung rückgängig, `learning.reset` kehrt zu den Werten des Gerätetyps zurück (beide sperren die Verschärfung für 14 Tage). Mit der Option „Änderungen als Nachricht melden“ wird jede Änderung auch an die Empfänger des Geräts geschickt, in der Sprache der Installation (das Log ist englisch).
-- Die Aktion **Optimierung** auf der Gerätekarte (sichtbar, solange die Option an ist oder Anlerndaten vorhanden sind) zeigt den Status, die Behandlung des Knitterschutzes, jeden Wert des Gerätetyps neben dem verwendeten Wert (geänderte Werte sind mit `*` markiert), die gespeicherten Läufe (Datum, Dauer, Programmgruppe, Ende-Verzögerung, Einordnung und ob die aktuellen Werte ihn erkennen) und die letzten Änderungen. Unter **Aktion** kannst du die letzte Änderung rückgängig machen, auf die Werte des Gerätetyps zurücksetzen, einen gespeicherten Lauf verwerfen (z. B. einen Lauf, der keine normale Nutzung war; die Grenzen aller je gesehenen Läufe bleiben), die Anlerndaten löschen (nach einer Rückfrage) oder die verwendeten Werte als neuen Gerätetyp speichern (das startet die Instanz neu). Solange die Option aus ist, wird nur das Löschen angeboten.
+- Die Aktion **Optimierung** auf der Gerätekarte (sichtbar, solange die Option an ist oder Anlerndaten vorhanden sind) zeigt den Status, die Behandlung des Knitterschutzes, jeden Wert des Gerätetyps neben dem verwendeten Wert (geänderte Werte sind mit `*` markiert), die gespeicherten Läufe (Datum, Dauer, Programmgruppe, Ende-Verzögerung, Einordnung und ob die aktuellen Werte ihn erkennen) und die letzten Änderungen. Unter **Aktion** kannst du die letzte Änderung rückgängig machen, auf die Werte des Gerätetyps zurücksetzen, einen gespeicherten Lauf verwerfen (z. B. einen Lauf, der keine normale Nutzung war; die Grenzen aller je gesehenen Läufe bleiben), die Anlerndaten löschen (nach einer Rückfrage) oder die verwendeten Werte als Erkennungswerte im Gerät speichern (ohne Neustart). Solange die Option aus ist, wird nur das Löschen angeboten.
 
 Grenzen: Ein Neustart des Adapters während eines Laufs verliert diesen Lauf (ein Neustart nach dem Ende wird fortgesetzt); ein nie gesehenes Programm ist nur durch die Grenzen und Sicherheitsabstände geschützt und wird nach einem fehlerhaften Lauf repariert; eine Änderung des Abfrageintervalls oder der Einheit des Leistungs-States verwirft die gespeicherten Läufe.
 

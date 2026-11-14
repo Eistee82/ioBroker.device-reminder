@@ -3,6 +3,7 @@ import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.j
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import { DeviceSync } from "../build/lib/deviceSync.js";
 import { Notifier } from "../build/lib/notifier.js";
+import { WASHER } from "./helpers/devices.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 
 const POWER = "plug.0.power";
@@ -11,7 +12,7 @@ function makeCfg(over = {}) {
 	return {
 		enabled: true,
 		name: "Washer",
-		typeId: "washing-machine",
+		detection: WASHER,
 		powerId: POWER,
 		startText: "",
 		endText: "",
@@ -43,14 +44,14 @@ function setup() {
 }
 
 describe("DeviceSync", () => {
-	it("writes the device object at most once for a device with an unknown type (no object change loop)", async () => {
+	it("writes the device object at most once for a device that needs a review (no object change loop)", async () => {
 		const { host, sync, extended } = setup();
-		const cfg = makeCfg({ typeId: "" });
+		const cfg = makeCfg({ enabled: false, needsReview: true, reviewHint: "check" });
 		for (let i = 0; i < 5; i++) {
 			await sync.apply("washer", cfg);
 		}
 		assert.strictEqual(extended.filter(id => id === "washer").length, 1);
-		assert.strictEqual(host.logs.warn.filter(m => m.includes("unknown device type")).length, 1);
+		assert.strictEqual(host.logs.warn.filter(m => m.includes("not started")).length, 1);
 		assert.ok(!host.logs.info.some(m => m.includes("added")), "no misleading 'added' message");
 	});
 
@@ -63,15 +64,15 @@ describe("DeviceSync", () => {
 		assert.strictEqual(registry.get("washer").config.startText, "Go");
 	});
 
-	it("re-registers after removal and after the type was fixed", async () => {
+	it("re-registers after removal and after the device was checked", async () => {
 		const { registry, sync, extended } = setup();
-		await sync.apply("washer", makeCfg({ typeId: "" }));
+		await sync.apply("washer", makeCfg({ enabled: false, needsReview: true }));
 		assert.strictEqual(registry.get("washer"), undefined);
-		await sync.apply("washer", makeCfg({ typeId: "dryer" }));
+		await sync.apply("washer", makeCfg());
 		assert.ok(registry.get("washer"));
 		await sync.apply("washer", null);
 		assert.strictEqual(registry.get("washer"), undefined);
-		await sync.apply("washer", makeCfg({ typeId: "dryer" }));
+		await sync.apply("washer", makeCfg());
 		assert.ok(registry.get("washer"));
 		assert.strictEqual(extended.filter(id => id === "washer").length, 3);
 	});

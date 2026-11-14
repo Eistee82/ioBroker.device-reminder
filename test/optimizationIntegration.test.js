@@ -1,16 +1,13 @@
 import assert from "node:assert";
-import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
-import { DeviceRegistry, formatDate } from "../build/lib/deviceRegistry.js";
+import { formatDate } from "../build/lib/deviceRegistry.js";
 import { DeviceSync } from "../build/lib/deviceSync.js";
 import { fill, TEXT } from "../build/lib/dmTexts.js";
-import { Notifier } from "../build/lib/notifier.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
-import { memoryFiles } from "./helpers/files.js";
 import { washingMachine } from "./helpers/curves.js";
+import { drain, DRYER, feed, P, registrySetup } from "./helpers/devices.js";
 import { historyOf } from "./helpers/history.js";
 import { runOf } from "./helpers/programmes.js";
 
-const P = "plug.0.power";
 const STEP = 10_000;
 const DAY = 86_400_000;
 
@@ -39,72 +36,11 @@ function historyEnv(points) {
 /**
  * Registry with one device.
  *
- * @param {object} [o] options
+ * @param {object} [o] options of `registrySetup`
  * @returns {Promise<object>} context
  */
-async function setup(o = {}) {
-	const host = o.host ?? createFakeHost({ objects: { [P]: "number" } });
-	const files = o.files ?? memoryFiles();
-	const inst = normalizeInstanceConfig({
-		pollIntervalSec: 10,
-		recipients: [{ id: "tg", name: "Telegram", enabled: true, kind: "telegram", instance: "telegram.0" }],
-	}).config;
-	const reg = new DeviceRegistry(host, new Notifier(host, () => inst.recipients), () => inst, files, {
-		language: () => o.lang ?? "de",
-		...(o.history ? { history: o.history } : {}),
-	});
-	const cfg = {
-		enabled: true,
-		name: "Waschmaschine",
-		typeId: o.typeId ?? "washing-machine",
-		powerId: P,
-		startText: "",
-		endText: "",
-		abort: false,
-		abortFixed: false,
-		autoOff: false,
-		autoOffMinutes: 0,
-		recipients: ["tg"],
-		reminder: { ...DEFAULT_REMINDER },
-		actions: [],
-		...(o.autoOptimize === false ? {} : { autoOptimize: true }),
-		...(o.notify ? { optimizeNotify: true } : {}),
-	};
-	await reg.upsert("dev", cfg);
-	return { host, files, inst, reg, cfg };
-}
-
-/**
- * Wait until the queued jobs are done (their yields run as fake timers).
- *
- * @param {object} ctx context
- */
-async function drain(ctx) {
-	let done = false;
-	void ctx.reg.whenOptimized().then(() => {
-		done = true;
-	});
-	for (let i = 0; i < 1_000_000 && !done; i++) {
-		await ctx.host.advance(0);
-		await new Promise(resolve => setImmediate(resolve));
-	}
-}
-
-/**
- * Feed values through the registry, one per poll.
- *
- * @param {object} ctx context
- * @param {number[]} values power values
- */
-async function play(ctx, values) {
-	for (const v of values) {
-		ctx.host.setValue(P, v);
-		await ctx.reg.routeForeignState(P, v);
-		ctx.host.tickClock(STEP);
-		await ctx.reg.tickAll();
-	}
-	await drain(ctx);
-}
+const setup = registrySetup;
+const play = feed;
 
 describe("automatic optimisation in the registry", function () {
 	this.timeout(120_000);
@@ -152,7 +88,7 @@ describe("automatic optimisation in the registry", function () {
 	});
 
 	it("discards a stored run, keeps the extremes and reads the data while the optimisation is off", async () => {
-		const ctx = await setup({ typeId: "dryer" });
+		const ctx = await setup({ detection: DRYER });
 		const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 3, after: 400 });
 		await play(ctx, run.values);
 		const store = ctx.reg.learningData("dev");
@@ -180,7 +116,7 @@ describe("automatic optimisation in the registry", function () {
 	});
 
 	it("sends the changes in the language of the installation and logs them in English", async () => {
-		const ctx = await setup({ typeId: "dryer", notify: true, lang: "de" });
+		const ctx = await setup({ detection: DRYER, notify: true, lang: "de" });
 		const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 3, after: 400 });
 		await play(ctx, run.values);
 		const store = ctx.reg.learningData("dev");
@@ -195,13 +131,13 @@ describe("automatic optimisation in the registry", function () {
 
 	it("an undo or reset during a running optimisation job is not overwritten by the job", async () => {
 		for (const op of ["reset", "undo"]) {
-			const ctx = await setup({ typeId: "dryer" });
+			const ctx = await setup({ detection: DRYER });
 			if (op === "undo") {
 				// a first change to undo later
 				await play(ctx, runOf({ device: "dryer", programme: "iron", shape: "T1", seed: 2, after: 400 }).values);
 				assert.ok(ctx.reg.learningData("dev").changes.length > 0);
 			}
-			const typesBefore = JSON.stringify(ctx.inst.types);
+			const instBefore = JSON.stringify(ctx.inst);
 			const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 });
 			// feed the run without waiting: the capture closes and the job starts
 			for (const v of run.values) {
@@ -221,13 +157,13 @@ describe("automatic optimisation in the registry", function () {
 				assert.strictEqual(store.override, null);
 			}
 			// the optimiser never writes the instance configuration (that would restart the instance)
-			assert.strictEqual(JSON.stringify(ctx.inst.types), typesBefore);
+			assert.strictEqual(JSON.stringify(ctx.inst), instBefore);
 			assert.ok(!ctx.host.writes.some(w => w.id.startsWith("system.adapter.")));
 		}
 	});
 
 	it("a read error of the learning data keeps the optimisation off instead of overwriting the data", async () => {
-		const ctx = await setup({ typeId: "dryer" });
+		const ctx = await setup({ detection: DRYER });
 		await play(ctx, runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 }).values);
 		const saved = new Map(ctx.files.files);
 		const before = ctx.reg.learningData("dev");
@@ -240,21 +176,21 @@ describe("automatic optimisation in the registry", function () {
 				ctx.files.files.set(name, data);
 			},
 		};
-		const next = await setup({ typeId: "dryer", files: broken });
+		const next = await setup({ detection: DRYER, files: broken });
 		await drain(next);
 		assert.strictEqual(next.reg.learningData("dev"), null, "optimisation off");
 		assert.strictEqual(broken.writes, 0, "nothing written");
 		assert.ok(next.host.logs.warn.some(m => m.includes("learning data not readable")));
 		assert.deepStrictEqual(ctx.files.files, saved);
 		// the next start reads the data again
-		const again = await setup({ typeId: "dryer", files: ctx.files });
+		const again = await setup({ detection: DRYER, files: ctx.files });
 		assert.strictEqual(again.reg.learningData("dev").runs.length, before.runs.length);
 		assert.deepStrictEqual(again.reg.learningData("dev").override, before.override);
 	});
 
 	it("deleting the device deletes its learning data, also while the history is read", async () => {
 		// deleted in the object browser: DeviceSync gets the deleted object
-		const ctx = await setup({ typeId: "dryer" });
+		const ctx = await setup({ detection: DRYER });
 		await play(ctx, runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 }).values);
 		const writer = { extendObject: async () => {}, setObjectNotExists: async () => {}, delObject: async () => {} };
 		const sync = new DeviceSync(ctx.reg, writer, () => ctx.inst, ctx.host.log);
@@ -290,7 +226,7 @@ describe("automatic optimisation in the registry", function () {
 	});
 
 	it("sends nothing without the message option", async () => {
-		const ctx = await setup({ typeId: "dryer" });
+		const ctx = await setup({ detection: DRYER });
 		const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 3, after: 400 });
 		await play(ctx, run.values);
 		assert.strictEqual(ctx.reg.learningData("dev").changes.at(-1)?.kind, "repair");
@@ -306,8 +242,8 @@ describe("texts of the automatic optimisation", () => {
 		);
 		assert.ok(fill(TEXT.optCannotCover, "xx", { device: "WM" }).startsWith("WM: no setting"));
 		assert.strictEqual(
-			fill(TEXT.optTypeChanged, "en"),
-			"{device}: device type changed, optimised values discarded.",
+			fill(TEXT.optBaseChanged, "en"),
+			"{device}: detection values changed, optimised values discarded.",
 		);
 		for (const key of ["optChanged", "optRepaired", "optCannotCover", "optDrift", "antiCreaseNotSeparable"]) {
 			for (const [lang, text] of Object.entries(TEXT[key])) {

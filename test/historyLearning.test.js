@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { DEFAULT_TYPES } from "../build/lib/config.js";
+import { DEFAULT_TYPES } from "../build/lib/legacyTypes.js";
 import { analyzeHistory, pickMode } from "../build/lib/historyLearning.js";
 import { CHUNK_CAP, findHistoryInstance, loadHistorySeries, MAX_QUERIES } from "../build/lib/historySource.js";
 import { dishwasher, dryer, washingMachine as wm } from "./helpers/curves.js";

@@ -14,8 +14,8 @@ import type {
 	JsonFormSchema,
 	StatusIndicator,
 } from "@iobroker/dm-utils";
-import type { DeviceConfig, DeviceTypeConfig, InstanceConfig } from "./config.js";
-import { DEFAULT_REMINDER, findType, normalizeDeviceConfig } from "./config.js";
+import type { DeviceConfig, InstanceConfig } from "./config.js";
+import { DEFAULT_REMINDER, normalizeDetection, normalizeDeviceConfig } from "./config.js";
 import type { DeviceFormData } from "./deviceForm.js";
 import { buildDeviceSchema, buildSourceSchema, deviceConfigToForm, formToDeviceConfig } from "./deviceForm.js";
 import type { ObjectWriter } from "./deviceObjects.js";
@@ -23,18 +23,21 @@ import { ensureDeviceObjects } from "./deviceObjects.js";
 import { type EnumMembers, type EnumOption, enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
 import type { DeviceRegistry } from "./deviceRegistry.js";
 import { formatDate } from "./deviceRegistry.js";
-import { plain, TEXT } from "./dmTexts.js";
+import { fill, plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import { FINAL_KEYS } from "./detector/types.js";
-import type { DetectionMode, DetectionSettings } from "./detector/types.js";
+import type { DetectionMode, DetectionSettings, FinalSettings } from "./detector/types.js";
 import { analyzeHistory } from "./historyLearning.js";
 import type { ModeEvaluation } from "./historyLearning.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import type { HistoryEnv } from "./historySource.js";
+import { describeChange } from "./learn/autoOptimize.js";
 import type { LearningSuggestion } from "./learning.js";
+import type { DeviceTypeConfig } from "./legacyTypes.js";
 import type { Notifier } from "./notifier.js";
 import type { DetectionKey, StoreFile } from "./runStore.js";
-import { BASE_KEYS } from "./runStore.js";
+import { BASE_KEYS, detectionOf } from "./runStore.js";
+import { findTemplate, TEMPLATES } from "./templates.js";
 import { detectFromHost } from "./typeDetection.js";
 import type { DetectionResult } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
@@ -43,6 +46,8 @@ import { errorMessage, parseNumber } from "./utils.js";
 export interface DeviceReminderLike extends AdapterInstance {
 	/** Current instance configuration. */
 	readonly instanceConfig: InstanceConfig;
+	/** Device types of an earlier version, read for devices that still have a `typeId`. */
+	readonly legacyTypes?: DeviceTypeConfig[];
 	/** Registry of the running devices. */
 	readonly registry: DeviceRegistry;
 	/** Notifier used for test messages. */
@@ -149,8 +154,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		if (!cfg) {
 			return { error: "unknownDevice" };
 		}
-		const inst = this.adapter.instanceConfig;
-		const type = findType(inst, cfg.typeId);
+		const d = detectionOf(cfg.detection);
 		const items: PanelItems = {};
 		const data: JsonFormData = {};
 
@@ -182,67 +186,69 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			newLine: true,
 			xs: 12,
 		};
-		if (type) {
-			const rows: [ioBroker.StringOrTranslated, string | number, string?][] = [
-				[I18n.getTranslatedObject("dm_detailsTypeName"), type.name],
-				[I18n.getTranslatedObject("dm_detailsStartVal"), type.startVal, "W"],
-				[I18n.getTranslatedObject("dm_detailsEndVal"), type.endVal, "W"],
-				[I18n.getTranslatedObject("dm_detailsStandby"), type.standby, "W"],
-				[I18n.getTranslatedObject("dm_detailsStartCount"), type.startCount],
-				[I18n.getTranslatedObject("dm_detailsEndCount"), type.endCount],
-				[I18n.getTranslatedObject("dm_detailsMode"), type.mode],
-			];
-			if (type.mode !== "count") {
-				rows.push(
-					[I18n.getTranslatedObject("dm_detailsStartDuration"), type.startDurationSec, "s"],
-					[I18n.getTranslatedObject("dm_detailsEndDuration"), type.endDurationSec, "s"],
-				);
-			}
-			if (type.pauseHoldSec > 0) {
-				rows.push(
-					[I18n.getTranslatedObject("dm_detailsPauseHold"), type.pauseHoldSec, "s"],
-					[I18n.getTranslatedObject("dm_detailsPauseUntil"), type.pauseUntilSec, "s"],
-					[I18n.getTranslatedObject("dm_detailsPauseBelow"), type.pauseBelowVal, "W"],
-				);
-			}
-			if ((type.trailerBurstSec ?? 0) > 0) {
-				rows.push(
-					[I18n.getTranslatedObject("dm_learnTrailerBurst"), type.trailerBurstSec ?? 0, "s"],
-					[I18n.getTranslatedObject("dm_learnTrailerGap"), type.trailerGapSec ?? 0, "s"],
-					[I18n.getTranslatedObject("dm_learnTrailerAfter"), type.trailerAfterSec ?? 0, "s"],
-					[I18n.getTranslatedObject("dm_learnTrailerBlock"), type.trailerBlockVal ?? 0, "W"],
-					[I18n.getTranslatedObject("dm_learnTrailerMax"), type.trailerMaxSec ?? 0, "s"],
-				);
-			}
-
-			rows.forEach(([label, value, unit], i) => {
-				items[`type${i}`] = {
-					type: "staticInfo",
-					label,
-					data: value,
-					...(unit ? { unit } : {}),
-					newLine: true,
-					xs: 12,
-					sm: 6,
-				};
-			});
-			items.autoOptimize = {
-				type: "staticInfo",
-				label: I18n.getTranslatedObject("dm_autoOptimize"),
-				data: cfg.autoOptimize ? TEXT.on : TEXT.off,
-				newLine: true,
-				xs: 12,
-				sm: 6,
-			};
-		} else {
-			items.typeUnknown = {
+		if (cfg.needsReview) {
+			items.needsReview = {
 				type: "infoBox",
 				boxType: "warning",
-				text: I18n.getTranslatedObject("dm_detailsTypeUnknown"),
+				text: TEXT.needsReview(cfg.reviewHint ?? ""),
 				newLine: true,
 				xs: 12,
 			};
 		}
+		const rows: [ioBroker.StringOrTranslated, string | number, string?][] = [];
+		const template = findTemplate(cfg.template);
+		if (template) {
+			rows.push([I18n.getTranslatedObject("dev_template"), template.name]);
+		}
+		rows.push(
+			[I18n.getTranslatedObject("dm_detailsStartVal"), d.startVal, "W"],
+			[I18n.getTranslatedObject("dm_detailsEndVal"), d.endVal, "W"],
+			[I18n.getTranslatedObject("dm_detailsStandby"), d.standby, "W"],
+			[I18n.getTranslatedObject("dm_detailsStartCount"), d.startCount],
+			[I18n.getTranslatedObject("dm_detailsEndCount"), d.endCount],
+			[I18n.getTranslatedObject("dm_detailsMode"), d.mode],
+		);
+		if (d.mode !== "count") {
+			rows.push(
+				[I18n.getTranslatedObject("dm_detailsStartDuration"), d.startDurationSec, "s"],
+				[I18n.getTranslatedObject("dm_detailsEndDuration"), d.endDurationSec, "s"],
+			);
+		}
+		if ((d.pauseHoldSec ?? 0) > 0) {
+			rows.push(
+				[I18n.getTranslatedObject("dm_detailsPauseHold"), d.pauseHoldSec ?? 0, "s"],
+				[I18n.getTranslatedObject("dm_detailsPauseUntil"), d.pauseUntilSec ?? 0, "s"],
+				[I18n.getTranslatedObject("dm_detailsPauseBelow"), d.pauseBelowVal ?? 0, "W"],
+			);
+		}
+		if ((d.trailerBurstSec ?? 0) > 0) {
+			rows.push(
+				[I18n.getTranslatedObject("dm_learnTrailerBurst"), d.trailerBurstSec ?? 0, "s"],
+				[I18n.getTranslatedObject("dm_learnTrailerGap"), d.trailerGapSec ?? 0, "s"],
+				[I18n.getTranslatedObject("dm_learnTrailerAfter"), d.trailerAfterSec ?? 0, "s"],
+				[I18n.getTranslatedObject("dm_learnTrailerBlock"), d.trailerBlockVal ?? 0, "W"],
+				[I18n.getTranslatedObject("dm_learnTrailerMax"), d.trailerMaxSec ?? 0, "s"],
+			);
+		}
+		rows.forEach(([label, value, unit], i) => {
+			items[`type${i}`] = {
+				type: "staticInfo",
+				label,
+				data: value,
+				...(unit ? { unit } : {}),
+				newLine: true,
+				xs: 12,
+				sm: 6,
+			};
+		});
+		items.autoOptimize = {
+			type: "staticInfo",
+			label: I18n.getTranslatedObject("dm_autoOptimize"),
+			data: cfg.autoOptimize ? TEXT.on : TEXT.off,
+			newLine: true,
+			xs: 12,
+			sm: 6,
+		};
 
 		items.reminderHeader = {
 			type: "header",
@@ -313,12 +319,37 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	 */
 	private configOf(obj: ioBroker.Object): DeviceConfig | null {
 		const native = (obj.native ?? {}) as Record<string, unknown>;
-		const direct = normalizeDeviceConfig(native).config;
+		const legacy = this.adapter.legacyTypes;
+		const direct = normalizeDeviceConfig(native, legacy).config;
 		if (direct) {
 			return direct;
 		}
-		const repaired = normalizeDeviceConfig({ ...native, powerId: "-" }).config;
+		const repaired = normalizeDeviceConfig({ ...native, powerId: "-" }, legacy).config;
 		return repaired ? { ...repaired, powerId: "" } : null;
+	}
+
+	/**
+	 * Stored configuration of a device for saving it again: the normalized configuration over the raw native, so
+	 * that fields the forms do not know are kept (`writeDevice` replaces the native).
+	 *
+	 * @param obj - Device object
+	 */
+	private storedConfigOf(obj: ioBroker.Object): DeviceConfig | null {
+		const cfg = this.configOf(obj);
+		return cfg ? { ...(obj.native ?? {}), ...cfg } : null;
+	}
+
+	/**
+	 * Unit factor of a power state (kW: 1000, otherwise 1).
+	 *
+	 * @param powerId - Power state id
+	 */
+	private async unitFactorOf(powerId: string): Promise<number> {
+		if (powerId === "") {
+			return 1;
+		}
+		const unit = (await this.adapter.getForeignObjectAsync(powerId))?.common?.unit;
+		return typeof unit === "string" && unit.trim().toLowerCase() === "kw" ? 1000 : 1;
 	}
 
 	private objectWriter(): ObjectWriter {
@@ -404,9 +435,8 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			};
 		}
 
-		const inst = this.adapter.instanceConfig;
-		const type = findType(inst, cfg.typeId);
 		const runtime = this.adapter.registry.get(id);
+		const template = findTemplate(cfg.template);
 		const powerMissing =
 			cfg.powerId === "" ||
 			runtime?.powerMissing === true ||
@@ -414,8 +444,8 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		let warning: ioBroker.StringOrTranslated | boolean | { stateId: string } = sid("alertRuntime");
 		if (powerMissing) {
 			warning = TEXT.powerMissing(cfg.powerId);
-		} else if (!type) {
-			warning = TEXT.unknownType(cfg.typeId);
+		} else if (cfg.needsReview) {
+			warning = TEXT.needsReview(cfg.reviewHint ?? "");
 		}
 		const learning = (await this.adapter.getStateAsync(`${id}.learning.active`))?.val === true;
 		const dnd = runtime?.doNotDisturb ?? false;
@@ -473,7 +503,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			id,
 			name: cfg.name,
 			identifier: cfg.powerId,
-			model: type?.name ?? cfg.typeId,
+			...(template ? { model: template.name } : {}),
 			icon: GENERIC_ICON,
 			enabled: cfg.enabled,
 			status: { warning },
@@ -598,6 +628,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	 * @param enums.rooms - Room options
 	 * @param enums.functions - Function options
 	 * @param detection - Result of the type detection (for the hint)
+	 * @param previous - Stored configuration when editing (null: the device is added)
 	 */
 	private async askDevice(
 		ctx: ActionContext,
@@ -605,17 +636,24 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		data: DeviceFormData,
 		enums: { rooms: EnumOption[]; functions: EnumOption[] },
 		detection?: DetectionResult,
+		previous: DeviceConfig | null = null,
 	): Promise<{ config: DeviceConfig; rooms: string[]; functions: string[] } | null> {
 		let current: JsonFormData = { ...data };
+		const isNew = previous === null;
 		for (;;) {
-			const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection, enums), {
+			const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection, enums, isNew), {
 				data: current,
 				title,
 			});
 			if (!result) {
 				return null;
 			}
-			const { config, errors } = formToDeviceConfig(toFormData(result));
+			const form = toFormData(result);
+			const { config, errors } = formToDeviceConfig(form, {
+				isNew,
+				unitFactor: await this.unitFactorOf(textOf(form.powerId).trim()),
+				...(previous ? { previous } : {}),
+			});
 			if (config) {
 				return { config, rooms: idList(result.rooms), functions: idList(result.functions) };
 			}
@@ -656,7 +694,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		const prefill: DeviceFormData = {
 			enabled: true,
 			name,
-			typeId: inst.types[0]?.id ?? "",
+			template: TEMPLATES[0].id,
 			sourceId: manual ? "" : sourceId,
 			powerId: detection?.powerId ?? "",
 			switchId: detection?.switchId ?? "",
@@ -688,7 +726,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 
 	private async editDevice(id: Id, ctx: ActionContext): Promise<DeviceRefresh> {
 		const obj = await this.adapter.getObjectAsync(id);
-		const cfg = obj ? this.configOf(obj) : null;
+		const cfg = obj ? this.storedConfigOf(obj) : null;
 		if (!cfg) {
 			await ctx.showMessage(TEXT.notFound);
 			return { delete: id };
@@ -700,7 +738,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			rooms: membershipOf(enums.members, "rooms", full),
 			functions: membershipOf(enums.members, "functions", full),
 		};
-		const edited = await this.askDevice(ctx, TEXT.editTitle, form, enums.options);
+		const edited = await this.askDevice(ctx, TEXT.editTitle, form, enums.options, undefined, cfg);
 		if (edited) {
 			await this.writeDevice(id, edited.config);
 			await this.assignEnums(id, enums.members, edited.rooms, edited.functions);
@@ -760,7 +798,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 
 	/**
 	 * Dialog of the automatic optimisation: status, values, stored runs and changes, with undo, reset,
-	 * discarding a run, clearing the learning data and saving the values as a new device type.
+	 * discarding a run, clearing the learning data and saving the values in the device.
 	 *
 	 * @param id - Device id
 	 * @param ctx - Action context
@@ -779,13 +817,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			return this.updateOf(id);
 		}
 		const check = active ? await registry.checkStoredRuns(id) : null;
-		const view = buildOptimizationView(
-			store,
-			check,
-			detectionSettingsOf(runtime.deviceType),
-			runtime.effective,
-			active,
-		);
+		const view = buildOptimizationView(store, check, runtime.baseDetection, runtime.effective, active);
 		const result = await ctx.showForm(view.schema, {
 			data: view.data,
 			title: I18n.getTranslatedObject("dm_optimization"),
@@ -816,13 +848,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 				}
 				break;
 			case "saveType":
-				await this.saveLearnedType(
-					id,
-					suggestionOf(runtime.effective),
-					ctx,
-					undefined,
-					TEXT.optSaveTypeConfirm,
-				);
+				await this.applyLearned(id, suggestionOf(runtime.effective), ctx, undefined, TEXT.optSaveTypeConfirm);
 				break;
 			default:
 				break;
@@ -851,7 +877,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			await ctx.showMessage(LEARN_ERRORS[result.error] ?? plain(result.error));
 			return this.updateOf(id);
 		}
-		await this.saveLearnedType(id, result, ctx);
+		await this.applyLearned(id, result, ctx);
 		return this.updateOf(id);
 	}
 
@@ -886,7 +912,6 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			updates = updates.then(() => progress.update({ value, label })).catch(() => undefined);
 		};
 		const cfg = this.adapter.registry.get(id)?.config;
-		const type = cfg ? findType(this.adapter.instanceConfig, cfg.typeId) : undefined;
 		const poll = this.adapter.instanceConfig.pollIntervalSec;
 		let result: Awaited<ReturnType<typeof analyzeHistory>>;
 		let unit = "W";
@@ -910,9 +935,9 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 					abortFixed: cfg?.abortFixed,
 					unitFactor: meta.unitFactor,
 					minDelta: meta.minDelta,
-					currentType: type ? detectionSettingsOf(type) : undefined,
-					// only a built-in type stands for the wanted end (drying of a dishwasher)
-					keepCurrentLevel: type?.builtin === true,
+					currentType: cfg ? detectionOf(cfg.detection) : undefined,
+					// only the values of a built-in template stand for the wanted end (drying of a dishwasher)
+					keepCurrentLevel: findTemplate(cfg?.template) !== undefined,
 					yieldFn: () =>
 						new Promise<void>(resolve => {
 							this.adapter.setTimeout(resolve, 0);
@@ -948,7 +973,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			return false;
 		}
 		await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);
-		await this.saveLearnedType(id, result, ctx, unit);
+		await this.applyLearned(id, result, ctx, unit);
 		return true;
 	}
 
@@ -963,26 +988,31 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	}
 
 	/**
-	 * Let the user adjust the suggestion and store it as new custom type.
-	 * This changes the instance configuration and therefore restarts the instance.
+	 * Let the user adjust the suggestion and write it into the detection values of the device (unit of the power
+	 * state). The final phase of the device is kept, the template is dropped. No restart, the instance object is
+	 * not touched.
 	 *
 	 * @param id - Device id
-	 * @param suggestion - Suggested type settings
+	 * @param suggestion - Suggested detection values
 	 * @param ctx - Action context
 	 * @param unit - Unit of the power state
-	 * @param confirm - Confirmation before saving (the instance restarts)
+	 * @param confirm - Confirmation before saving; `{changes}` lists the values old → new
 	 */
-	private async saveLearnedType(
+	public async applyLearned(
 		id: Id,
 		suggestion: LearningSuggestion,
 		ctx: ActionContext,
 		unit = "W",
 		confirm: ioBroker.Translated = TEXT.learnConfirm,
 	): Promise<void> {
-		const deviceName = this.adapter.registry.get(id)?.config.name ?? id;
+		const obj = await this.adapter.getObjectAsync(id);
+		const cfg = obj ? this.storedConfigOf(obj) : null;
+		if (!cfg) {
+			await ctx.showMessage(TEXT.notFound);
+			return;
+		}
 		const withTrailer = (suggestion.trailerBurstSec ?? 0) > 0;
 		let data: JsonFormData = {
-			name: `${deviceName} (learned)`,
 			startVal: suggestion.thresholds.startVal,
 			endVal: suggestion.thresholds.endVal,
 			standby: suggestion.thresholds.standby,
@@ -1024,32 +1054,49 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			suggestion.trailer === "notSeparable",
 			suggestion.samples > 0,
 		);
-		let type: DeviceTypeConfig | null = null;
-		const inst = this.adapter.instanceConfig;
-		while (!type) {
+		const before = detectionOf(cfg.detection);
+		let next: DetectionSettings | null = null;
+		while (!next) {
 			const result = await ctx.showForm(schema, { data, title: TEXT.learnTitle, ignoreApplyDisabled: true });
 			if (!result) {
 				return;
 			}
 			const parsed = parseLearnForm(result);
-			if (!parsed.type) {
+			if (!parsed.values) {
 				await ctx.showMessage(parsed.error);
 				data = result;
 				continue;
 			}
-			const typeId = allocateDeviceId(parsed.type.name, new Set(inst.types.map(t => t.id)));
-			type = { ...parsed.type, id: typeId, builtin: false };
+			// the learned values replace the base values; the final phase of the device stays
+			const final: FinalSettings = {};
+			for (const key of FINAL_KEYS) {
+				final[key] = before[key] ?? 0;
+			}
+			next = normalizeDetection({ ...final, ...parsed.values }, [], cfg.name);
 		}
-		if (!(await ctx.showConfirmation(confirm))) {
+		const changes = describeChange(before, next) || "-";
+		if (!(await ctx.showConfirmation(filled(confirm, { changes })))) {
 			return;
 		}
-		const instanceId = `system.adapter.${this.adapter.namespace}`;
-		const stored = await this.adapter.getForeignObjectAsync(instanceId);
-		const rawTypes = (stored?.native as Record<string, unknown> | undefined)?.types;
-		const types = Array.isArray(rawTypes) && rawTypes.length > 0 ? (rawTypes as unknown[]) : inst.types;
+		const { template: _template, typeId: _typeId, ...rest } = cfg;
+		await this.writeDevice(id, { ...rest, detection: next });
+		this.adapter.log.info(`${cfg.name}: learned detection values saved (${changes})`);
 		await ctx.showMessage(TEXT.learnSaved);
-		await this.adapter.extendForeignObjectAsync(instanceId, { native: { types: [...types, type] } });
 	}
+}
+
+/**
+ * A text with its placeholders filled in, in every language.
+ *
+ * @param text - Text with placeholders `{name}`
+ * @param vars - Values of the placeholders
+ */
+function filled(text: ioBroker.Translated, vars: Record<string, string | number>): ioBroker.Translated {
+	const out: Record<string, string> = {};
+	for (const lang of Object.keys(text)) {
+		out[lang] = fill(text, lang, vars);
+	}
+	return out as ioBroker.Translated;
 }
 
 const DETECTION_MODES: readonly DetectionMode[] = ["count", "timed", "combined"];
@@ -1081,37 +1128,7 @@ export function evaluationText(e: ModeEvaluation): string {
 }
 
 /**
- * Detection settings of a device type.
- *
- * @param t - Device type
- */
-function detectionSettingsOf(t: DeviceTypeConfig): DetectionSettings {
-	return {
-		startVal: t.startVal,
-		endVal: t.endVal,
-		standby: t.standby,
-		startCount: t.startCount,
-		endCount: t.endCount,
-		mode: t.mode,
-		startDurationSec: t.startDurationSec,
-		endDurationSec: t.endDurationSec,
-		pauseHoldSec: t.pauseHoldSec,
-		pauseUntilSec: t.pauseUntilSec,
-		pauseBelowVal: t.pauseBelowVal,
-		...((t.trailerBurstSec ?? 0) > 0
-			? {
-					trailerBurstSec: t.trailerBurstSec,
-					trailerGapSec: t.trailerGapSec ?? 0,
-					trailerAfterSec: t.trailerAfterSec ?? 0,
-					trailerBlockVal: t.trailerBlockVal ?? 0,
-					trailerMaxSec: t.trailerMaxSec ?? 0,
-				}
-			: {}),
-	};
-}
-
-/**
- * Learning suggestion from detection settings (to save the optimised values as a device type).
+ * Learning suggestion from detection settings (to save the optimised values in the device).
  *
  * @param p - Detection settings
  */
@@ -1145,7 +1162,18 @@ export function suggestionOf(p: DetectionSettings): LearningSuggestion {
 }
 
 /** Status values of the automatic optimisation with their translation keys. */
-const OPT_KINDS = ["repair", "tighten", "undo", "reset", "typeChanged"] as const;
+const OPT_KINDS = ["repair", "tighten", "undo", "reset", "baseChanged"] as const;
+
+/**
+ * Translated kind of a change; entries `typeChanged` of earlier versions are shown like `baseChanged`.
+ *
+ * @param kind - Kind of the change
+ * @param tr - Translation
+ */
+function kindText(kind: string, tr: (key: string) => string): string {
+	const k = kind === "typeChanged" ? "baseChanged" : kind;
+	return (OPT_KINDS as readonly string[]).includes(k) ? tr(`dm_optKind_${k}`) : kind;
+}
 
 /**
  * Value of a detection field for the parameter table.
@@ -1177,7 +1205,7 @@ function changeText(c: StoreFile["changes"][number]): string {
  *
  * @param store - Learning data
  * @param check - Replay of all stored runs with the current values (null while the optimisation is off)
- * @param type - Values of the device type
+ * @param type - Detection values of the device (without optimised values)
  * @param effective - Values in use
  * @param active - Whether the automatic optimisation is on (undo, reset and discard need it)
  */
@@ -1298,7 +1326,7 @@ export function buildOptimizationView(
 		};
 		data.changes = [...store.changes].reverse().map(c => ({
 			date: formatDate(c.ts),
-			kind: OPT_KINDS.includes(c.kind) ? tr(`dm_optKind_${c.kind}`) : c.kind,
+			kind: kindText(c.kind, tr),
 			reason: changeText(c),
 		}));
 	}
@@ -1407,14 +1435,6 @@ export function buildLearnSchema(
 		type: "panel",
 		items: {
 			info: { type: "infoBox", boxType: "info", text: I18n.getTranslatedObject("dm_learnInfo"), xs: 12 },
-			name: {
-				type: "text",
-				label: I18n.getTranslatedObject("dm_learnName"),
-				validator: "data.name && String(data.name).trim() !== ''",
-				validatorErrorText: I18n.translate("dev_required"),
-				newLine: true,
-				xs: 12,
-			},
 			startVal: { ...num(I18n.getTranslatedObject("dm_learnStartVal"), 0.05, 0, unit), newLine: true },
 			endVal: num(I18n.getTranslatedObject("dm_learnEndVal"), 0.05, 0, unit),
 			standby: num(I18n.getTranslatedObject("dm_learnStandby"), 0.05, 0, unit),
@@ -1547,9 +1567,9 @@ function historyItems(fromHistory: boolean, withCurrent: boolean): PanelItems {
 	return items;
 }
 
-type LearnedType = Pick<
-	DeviceTypeConfig,
-	| "name"
+/** Detection values taken from the learn dialog (anti-crease fields only when the filter is on). */
+type LearnedValues = Pick<
+	DetectionSettings,
 	| "mode"
 	| "startVal"
 	| "endVal"
@@ -1580,12 +1600,11 @@ const TRAILER_FIELDS = [
  * Validate the learn dialog.
  *
  * @param data - Form data
- * @returns The type settings or an error text
+ * @returns The detection values or an error text
  */
 export function parseLearnForm(
 	data: JsonFormData,
-): { type: LearnedType; error?: never } | { type?: never; error: ioBroker.Translated } {
-	const name = textOf(data.name).trim();
+): { values: LearnedValues; error?: never } | { values?: never; error: ioBroker.Translated } {
 	const n = (key: string): number => parseNumber(data[key]) ?? Number.NaN;
 	const optional = (key: string): number => (data[key] === undefined || data[key] === "" ? 0 : n(key));
 	const parsed = {
@@ -1600,16 +1619,13 @@ export function parseLearnForm(
 		pauseUntilSec: optional("pauseUntilSec"),
 		pauseBelowVal: optional("pauseBelowVal"),
 	};
-	if (name === "") {
-		return { error: TEXT.typeNeedsName };
-	}
 	if (Object.values(parsed).some(v => !Number.isFinite(v) || v < 0) || parsed.startCount < 1 || parsed.endCount < 2) {
 		return {
 			error: TEXT.typeValuesInvalid,
 		};
 	}
 	const mode = DETECTION_MODES.find(m => m === data.mode) ?? "count";
-	const type: LearnedType = { name, mode, ...parsed };
+	const values: LearnedValues = { mode, ...parsed };
 	// the anti-crease fields are stored only when the filter is on (3.1.2 behaviour otherwise)
 	if (optional("trailerBurstSec") > 0) {
 		for (const key of TRAILER_FIELDS) {
@@ -1617,10 +1633,10 @@ export function parseLearnForm(
 			if (!Number.isFinite(v) || v < 0) {
 				return { error: TEXT.typeValuesInvalid };
 			}
-			type[key] = v;
+			values[key] = v;
 		}
 	} else if (!Number.isFinite(optional("trailerBurstSec")) || optional("trailerBurstSec") < 0) {
 		return { error: TEXT.typeValuesInvalid };
 	}
-	return { type };
+	return { values };
 }

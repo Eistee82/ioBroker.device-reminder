@@ -1,6 +1,6 @@
 import { FINAL_KEYS } from "./detector/types.js";
-import { allocateDeviceId } from "./ids.js";
 import { defaultInstance, fixedTextState, kindFromInstance } from "./messenger/adapters.js";
+import { detectionOf } from "./runStore.js";
 import { parseNumber } from "./utils.js";
 export const TRAILER_BOUNDS = {
     trailerBurstSec: [15, 180],
@@ -195,48 +195,6 @@ const MESSENGER_KINDS = [
 const ACTION_EVENTS = ["start", "end", "reminder", "acknowledged"];
 const DETECTION_MODES = ["count", "timed", "combined"];
 const TELEGRAM_TARGETS = ["user", "chatId", "none"];
-function builtinType(id, name, startVal, endVal, standby, startCount, endCount) {
-    return {
-        id,
-        name,
-        builtin: true,
-        startVal,
-        endVal,
-        startCount,
-        endCount,
-        standby,
-        mode: "count",
-        startDurationSec: 60,
-        endDurationSec: 300,
-        pauseHoldSec: 0,
-        pauseUntilSec: 0,
-        pauseBelowVal: 0,
-    };
-}
-function customType(index) {
-    return {
-        id: `custom${index}`,
-        name: `Custom ${index}`,
-        builtin: false,
-        startVal: 30,
-        endVal: 5,
-        standby: 1,
-        startCount: 1,
-        endCount: 20,
-        mode: "count",
-        startDurationSec: 60,
-        endDurationSec: 300,
-        pauseHoldSec: 0,
-        pauseUntilSec: 0,
-        pauseBelowVal: 0,
-    };
-}
-export const DEFAULT_TYPES = [
-    builtinType("washing-machine", "Washing machine", 30, 15, 1, 2, 50),
-    builtinType("dryer", "Dryer", 120, 15, 1, 2, 20),
-    builtinType("dishwasher", "Dishwasher", 15, 0.25, 0.5, 2, 120),
-    ...Array.from({ length: 10 }, (_, i) => customType(i + 1)),
-];
 export const DEFAULT_REMINDER = {
     enabled: false,
     intervalMin: 30,
@@ -279,32 +237,6 @@ function num(val, fallback) {
 }
 function optNum(val) {
     return parseNumber(val) ?? undefined;
-}
-function normalizeType(raw, index, id, warnings) {
-    if (!isRecord(raw)) {
-        warnings.push(`Device type #${index + 1} ignored: not an object`);
-        return null;
-    }
-    const builtin = DEFAULT_TYPES.find(t => t.id === id);
-    const base = builtin ?? customType(0);
-    const mode = DETECTION_MODES.find(m => m === raw.mode) ?? "count";
-    return {
-        id,
-        name: str(raw.name).trim() || base.name,
-        builtin: builtin?.builtin ?? false,
-        startVal: Math.max(0, num(raw.startVal, base.startVal)),
-        endVal: Math.max(0, num(raw.endVal, base.endVal)),
-        standby: Math.max(0, num(raw.standby, base.standby)),
-        startCount: Math.max(0, num(raw.startCount, base.startCount)),
-        endCount: Math.max(0, num(raw.endCount, base.endCount)),
-        mode,
-        startDurationSec: Math.max(0, num(raw.startDurationSec, 60)),
-        endDurationSec: Math.max(0, num(raw.endDurationSec, 300)),
-        pauseHoldSec: Math.max(0, num(raw.pauseHoldSec, 0)),
-        pauseUntilSec: Math.max(0, num(raw.pauseUntilSec, 0)),
-        pauseBelowVal: Math.max(0, num(raw.pauseBelowVal, 0)),
-        ...normalizeTrailer(raw),
-    };
 }
 function normalizeRecipient(raw, index, id, warnings) {
     if (!isRecord(raw)) {
@@ -403,41 +335,6 @@ export function normalizeInstanceConfig(native) {
     const warnings = [];
     const src = isRecord(native) ? native : {};
     const idPatch = {};
-    let types = [];
-    if (Array.isArray(src.types)) {
-        const seen = new Set();
-        const taken = new Set([
-            ...DEFAULT_TYPES.map(t => t.id),
-            ...src.types.map(raw => (isRecord(raw) ? str(raw.id).trim() : "")).filter(id => id !== ""),
-        ]);
-        const rawRows = [...src.types];
-        src.types.forEach((raw, i) => {
-            let id = isRecord(raw) ? str(raw.id).trim() : "";
-            if (isRecord(raw) && id === "") {
-                id = allocateDeviceId(str(raw.name).trim() || "custom", taken);
-                taken.add(id);
-                rawRows[i] = { ...raw, id };
-                idPatch.types = rawRows;
-            }
-            const t = normalizeType(raw, i, id, warnings);
-            if (!t) {
-                return;
-            }
-            if (seen.has(t.id)) {
-                warnings.push(`Device type "${t.id}" ignored: duplicate id`);
-                return;
-            }
-            seen.add(t.id);
-            types.push(t);
-        });
-    }
-    if (types.length === 0) {
-        types = DEFAULT_TYPES.map(t => ({ ...t }));
-    }
-    else {
-        const missing = DEFAULT_TYPES.filter(d => d.builtin && !types.some(t => t.id === d.id));
-        types = [...missing.map(t => ({ ...t })), ...types];
-    }
     const recipients = [];
     if (Array.isArray(src.recipients)) {
         const seen = new Set();
@@ -473,19 +370,69 @@ export function normalizeInstanceConfig(native) {
     const pollIntervalSec = Math.min(600, Math.max(1, poll));
     return {
         config: {
-            configVersion: 4,
-            types,
+            configVersion: 5,
             recipients,
             statusTexts,
             pollIntervalSec,
             historyHtml: bool(src.historyHtml, false),
         },
         warnings,
-        generatedIds: idPatch.recipients !== undefined || idPatch.types !== undefined,
+        generatedIds: idPatch.recipients !== undefined,
         idPatch,
     };
 }
-export function normalizeDeviceConfig(native) {
+const CUSTOM_VALUES = {
+    startVal: 30,
+    endVal: 5,
+    standby: 1,
+    startCount: 1,
+    endCount: 20,
+    startDurationSec: 60,
+    endDurationSec: 300,
+};
+const MISSING_DETECTION = 'detection values missing, using "Custom"';
+export function normalizeDetection(raw, warnings, label) {
+    if (!isRecord(raw)) {
+        return null;
+    }
+    const required = (key) => {
+        const v = parseNumber(raw[key]);
+        if (v === null || !Number.isFinite(v)) {
+            const old = raw[key] === undefined ? "missing" : JSON.stringify(raw[key]);
+            warnings.push(`Device "${label}": ${key} ${old} → ${CUSTOM_VALUES[key]} (not a number)`);
+            return CUSTOM_VALUES[key];
+        }
+        return Math.max(0, v);
+    };
+    const optional = (key) => {
+        const v = parseNumber(raw[key]);
+        return v !== null && Number.isFinite(v) ? Math.max(0, v) : 0;
+    };
+    let mode = DETECTION_MODES.find(m => m === raw.mode);
+    if (!mode) {
+        const old = raw.mode === undefined ? "missing" : JSON.stringify(raw.mode);
+        warnings.push(`Device "${label}": mode ${old} → count (unknown mode)`);
+        mode = "count";
+    }
+    const standby = required("standby");
+    const base = {
+        startVal: required("startVal"),
+        endVal: required("endVal"),
+        standby,
+        startCount: required("startCount"),
+        endCount: required("endCount"),
+        mode,
+        startDurationSec: required("startDurationSec"),
+        endDurationSec: required("endDurationSec"),
+        pauseHoldSec: optional("pauseHoldSec"),
+        pauseUntilSec: optional("pauseUntilSec"),
+        pauseBelowVal: optional("pauseBelowVal"),
+        ...normalizeTrailer(raw),
+        ...normalizeFinal({ ...raw, standby }, warnings, label),
+    };
+    return detectionOf(base);
+}
+export function normalizeDeviceConfig(native, legacyTypes) {
     const warnings = [];
     const src = isRecord(native) ? native : {};
     const name = str(src.name).trim();
@@ -521,10 +468,33 @@ export function normalizeDeviceConfig(native) {
     const recipients = Array.isArray(src.recipients)
         ? src.recipients.filter((r) => typeof r === "string" && r !== "")
         : [];
+    let detection = normalizeDetection(src.detection, warnings, name);
+    let template = optStr(src.template);
+    let enabled = bool(src.enabled, true);
+    let needsReview = bool(src.needsReview, false);
+    let reviewHint = optStr(src.reviewHint);
+    const typeId = optStr(src.typeId);
+    if (!detection && typeId !== undefined) {
+        const type = legacyTypes?.find(t => t.id === typeId);
+        if (type) {
+            detection = detectionOf(type);
+            if (type.builtin) {
+                template = type.id;
+            }
+        }
+    }
+    if (!detection) {
+        detection = detectionOf({ ...CUSTOM_VALUES, mode: "count" });
+        template = undefined;
+        enabled = false;
+        needsReview = true;
+        reviewHint = MISSING_DETECTION;
+        warnings.push(`Device "${name}": ${MISSING_DETECTION}, device disabled until it is checked`);
+    }
     const config = {
-        enabled: bool(src.enabled, true),
+        enabled,
         name,
-        typeId: str(src.typeId).trim(),
+        detection,
         powerId,
         startText: str(src.startText),
         endText: str(src.endText),
@@ -550,9 +520,18 @@ export function normalizeDeviceConfig(native) {
     if (switchId !== undefined) {
         config.switchId = switchId;
     }
+    if (template !== undefined) {
+        config.template = template;
+    }
+    if (needsReview) {
+        config.needsReview = true;
+        if (reviewHint !== undefined) {
+            config.reviewHint = reviewHint;
+        }
+    }
+    if (typeId !== undefined) {
+        config.typeId = typeId;
+    }
     return { config, warnings };
-}
-export function findType(config, typeId) {
-    return config.types.find(t => t.id === typeId);
 }
 //# sourceMappingURL=config.js.map

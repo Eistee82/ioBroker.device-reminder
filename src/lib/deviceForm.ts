@@ -2,13 +2,17 @@ import * as I18n from "@iobroker/adapter-core/i18n";
 import type { JsonFormSchema } from "@iobroker/dm-utils";
 import {
 	DEFAULT_REMINDER,
+	normalizeDetection,
 	type ActionEvent,
 	type DeviceAction,
 	type DeviceConfig,
 	type InstanceConfig,
 	type ReminderConfig,
 } from "./config.js";
+import type { DetectionSettings } from "./detector/types.js";
 import type { EnumOption } from "./enums.js";
+import { detectionOf, typeHash } from "./runStore.js";
+import { findTemplate, templateDetection, TEMPLATES } from "./templates.js";
 import type { DetectionResult } from "./typeDetection.js";
 import { parseNumber } from "./utils.js";
 
@@ -18,8 +22,10 @@ export interface DeviceFormData {
 	enabled: boolean;
 	/** Display name. */
 	name: string;
-	/** ID of the device type. */
-	typeId: string;
+	/** Id of the built-in template (chosen when the device is added). */
+	template: string;
+	/** Detection values of the device (not shown yet, kept when the device is edited). */
+	detection?: DetectionSettings;
 	/** Source object the states were detected from, empty if entered manually. */
 	sourceId: string;
 	/** Power state ID. */
@@ -100,16 +106,18 @@ export function buildSourceSchema(): JsonFormSchema {
 /**
  * Schema of the device form (add and edit).
  *
- * @param cfg - Instance configuration (provides device types and recipients)
+ * @param cfg - Instance configuration (provides the recipients)
  * @param detection - Result of the power/switch detection to explain an incomplete result
  * @param enums - Rooms and functions the device can be assigned to
  * @param enums.rooms - Room options
  * @param enums.functions - Function options
+ * @param isNew - The device is added: the template of the detection values is chosen
  */
 export function buildDeviceSchema(
 	cfg: InstanceConfig,
 	detection?: DetectionResult,
 	enums?: { rooms: EnumOption[]; functions: EnumOption[] },
+	isNew = false,
 ): JsonFormSchema {
 	const items: Extract<JsonFormSchema, { type: "panel" }>["items"] = {};
 
@@ -140,14 +148,17 @@ export function buildDeviceSchema(
 		sm: 8,
 		md: 5,
 	};
-	items.typeId = {
-		type: "select",
-		label: I18n.getTranslatedObject("dev_typeId"),
-		options: cfg.types.map(t => ({ label: t.name, value: t.id })),
-		xs: 12,
-		sm: 6,
-		md: 4,
-	};
+	if (isNew) {
+		items.template = {
+			type: "select",
+			label: I18n.getTranslatedObject("dev_template"),
+			help: I18n.getTranslatedObject("dev_templateHelp"),
+			options: TEMPLATES.map(t => ({ label: t.name, value: t.id })),
+			xs: 12,
+			sm: 6,
+			md: 4,
+		};
+	}
 	items.sourceId = {
 		type: "objectId",
 		label: I18n.getTranslatedObject("dev_sourceId"),
@@ -353,23 +364,79 @@ function toText(val: unknown): string {
 	return typeof val === "string" ? val : "";
 }
 
+/** Options of `formToDeviceConfig`. */
+export interface FormOptions {
+	/** The device is added: the detection values come from the chosen template. */
+	isNew: boolean;
+	/** Factor from the unit of the power state to W (kW: 1000). */
+	unitFactor: number;
+	/** Stored configuration when editing: fields the form does not show are kept from it. */
+	previous?: DeviceConfig;
+}
+
+/** Fields of a device configuration the form sets (or leaves out); everything else is kept from `previous`. */
+const FORM_KEYS = [
+	"enabled",
+	"name",
+	"detection",
+	"template",
+	"sourceId",
+	"powerId",
+	"switchId",
+	"startText",
+	"endText",
+	"abort",
+	"abortFixed",
+	"autoOff",
+	"autoOffMinutes",
+	"recipients",
+	"reminder",
+	"actions",
+	"autoOptimize",
+	"optimizeNotify",
+	"needsReview",
+	"reviewHint",
+	"typeId",
+] as const;
+
 /**
  * Validate the form and convert it to a device configuration.
  *
- * Error messages are English sentences meant to be shown to the user.
+ * A new device takes the detection values of the chosen template (power values in the unit of the state).
+ * When editing, the detection values stay; the template is kept only while the values still equal it. Saving
+ * clears a review hint. Error messages are English sentences meant to be shown to the user.
  *
  * @param f - Form data
+ * @param o - New or edited device, unit and stored configuration
  */
-export function formToDeviceConfig(f: DeviceFormData): { config: DeviceConfig | null; errors: string[] } {
+export function formToDeviceConfig(
+	f: DeviceFormData,
+	o: FormOptions,
+): { config: DeviceConfig | null; errors: string[] } {
 	const errors: string[] = [];
 	const name = toText(f.name).trim();
-	const typeId = toText(f.typeId).trim();
 	const powerId = toText(f.powerId).trim();
 	if (name === "") {
 		errors.push("The device needs a name.");
 	}
-	if (typeId === "") {
-		errors.push("Select a device type.");
+	let detection: DetectionSettings | null;
+	let template: string | undefined;
+	if (o.isNew) {
+		template = toText(f.template).trim();
+		detection = templateDetection(template, o.unitFactor);
+		if (!detection) {
+			errors.push("Select a template.");
+		}
+	} else {
+		detection = normalizeDetection(f.detection ?? o.previous?.detection, [], name);
+		const candidate = o.previous ? o.previous.template : toText(f.template).trim();
+		const values = candidate ? templateDetection(candidate, o.unitFactor) : null;
+		if (detection && values && typeHash(values) === typeHash(detection)) {
+			template = candidate;
+		}
+		if (!detection) {
+			errors.push("The device has no detection values.");
+		}
 	}
 	if (powerId === "") {
 		errors.push("The device needs a power state.");
@@ -407,14 +474,19 @@ export function formToDeviceConfig(f: DeviceFormData): { config: DeviceConfig | 
 		actions.push({ event, stateId, value });
 	});
 
-	if (errors.length > 0) {
+	if (errors.length > 0 || !detection) {
 		return { config: null, errors };
 	}
 
+	const kept: Record<string, unknown> = { ...(o.isNew ? {} : (o.previous ?? {})) };
+	for (const key of FORM_KEYS) {
+		delete kept[key];
+	}
 	const config: DeviceConfig = {
+		...(kept as Partial<DeviceConfig>),
 		enabled: f.enabled !== false,
 		name,
-		typeId,
+		detection,
 		powerId,
 		startText: toText(f.startText),
 		endText: toText(f.endText),
@@ -449,6 +521,9 @@ export function formToDeviceConfig(f: DeviceFormData): { config: DeviceConfig | 
 			config.optimizeNotify = true;
 		}
 	}
+	if (template !== undefined && findTemplate(template)) {
+		config.template = template;
+	}
 	return { config, errors };
 }
 
@@ -461,7 +536,8 @@ export function deviceConfigToForm(c: DeviceConfig): DeviceFormData {
 	return {
 		enabled: c.enabled,
 		name: c.name,
-		typeId: c.typeId,
+		template: c.template ?? "",
+		detection: detectionOf(c.detection),
 		sourceId: c.sourceId ?? "",
 		powerId: c.powerId,
 		switchId: c.switchId ?? "",

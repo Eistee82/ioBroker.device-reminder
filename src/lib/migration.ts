@@ -1,14 +1,15 @@
 import {
 	DEFAULT_REMINDER,
-	DEFAULT_TYPES,
 	normalizeInstanceConfig,
 	type DeviceConfig,
-	type DeviceTypeConfig,
 	type InstanceConfig,
 	type MessengerKind,
 	type RecipientConfig,
 } from "./config.js";
 import { allocateDeviceId } from "./ids.js";
+import { DEFAULT_TYPES, type DeviceTypeConfig } from "./legacyTypes.js";
+import { detectionOf } from "./runStore.js";
+import { CUSTOM_TEMPLATE } from "./templates.js";
 import { DEVICE_STATES } from "./stateDefinitions.js";
 import { errorMessage, parseNumber } from "./utils.js";
 
@@ -16,6 +17,8 @@ import { errorMessage, parseNumber } from "./utils.js";
 export interface MigrationResult {
 	/** New instance configuration (adapter native). */
 	instance: InstanceConfig;
+	/** Converted 3.1.2 types, kept as `native.types` (archive). */
+	types: DeviceTypeConfig[];
 	/** Devices with their new object ID, the 3.1.2 name (prefix of the old states) and the config. */
 	devices: { id: string; oldName: string; config: DeviceConfig }[];
 	/** Entries that could not be taken over completely. */
@@ -347,6 +350,7 @@ function convertTypes(native: Record<string, unknown>): { types: DeviceTypeConfi
 function convertDevice(
 	raw: Record<string, unknown>,
 	byName: Map<string, string>,
+	types: readonly DeviceTypeConfig[],
 	recipientIds: ReadonlySet<string>,
 	warnings: string[],
 ): DeviceConfig {
@@ -360,7 +364,8 @@ function convertDevice(
 
 	const typeName = str(raw.type);
 	const typeId = byName.get(typeName);
-	if (typeId === undefined) {
+	const type = typeId === undefined ? undefined : types.find(t => t.id === typeId);
+	if (!type) {
 		warnings.push(`${label}: device type "${typeName}" not found`);
 	}
 
@@ -385,8 +390,9 @@ function convertDevice(
 		warnings.push(`${label}: no power state configured`);
 	}
 	const config: DeviceConfig = {
-		enabled: bool(raw.enabled),
+		enabled: type ? bool(raw.enabled) : false,
 		name,
+		detection: detectionOf(type ?? CUSTOM_TEMPLATE.detection),
 		typeId: typeId ?? "",
 		powerId,
 		startText: typeof raw.startText === "string" ? raw.startText : "",
@@ -402,6 +408,13 @@ function convertDevice(
 	const switchId = str(raw.pathSwitch);
 	if (switchId !== "") {
 		config.switchId = switchId;
+	}
+	if (type?.builtin) {
+		config.template = type.id;
+	}
+	if (!type) {
+		config.needsReview = true;
+		config.reviewHint = `3.1.2 type "${typeName}" not found; values taken from template Custom`;
 	}
 	return config;
 }
@@ -438,7 +451,6 @@ export function migrateLegacyConfig(native: Record<string, unknown>): MigrationR
 	const statusRow = rows(src, "status")[0];
 	const status = isRecord(statusRow) ? statusRow : {};
 	const normalized = normalizeInstanceConfig({
-		types,
 		recipients,
 		statusTexts: { running: str(status.stateAction), standby: str(status.stateStandby), off: str(status.stateOff) },
 	});
@@ -455,7 +467,7 @@ export function migrateLegacyConfig(native: Record<string, unknown>): MigrationR
 				warnings.push(`Device #${key} ignored: not an object`);
 				continue;
 			}
-			const config = convertDevice(raw, byName, recipientIds, warnings);
+			const config = convertDevice(raw, byName, types, recipientIds, warnings);
 			const id = allocateDeviceId(config.name, taken);
 			taken.add(id);
 			// 3.1.2 used the untrimmed name as state prefix
@@ -463,7 +475,7 @@ export function migrateLegacyConfig(native: Record<string, unknown>): MigrationR
 			devices.push({ id, oldName, config });
 		}
 	}
-	return { instance, devices, warnings };
+	return { instance, types, devices, warnings };
 }
 
 /**

@@ -2,21 +2,23 @@ import assert from "node:assert";
 import fs from "node:fs";
 import {
 	DEFAULT_REMINDER,
-	DEFAULT_TYPES,
 	FINAL_BOUNDS,
 	finalViolations,
-	findType,
+	normalizeDetection,
 	normalizeDeviceConfig,
 	normalizeFinal,
 	normalizeInstanceConfig,
 } from "../build/lib/config.js";
+import { DEFAULT_TYPES, findType, resolveLegacyTypes } from "../build/lib/legacyTypes.js";
+import { WASHER } from "./helpers/devices.js";
 
 describe("configuration model", () => {
 	describe("normalizeInstanceConfig", () => {
 		it("returns defaults for empty native", () => {
 			const { config, warnings } = normalizeInstanceConfig({});
-			assert.strictEqual(config.types.length, 13);
-			assert.strictEqual(config.types.length, DEFAULT_TYPES.length);
+			assert.strictEqual("types" in config, false, "the values live in the devices");
+			assert.strictEqual(resolveLegacyTypes({}).length, 13);
+			assert.strictEqual(resolveLegacyTypes({}).length, DEFAULT_TYPES.length);
 			assert.deepStrictEqual(config.statusTexts, {
 				running: "in action",
 				standby: "standby",
@@ -24,12 +26,12 @@ describe("configuration model", () => {
 			});
 			assert.strictEqual(config.pollIntervalSec, 10);
 			assert.strictEqual(config.historyHtml, false);
-			assert.strictEqual(config.configVersion, 4);
+			assert.strictEqual(config.configVersion, 5);
 			assert.deepStrictEqual(warnings, []);
 		});
 
 		it("has the documented built-in defaults", () => {
-			const { config } = normalizeInstanceConfig({});
+			const config = resolveLegacyTypes({});
 			const wm = findType(config, "washing-machine");
 			assert.deepStrictEqual(
 				[wm.startVal, wm.endVal, wm.standby, wm.startCount, wm.endCount, wm.builtin, wm.mode],
@@ -95,21 +97,20 @@ describe("configuration model", () => {
 			assert.notStrictEqual(config.recipients[1].id, "telegram-x");
 		});
 
-		it("keeps a device type row without id and keeps its id across a second run", () => {
-			const first = normalizeInstanceConfig({
-				types: [{ name: "Coffee machine", startVal: 100 }, { name: "Coffee machine" }],
-			});
-			assert.strictEqual(first.generatedIds, true);
-			assert.deepStrictEqual(first.warnings, []);
-			const coffee = first.config.types.filter(t => !t.builtin);
+		it("resolves a device type row without id to the same id as before, without writing anything", () => {
+			const native = { types: [{ name: "Coffee machine", startVal: 100 }, { name: "Coffee machine" }] };
+			const warnings = [];
+			const coffee = resolveLegacyTypes(native, warnings).filter(t => !t.builtin);
+			assert.deepStrictEqual(warnings, []);
 			assert.deepStrictEqual(
 				coffee.map(t => t.id),
 				["coffee_machine", "coffee_machine_2"],
 			);
 			assert.strictEqual(coffee[0].startVal, 100);
-			const second = normalizeInstanceConfig({ types: first.idPatch.types.slice(1) });
-			assert.strictEqual(second.generatedIds, false);
-			assert.ok(second.config.types.some(t => t.id === "coffee_machine_2"));
+			assert.strictEqual(native.types[0].id, undefined);
+			const res = normalizeInstanceConfig(native);
+			assert.strictEqual(res.generatedIds, false, "types are no longer part of the instance configuration");
+			assert.deepStrictEqual(res.idPatch, {});
 		});
 
 		it("does not generate ids when all rows have one", () => {
@@ -127,7 +128,7 @@ describe("configuration model", () => {
 			for (const t of [...DEFAULT_TYPES, ...pkg.native.types]) {
 				assert.deepStrictEqual(pause(t), [0, 0, 0], t.id);
 			}
-			const { config } = normalizeInstanceConfig({
+			const config = resolveLegacyTypes({
 				types: [
 					{ id: "a", name: "A" },
 					{ id: "b", name: "B", pauseHoldSec: -5, pauseUntilSec: "x", pauseBelowVal: -1 },
@@ -140,7 +141,7 @@ describe("configuration model", () => {
 		});
 
 		it("keeps standby 0", () => {
-			const { config } = normalizeInstanceConfig({ types: [{ id: "x", name: "X", standby: 0 }] });
+			const config = resolveLegacyTypes({ types: [{ id: "x", name: "X", standby: 0 }] });
 			assert.strictEqual(findType(config, "x").standby, 0);
 		});
 
@@ -179,12 +180,17 @@ describe("configuration model", () => {
 		});
 
 		it("parses autoOffMinutes strings", () => {
-			const { config } = normalizeDeviceConfig({ name: "W", powerId: "a.b", autoOffMinutes: "5" });
+			const { config } = normalizeDeviceConfig({
+				name: "W",
+				powerId: "a.b",
+				detection: WASHER,
+				autoOffMinutes: "5",
+			});
 			assert.strictEqual(config.autoOffMinutes, 5);
 		});
 
 		it("fills defaults for reminder, actions and abortFixed", () => {
-			const { config } = normalizeDeviceConfig({ name: "W", powerId: "a.b" });
+			const { config } = normalizeDeviceConfig({ name: "W", powerId: "a.b", detection: WASHER });
 			assert.deepStrictEqual(config.reminder, DEFAULT_REMINDER);
 			assert.deepStrictEqual(config.actions, []);
 			assert.strictEqual(config.abortFixed, false);
@@ -196,6 +202,7 @@ describe("configuration model", () => {
 			const { config, warnings } = normalizeDeviceConfig({
 				name: "W",
 				powerId: "a.b",
+				detection: WASHER,
 				actions: [
 					{ event: "start", stateId: "", value: "1" },
 					{ event: "end", stateId: "x.y", value: "0" },
@@ -203,6 +210,110 @@ describe("configuration model", () => {
 			});
 			assert.deepStrictEqual(config.actions, [{ event: "end", stateId: "x.y", value: "0" }]);
 			assert.strictEqual(warnings.length, 1);
+		});
+
+		it("reads a V4 device with typeId through the legacy types without writing", () => {
+			const raw = { name: "WM", powerId: "a.0.p", typeId: "dryer" };
+			const { config } = normalizeDeviceConfig(raw, resolveLegacyTypes({}));
+			assert.deepStrictEqual([config.detection.startVal, config.detection.endCount], [120, 20]);
+			assert.strictEqual(raw.detection, undefined);
+			assert.deepStrictEqual([config.template, config.enabled, config.needsReview], ["dryer", true, undefined]);
+		});
+
+		it("falls back to Custom, disabled with a review hint, when the detection is missing", () => {
+			for (const raw of [
+				{ name: "WM", powerId: "a.0.p", enabled: true },
+				{ name: "WM", powerId: "a.0.p", enabled: true, typeId: "gone" },
+			]) {
+				const { config, warnings } = normalizeDeviceConfig(raw, resolveLegacyTypes({}));
+				assert.deepStrictEqual(
+					[config.detection.startVal, config.detection.endVal, config.detection.endCount],
+					[30, 5, 20],
+				);
+				assert.deepStrictEqual([config.enabled, config.needsReview], [false, true]);
+				assert.strictEqual(config.reviewHint, 'detection values missing, using "Custom"');
+				assert.deepStrictEqual(warnings, [
+					'Device "WM": detection values missing, using "Custom", device disabled until it is checked',
+				]);
+			}
+		});
+
+		it("normalizes detection like a type and keeps the final fields", () => {
+			const { config } = normalizeDeviceConfig({
+				name: "WM",
+				powerId: "a.0.p",
+				detection: {
+					startVal: "30",
+					endVal: 15,
+					standby: 1,
+					startCount: 2,
+					endCount: 50,
+					mode: "bogus",
+					finalMinVal: 150,
+					finalMinSec: 168,
+				},
+			});
+			assert.deepStrictEqual(
+				[config.detection.startVal, config.detection.mode, config.detection.finalMinVal],
+				[30, "count", 150],
+			);
+		});
+
+		it("keeps the stored detection, template and review hint; prefers detection over typeId", () => {
+			const { config, warnings } = normalizeDeviceConfig(
+				{
+					name: "WM",
+					powerId: "a.0.p",
+					detection: { ...WASHER, endCount: 77 },
+					template: "washing-machine",
+					needsReview: true,
+					reviewHint: "check",
+					enabled: false,
+					typeId: "dryer",
+				},
+				resolveLegacyTypes({}),
+			);
+			assert.deepStrictEqual(warnings, []);
+			assert.deepStrictEqual(
+				[config.detection.endCount, config.template, config.needsReview, config.reviewHint, config.typeId],
+				[77, "washing-machine", true, "check", "dryer"],
+			);
+		});
+	});
+
+	describe("normalizeDetection", () => {
+		it("fills every field and warns about missing or invalid base values", () => {
+			const w = [];
+			const d = normalizeDetection(
+				{ startVal: "x", endVal: -3, standby: 1, startCount: 2, endCount: 5, mode: "timed" },
+				w,
+				"WM",
+			);
+			assert.strictEqual(Object.keys(d).length, 29);
+			assert.deepStrictEqual(
+				[d.startVal, d.endVal, d.mode, d.startDurationSec, d.endDurationSec],
+				[30, 0, "timed", 60, 300],
+			);
+			assert.deepStrictEqual(w, [
+				'Device "WM": startVal "x" → 30 (not a number)',
+				'Device "WM": startDurationSec missing → 60 (not a number)',
+				'Device "WM": endDurationSec missing → 300 (not a number)',
+			]);
+			assert.strictEqual(normalizeDetection("nope", [], "WM"), null);
+			assert.strictEqual(normalizeDetection(undefined, [], "WM"), null);
+		});
+
+		it("keeps a complete set of values unchanged and without warning", () => {
+			const w = [];
+			assert.deepStrictEqual(normalizeDetection(WASHER, w, "WM"), WASHER);
+			assert.deepStrictEqual(w, []);
+		});
+
+		it("corrects the final phase with normalizeFinal", () => {
+			const w = [];
+			const d = normalizeDetection({ ...WASHER, finalMinVal: 150, finalMinSec: 168, finalMaxVal: 100 }, w, "WM");
+			assert.strictEqual(d.finalMinVal, 0);
+			assert.strictEqual(w.length, 1);
 		});
 	});
 });
