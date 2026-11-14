@@ -298,15 +298,32 @@ Beim ersten Start von Version 4 wird eine 3.1.2-Konfiguration automatisch umgewa
 
 Übernommen werden:
 
-- Geräte (Name, Typ, Leistungs- und Schalt-State, Texte, Abbruch, Auto-Aus, Empfänger),
+- Geräte (Name, Leistungs- und Schalt-State, Texte, Abbruch, Auto-Aus, Empfänger) mit den Erkennungswerten ihres Gerätetyps,
 - Empfänger aller neun Messenger von 3.1.2 (IDs bleiben erhalten),
-- Gerätetypen, auch umbenannte eigene Typen,
 - Statustexte,
 - die Werte der alten States: letzte Läufe, letzte Laufzeit, Nicht stören und maximale Laufzeit.
 
-Bei der Migration korrigiert: Telegram-Benutzername, Vorname und Chat-ID werden auf die Felder des telegram-Adapters abgebildet; Pushover-Priorität, Geräte-ID und eine leere TTL werden korrekt umgewandelt. Geräte mit gleichem Namen oder mit Umlauten, Leerzeichen oder Punkten im Namen erhalten eindeutige, gültige Objekt-IDs.
+Geräte mit gleichem Namen oder mit Umlauten, Leerzeichen oder Punkten im Namen erhalten eindeutige, gültige Objekt-IDs.
 
-Entfernt werden nur die States, die 3.1.2 angelegt hat. Migrationswarnungen (unbekannte Felder, fehlende Gerätetypen, nicht mehr vorhandene Empfänger, nicht vorhandene Leistungs-States) stehen im Log und brechen die Migration nicht ab. Schlägt die Migration selbst fehl, bleibt die Konfiguration unverändert und der Adapter läuft weiter.
+### Gerätetypen werden zu Werten im Gerät
+
+Version 4 kennt keine Gerätetypen mehr, die Erkennungswerte stehen im Gerät (siehe [Erkennungswerte und Vorlagen](#3-erkennungswerte-und-vorlagen)). Die Migration sucht den Typ jedes Geräts genau wie 3.1.2: zuerst unter den Standardtypen mit exakt gleichem Namen (Groß-/Kleinschreibung und Leerzeichen zählen mit; gibt es mehrere Zeilen mit diesem Namen, gilt die letzte), nur ohne Treffer unter den eigenen Typen. Die fünf Werte des Typs (Startwert, Endwert, Standby-Wert, Start- und Endanzahl) werden in das Gerät kopiert, dazu der Modus **Anzahl**; Pausenschutz, Knitterschutz und alle anderen neuen Optionen bleiben aus. Kommt der Typ aus den Standardtypen, merkt sich das Gerät die passende Vorlage (Waschmaschine, Trockner, Geschirrspüler).
+
+- **Geteilte Typen:** Nutzen mehrere Geräte denselben Typ, bekommt jedes Gerät eine eigene Kopie der Werte. Änderst du später ein Gerät, gilt das nur für dieses Gerät.
+- **Typ nicht exakt gefunden:** 3.1.2 meldete ein solches Gerät einmal als gestartet und nie als fertig. Version 4 übernimmt es vollständig, aber **deaktiviert** und mit einem Hinweis im Log und auf der Gerätekarte, woher die Werte stammen: von einem Typ, dessen Name nur ohne Groß-/Kleinschreibung oder Leerzeichen am Rand passt; sonst von dem eigenen Typ, der ursprünglich `customN` hieß und später umbenannt wurde (Gerätetyp `custom3` → dritte Zeile der eigenen Typen); sonst von der Vorlage **Benutzerdefiniert** (30 / 5 / 1 / 1 / 20). Prüfe die Werte, speichere das Gerät im Geräteformular und aktiviere es.
+- **Archiv:** Eigene oder geänderte Typen, die kein Gerät nutzt und deren Werte oder Name von der Vorlage abweichen, bleiben mit Name und Werten als Archiv-Vorlagen erhalten. Unveränderte Typen entfallen, ihre Werte liefern die eingebauten Vorlagen.
+- **Nichts geht still verloren:** Ein Typ-Kommentar wird nicht übernommen. Ein leerer oder nicht numerischer Typwert wird durch den Wert der Vorlage ersetzt, ein negativer durch 0; ein Wert mit Komma (`12,5`) wird als Zahl gelesen (3.1.2 startete mit so einem Wert nie). Ein SayIt- oder WhatsApp-Ziel, das von dem aus der Instanz abgeleiteten Ziel (`<Instanz>.tts.text` bzw. `<Instanz>.sendMessage`) abweicht, wird ersetzt. Jeder dieser Fälle steht mit altem und neuem Wert als Warnung im Log.
+
+Entfernt werden nur die States, die 3.1.2 angelegt hat. Migrationswarnungen (unbekannte Felder, nicht exakt gefundene Gerätetypen, ersetzte Werte und Ziele, nicht mehr vorhandene Empfänger, nicht vorhandene Leistungs-States) stehen im Log und brechen die Migration nicht ab. Schlägt die Migration selbst fehl, bleibt die Konfiguration unverändert und der Adapter läuft weiter.
+
+### Verhaltensänderungen durch die vollständige Übernahme
+
+Diese Einstellungen hat 3.1.2 gespeichert, aber nicht oder anders verwendet. Version 4 nutzt sie so, wie sie eingetragen sind:
+
+- **Pushover:** 3.1.2 sendete Priorität und Gerät nie mit; Version 4 sendet die eingetragenen Werte (auch die TTL, eine leere TTL bleibt leer).
+- **Telegram:** Benutzername, Vorname und Chat-ID gehen an die Felder des telegram-Adapters (`user` bzw. `chatId`) statt an `username`, `firstname` oder `chatID`.
+- **Matrix:** Nachrichten gehen an die Instanz `matrix-org.N` des Matrix-Adapters statt an `matrix.N`.
+- **Zeitfenster:** Ein Zeitfenster über Mitternacht (zum Beispiel 22:00 bis 06:00) gilt jetzt; gleiche Anfangs- und Endzeit heißt „immer“.
 
 ### Was sich beim Update für dich ändert
 
@@ -322,7 +339,7 @@ Entfernt werden nur die States, die 3.1.2 angelegt hat. Migrationswarnungen (unb
 | Bereich | 3.1.2 | Version 4 |
 | --- | --- | --- |
 | Geräte konfigurieren | Tabelle in den Instanz-Einstellungen | Device Manager (Reiter **Geräte**), ein Formular je Gerät; Änderungen wirken ohne Neustart der Instanz |
-| Gerätetypen | Tabellen „Standard“ und „Eigene“ | ein Reiter **Gerätetypen** mit den drei Standardtypen und zehn eigenen Typen, auch per Anlernen |
+| Gerätetypen | Tabellen „Standard“ und „Eigene“, von mehreren Geräten geteilt | keine Typen mehr: jedes Gerät hat eigene Erkennungswerte; beim Anlegen liefert eine Vorlage die Startwerte, Anlernen passt sie an |
 | Empfänger | eine Tabelle je Messenger, im Gerät angehakt | Reiter **Empfänger** mit einer Liste aller Empfänger, im Gerät ausgewählt; neu sind ntfy, Pushsafer und Gotify |
 | Objektstruktur | States direkt unter `<Name>` (Ordner) | ein Geräteobjekt `<deviceId>` mit States, wie bei anderen ioBroker-Adaptern |
 | Objekt-ID | Gerätename unverändert (mit Leerzeichen und Umlauten) | aus dem Namen gebildet: klein, Umlaute umgeschrieben (`ä` → `ae`), Leerzeichen und Punkte → `_`, doppelte Namen erhalten `_2`, `_3` … |
@@ -334,7 +351,7 @@ Beispiel: Ein Gerät „Wäsche Keller“ hatte in 3.1.2 den State `device-remin
 
 **Was du nach dem Update tun musst**
 
-1. Im Log nach Migrationswarnungen sehen (zum Beispiel fehlende Leistungs-States oder Empfänger).
+1. Im Log nach Migrationswarnungen sehen (zum Beispiel fehlende Leistungs-States oder Empfänger). Geräte, deren Typ nicht exakt gefunden wurde, sind deaktiviert: Werte prüfen, speichern und das Gerät aktivieren.
 2. Skripte, Blockly, Szenen und Visualisierungen auf die neuen IDs umstellen (Tabelle unten). Die alten States werden gelöscht.
 3. War ein History-Adapter auf einem alten State aktiv (zum Beispiel `live consumption`), ihn auf dem neuen State aktivieren. Die alten Aufzeichnungen bleiben in der Datenbank, gehören aber nicht zum neuen State.
 4. Optional: die neuen Funktionen je Gerät einschalten.

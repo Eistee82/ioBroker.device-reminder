@@ -163,8 +163,8 @@ class DeviceReminder extends utils.Adapter {
 			}
 			// Continue with the new configuration until js-controller restarts the instance
 			this.config = { ...result.instance };
-			// Replace (not merge) the native, so no 3.1.2 key is left
-			obj.native = { ...result.instance };
+			// Replace (not merge) the native, so no 3.1.2 key is left; the unused own types stay as archive
+			obj.native = { ...result.instance, types: result.archive };
 			await this.setForeignObjectAsync(objId, obj);
 		} catch (err) {
 			this.log.error(`Migration from 3.1.2 failed, configuration left unchanged: ${errorMessage(err)}`);

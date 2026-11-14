@@ -1,8 +1,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
-import { DEFAULT_TYPES, findType } from "../build/lib/legacyTypes.js";
-import { detectionOf } from "../build/lib/runStore.js";
+import { findTemplate } from "../build/lib/templates.js";
 import {
 	isLegacyConfig,
 	LEGACY_LEAVES,
@@ -129,9 +128,8 @@ describe("migration", () => {
 			assert.deepStrictEqual(device(result, "waschmaschine").config, {
 				enabled: true,
 				name: "Waschmaschine",
-				detection: detectionOf(findType(result.types, "washing-machine")),
+				detection: findTemplate("washing-machine").detection,
 				template: "washing-machine",
-				typeId: "washing-machine",
 				powerId: "shelly.0.SHPLG-S#1A2B3C#1.Relay0.Power",
 				switchId: "shelly.0.SHPLG-S#1A2B3C#1.Relay0.Switch",
 				startText: "Waschmaschine gestartet",
@@ -147,9 +145,8 @@ describe("migration", () => {
 			assert.deepStrictEqual(device(result, "trockner").config, {
 				enabled: true,
 				name: "Trockner",
-				detection: detectionOf(findType(result.types, "dryer")),
+				detection: findTemplate("dryer").detection,
 				template: "dryer",
-				typeId: "dryer",
 				powerId: "sonoff.0.Trockner.ENERGY_Power",
 				startText: "Trockner gestartet",
 				endText: "Trockner ist fertig",
@@ -174,7 +171,7 @@ describe("migration", () => {
 			});
 			const spuel = device(result, "spuelmaschine").config;
 			assert.strictEqual(spuel.enabled, false);
-			assert.strictEqual(spuel.typeId, "dishwasher");
+			assert.strictEqual(spuel.template, "dishwasher");
 			assert.strictEqual(spuel.switchId, "zigbee.0.a4c138d1e2f3a4b5.state");
 			assert.deepStrictEqual(spuel.recipients, []);
 		});
@@ -297,37 +294,14 @@ describe("migration", () => {
 			});
 		});
 
-		it("takes over types with the 3.1.2 values and the status texts", () => {
+		it("copies the 3.1.2 type values into the devices, archives nothing unchanged, takes the status texts", () => {
 			assert.strictEqual(result.instance.configVersion, 5);
-			assert.deepStrictEqual(
-				result.types.map(t => t.id),
-				DEFAULT_TYPES.map(t => t.id),
-			);
-			assert.deepStrictEqual(findType(result.types, "washing-machine"), {
-				id: "washing-machine",
-				name: "Washing machine",
-				builtin: true,
-				startVal: 30,
-				endVal: 15,
-				standby: 1,
-				startCount: 2,
-				endCount: 50,
-				mode: "count",
-				startDurationSec: 60,
-				endDurationSec: 300,
-				pauseHoldSec: 0,
-				pauseUntilSec: 0,
-				pauseBelowVal: 0,
-			});
-			const dish = findType(result.types, "dishwasher");
+			// all types are used or unchanged
+			assert.deepStrictEqual(result.archive, []);
+			const dish = device(result, "spuelmaschine").config.detection;
 			assert.deepStrictEqual(
 				[dish.startVal, dish.endVal, dish.standby, dish.startCount, dish.endCount],
 				[15, 0.25, 0.5, 2, 120],
-			);
-			const c1 = findType(result.types, "custom1");
-			assert.deepStrictEqual(
-				[c1.name, c1.builtin, c1.startVal, c1.endVal, c1.standby, c1.startCount, c1.endCount],
-				["Custom 1", false, 30, 5, 1, 1, 20],
 			);
 			assert.deepStrictEqual(result.instance.statusTexts, {
 				running: "läuft",
@@ -364,7 +338,7 @@ describe("migration", () => {
 			assert.deepStrictEqual(result.instance.recipients, []);
 			const d = device(result, "trockner").config;
 			assert.deepStrictEqual(d.recipients, []);
-			assert.strictEqual(d.typeId, "dryer");
+			assert.strictEqual(d.template, "dryer");
 			assert.strictEqual(d.switchId, "sonoff.0.Trockner.POWER");
 			assert.strictEqual(d.autoOff, true);
 			assert.strictEqual(d.autoOffMinutes, 15);
@@ -373,8 +347,8 @@ describe("migration", () => {
 				standby: "standby",
 				off: "switched off",
 			});
-			// custom table missing -> V4 custom types
-			assert.strictEqual(result.types.length, DEFAULT_TYPES.length);
+			// custom table missing: nothing to archive
+			assert.deepStrictEqual(result.archive, []);
 			assert.deepStrictEqual(result.warnings, [
 				'Device "Trockner": recipient telegram #0 does not exist, removed',
 			]);
@@ -384,10 +358,7 @@ describe("migration", () => {
 			const result = migrateLegacyConfig(fixture("empty"));
 			assert.deepStrictEqual(result.devices, []);
 			assert.deepStrictEqual(result.instance.recipients, []);
-			assert.deepStrictEqual(
-				result.types.map(t => t.id),
-				DEFAULT_TYPES.map(t => t.id),
-			);
+			assert.deepStrictEqual(result.archive, []);
 			assert.deepStrictEqual(result.instance.statusTexts, {
 				running: "in action",
 				standby: "standby",
@@ -420,35 +391,126 @@ describe("migration", () => {
 			assert.deepStrictEqual(result.warnings, ['Unknown setting "gotify" not migrated']);
 		});
 
-		it("renamedCustom: custom ids kept, renamed names kept, lookup by name", () => {
+		it("renamedCustom: lookup by name, values copied into the devices, unused renamed row archived", () => {
 			const result = migrateLegacyConfig(fixture("renamedCustom"));
-			const c2 = findType(result.types, "custom2");
-			assert.deepStrictEqual(
-				[c2.name, c2.startVal, c2.endVal, c2.standby, c2.startCount, c2.endCount],
-				["Kaffeemaschine", 800, 20, 2, 1, 6],
-			);
-			assert.strictEqual(findType(result.types, "custom10").name, "Pumpe");
-			assert.strictEqual(findType(result.types, "custom10").startVal, 100);
-			assert.strictEqual(findType(result.types, "custom5").name, "Custom 5");
-			assert.strictEqual(findType(result.types, "custom5").startVal, 1500);
-			const dish = findType(result.types, "dishwasher");
-			assert.deepStrictEqual(
-				[dish.name, dish.startVal, dish.endVal, dish.standby, dish.startCount, dish.endCount],
-				["Dishwasher", 12.5, 1, 0.3, 3, 90],
-			);
-			assert.strictEqual(device(result, "kaffee").config.typeId, "custom2");
-			assert.strictEqual(device(result, "heizluefter").config.typeId, "custom5");
-			assert.strictEqual(device(result, "spueler").config.typeId, "dishwasher");
-			assert.strictEqual(device(result, "pool").config.typeId, "");
+			const values = id => {
+				const d = device(result, id).config;
+				const v = d.detection;
+				return [d.template, v.startVal, v.endVal, v.standby, v.startCount, v.endCount];
+			};
+			assert.deepStrictEqual(values("kaffee"), [undefined, 800, 20, 2, 1, 6]);
+			assert.deepStrictEqual(values("heizluefter"), [undefined, 1500, 50, 1, 1, 3]);
+			assert.deepStrictEqual(values("spueler"), ["dishwasher", 12.5, 1, 0.3, 3, 90]);
 			// a device without a type ran never in 3.1.2: values of "Custom", off until it is checked (M3)
 			const pool = device(result, "pool").config;
 			assert.deepStrictEqual([pool.enabled, pool.needsReview, pool.detection.startVal], [false, true, 30]);
 			assert.match(pool.reviewHint, /not found/);
-			assert.strictEqual(
-				device(result, "kaffee").config.detection.startVal,
-				findType(result.types, "custom2").startVal,
+			// custom.ids row id 9 (custom10) was renamed to "Pumpe" and no device uses it
+			assert.deepStrictEqual(
+				result.archive.map(t => [
+					t.id,
+					t.name,
+					t.builtin,
+					t.startVal,
+					t.endVal,
+					t.standby,
+					t.startCount,
+					t.endCount,
+				]),
+				[["custom10", "Pumpe", false, 100, 10, 1, 2, 10]],
 			);
-			assert.deepStrictEqual(result.warnings, ['Device "Pool": device type "Poolpumpe" not found']);
+			assert.deepStrictEqual(result.warnings, [
+				'Type "dishwasher": comment "eigene Werte" not migrated',
+				'Type "dishwasher": startVal "12,5" read as 12.5',
+				'Type "Kaffeemaschine": comment "Siebträger" not migrated',
+				'Device "Pool": 3.1.2 type "Poolpumpe" not found exactly; values taken from template Custom; device disabled',
+			]);
+		});
+
+		it("an unused type with its own values keeps its fields for the archive; invalid values are replaced with a warning", () => {
+			const legacy = fixture("minimal");
+			legacy.default.ids.push({
+				name: "Kühlschrank",
+				startVal: 80,
+				endVal: 5,
+				standby: 1,
+				startCount: 1,
+				endCount: 4,
+				id: 3,
+			});
+			legacy.custom.ids[0] = {
+				name: "custom1",
+				startVal: -5,
+				endVal: "x",
+				standby: 1,
+				startCount: 1,
+				endCount: 20,
+				id: 0,
+			};
+			const result = migrateLegacyConfig(legacy);
+			assert.deepStrictEqual(
+				result.archive.find(t => t.id === "custom1"),
+				{
+					id: "custom1",
+					name: "custom1",
+					builtin: false,
+					startVal: 0,
+					endVal: 5,
+					standby: 1,
+					startCount: 1,
+					endCount: 20,
+					mode: "count",
+					startDurationSec: 60,
+					endDurationSec: 300,
+					pauseHoldSec: 0,
+					pauseUntilSec: 0,
+					pauseBelowVal: 0,
+				},
+			);
+			assert.deepStrictEqual(
+				result.archive.map(t => [t.id, t.name, t.builtin, t.startVal, t.endVal]),
+				[
+					["kuehlschrank", "Kühlschrank", false, 80, 5],
+					["custom1", "custom1", false, 0, 5],
+				],
+			);
+			assert.deepStrictEqual(result.warnings, [
+				'Type "custom1": startVal "-5" is negative, using 0',
+				'Type "custom1": endVal "x" is not a number, using 5',
+			]);
+		});
+
+		it("archive ids stay unique: equal default names, custom rows without or with a duplicate id", () => {
+			const legacy = fixture("minimal");
+			const row = (name, startVal, id) => ({
+				name,
+				startVal,
+				endVal: 5,
+				standby: 1,
+				startCount: 1,
+				endCount: 20,
+				id,
+			});
+			legacy.default.ids = [row("washing-machine", 40, 0), row("washing-machine", 50, 1)];
+			legacy.custom.ids = [
+				row("Pumpe", 60, 0),
+				row("Lüfter", 70, 0),
+				row("custom4", 80, undefined),
+				row("Heizung", 90, "x"),
+			];
+			const result = migrateLegacyConfig(legacy);
+			// the device uses the last "washing-machine" row (3.1.2: the last match wins), the first one is archived
+			assert.strictEqual(result.devices[0].config.detection.startVal, 50);
+			assert.deepStrictEqual(
+				result.archive.map(t => [t.id, t.name, t.startVal]),
+				[
+					["washing-machine", "washing-machine", 40],
+					["custom1", "Pumpe", 60],
+					["custom2", "Lüfter", 70],
+					["custom4", "custom4", 80],
+					["custom3", "Heizung", 90],
+				],
+			);
 		});
 
 		it("duplicateNames: unique, valid ids (Review Focus 3)", () => {
@@ -506,7 +568,7 @@ describe("migration", () => {
 				],
 			);
 			const w = device(result, "waschmaschine").config;
-			assert.strictEqual(w.typeId, "washing-machine");
+			assert.strictEqual(w.template, "washing-machine");
 			assert.strictEqual(w.powerId, "zigbee2mqtt.0.0x0000000000000001.load_power");
 			assert.strictEqual(w.switchId, "zigbee2mqtt.0.0x0000000000000001.state");
 			assert.strictEqual(w.startText, "device started");
@@ -515,7 +577,7 @@ describe("migration", () => {
 			assert.strictEqual(w.autoOff, false);
 			assert.strictEqual(w.autoOffMinutes, 0);
 			assert.deepStrictEqual(w.recipients, []);
-			assert.strictEqual(device(result, "trockner").config.typeId, "dryer");
+			assert.strictEqual(device(result, "trockner").config.template, "dryer");
 		});
 
 		it("takes over the discord recipients and the stored type values (strings to numbers)", () => {
@@ -526,13 +588,16 @@ describe("migration", () => {
 					["discord-2", "discord", "discord.0", "user_b"],
 				],
 			);
-			const dryer = findType(result.types, "dryer");
+			const dryer = device(result, "trockner").config.detection;
 			assert.deepStrictEqual(
 				[dryer.startVal, dryer.endVal, dryer.standby, dryer.startCount, dryer.endCount],
 				[120, 15, 1, 2, 50],
 			);
-			const dish = findType(result.types, "dishwasher");
-			assert.deepStrictEqual([dish.startVal, dish.endVal], [15, 10]);
+			// no device uses the edited dishwasher type: it stays as archive template
+			assert.deepStrictEqual(
+				result.archive.map(t => [t.id, t.builtin, t.startVal, t.endVal, t.endCount]),
+				[["dishwasher", true, 15, 10, 50]],
+			);
 			assert.deepStrictEqual(result.instance.statusTexts, {
 				running: "in action",
 				standby: "standby",

@@ -6,10 +6,11 @@ import {
 	type MessengerKind,
 	type RecipientConfig,
 } from "./config.js";
-import { allocateDeviceId } from "./ids.js";
-import { DEFAULT_TYPES, type DeviceTypeConfig } from "./legacyTypes.js";
+import type { DetectionSettings, TypeThresholds } from "./detector/types.js";
+import { allocateDeviceId, sanitizeId } from "./ids.js";
+import type { DeviceTypeConfig } from "./legacyTypes.js";
 import { detectionOf } from "./runStore.js";
-import { CUSTOM_TEMPLATE } from "./templates.js";
+import { CUSTOM_TEMPLATE, TEMPLATES, type Template } from "./templates.js";
 import { DEVICE_STATES } from "./stateDefinitions.js";
 import { errorMessage, parseNumber } from "./utils.js";
 
@@ -17,8 +18,8 @@ import { errorMessage, parseNumber } from "./utils.js";
 export interface MigrationResult {
 	/** New instance configuration (adapter native). */
 	instance: InstanceConfig;
-	/** Converted 3.1.2 types, kept as `native.types` (archive). */
-	types: DeviceTypeConfig[];
+	/** 3.1.2 types no device uses whose values or name differ from the template: `native.types` (archive). */
+	archive: DeviceTypeConfig[];
 	/** Devices with their new object ID, the 3.1.2 name (prefix of the old states) and the config. */
 	devices: { id: string; oldName: string; config: DeviceConfig }[];
 	/** Entries that could not be taken over completely. */
@@ -232,8 +233,19 @@ function convertRecipient(kind: LegacyMessenger, row: Record<string, unknown>, i
 	return rec;
 }
 
-function convertRecipients(native: Record<string, unknown>, warnings: string[]): RecipientConfig[] {
+/**
+ * Recipients of all messenger tables. `paths` holds the 3.1.2 target of SayIt/WhatsApp rows: V4 derives the
+ * target from the instance, a different one is reported after the normalization.
+ *
+ * @param native - 3.1.2 native
+ * @param warnings - Receives the warnings
+ */
+function convertRecipients(
+	native: Record<string, unknown>,
+	warnings: string[],
+): { recipients: RecipientConfig[]; paths: Map<string, string> } {
 	const result: RecipientConfig[] = [];
+	const paths = new Map<string, string>();
 	const seen = new Set<string>();
 	for (const kind of LEGACY_MESSENGERS) {
 		rows(native, kind).forEach((row, i) => {
@@ -249,108 +261,292 @@ function convertRecipients(native: Record<string, unknown>, warnings: string[]):
 			}
 			seen.add(id);
 			result.push(convertRecipient(kind, row, id));
+			if ((kind === "sayit" || kind === "whatsapp") && str(row.path) !== "") {
+				paths.set(id, str(row.path));
+			}
 		});
 	}
-	return result;
+	return { recipients: result, paths };
 }
 
-function thresholds(row: Record<string, unknown>, base: DeviceTypeConfig): DeviceTypeConfig {
-	const n = (val: unknown, fallback: number): number => Math.max(0, parseNumber(val) ?? fallback);
-	return {
-		...base,
-		startVal: n(row.startVal, base.startVal),
-		endVal: n(row.endVal, base.endVal),
-		standby: n(row.standby, base.standby),
-		startCount: n(row.startCount, base.startCount),
-		endCount: n(row.endCount, base.endCount),
-	};
+/** How the type of a 3.1.2 device was found (`matchLegacyType`). */
+export type LegacyTypeMatch = "default" | "custom" | "case" | "slot" | "none";
+
+/** The five type values of 3.1.2. */
+const LEGACY_VALUE_KEYS = ["startVal", "endVal", "standby", "startCount", "endCount"] as const;
+
+/** One row of `default.ids`/`custom.ids` with its values read. */
+interface LegacyTypeRow {
+	/** Raw row. */
+	raw: Record<string, unknown>;
+	/** Table of the row. */
+	table: "default" | "custom";
+	/** Name of the row as 3.1.2 compared it (untrimmed). */
+	name: string;
+	/** Built-in template of a `default.ids` row (by its name); undefined for custom rows. */
+	template?: Template;
+	/** The five values (non-numeric ones replaced by the template value). */
+	values: TypeThresholds;
+	/** Id of the row in the archive (`native.types`). */
+	archiveId: string;
 }
 
 /**
- * Convert `default.ids`/`custom.ids` to V4 types.
+ * Text of a raw value as 3.1.2 compared it (`==`): strings unchanged, finite numbers as text, everything else empty.
+ *
+ * @param val - Raw value
+ */
+function rawText(val: unknown): string {
+	if (typeof val === "string") {
+		return val;
+	}
+	return typeof val === "number" && Number.isFinite(val) ? String(val) : "";
+}
+
+/**
+ * Last element of a list that fulfils the predicate (3.1.2 looped over all rows, the last match won).
+ *
+ * @param list - Rows
+ * @param pred - Predicate
+ */
+function lastOf<T>(list: readonly T[], pred: (item: T) => boolean): T | null {
+	for (let i = list.length - 1; i >= 0; i--) {
+		if (pred(list[i])) {
+			return list[i];
+		}
+	}
+	return null;
+}
+
+/**
+ * Find the 3.1.2 type row of a device like 3.1.2 (`main.js` 456-503): exact, untrimmed name in `default.ids` (the
+ * last match wins), otherwise exact in `custom.ids` (the last match wins). 3.1.2 never finished a device without
+ * such a match; for these the values are taken, in this order, from a row whose name matches only trimmed and
+ * case-insensitive (`case`, default before custom), from the custom row of the original slot `customN` (row id
+ * N-1, the row was renamed after the device was set up: `slot`), or not at all (`none`: template "Custom").
+ *
+ * @param typeName - `type` of the 3.1.2 device (untrimmed)
+ * @param defaults - Rows of `default.ids`
+ * @param customs - Rows of `custom.ids`
+ */
+export function matchLegacyType(
+	typeName: string,
+	defaults: Record<string, unknown>[],
+	customs: Record<string, unknown>[],
+): { row: Record<string, unknown> | null; via: LegacyTypeMatch } {
+	if (typeName === "") {
+		return { row: null, via: "none" };
+	}
+	const exact = (r: Record<string, unknown>): boolean => rawText(r.name) === typeName;
+	const fromDefault = lastOf(defaults, exact);
+	if (fromDefault) {
+		return { row: fromDefault, via: "default" };
+	}
+	const fromCustom = lastOf(customs, exact);
+	if (fromCustom) {
+		return { row: fromCustom, via: "custom" };
+	}
+	const key = typeName.trim().toLowerCase();
+	const loose = (r: Record<string, unknown>): boolean => rawText(r.name).trim().toLowerCase() === key;
+	const fromCase = key === "" ? null : (lastOf(defaults, loose) ?? lastOf(customs, loose));
+	if (fromCase) {
+		return { row: fromCase, via: "case" };
+	}
+	const slot = CUSTOM_ID.exec(typeName.trim());
+	const fromSlot = slot ? lastOf(customs, r => parseNumber(r.id) === Number(slot[1]) - 1) : null;
+	if (fromSlot) {
+		return { row: fromSlot, via: "slot" };
+	}
+	return { row: null, via: "none" };
+}
+
+/**
+ * The five values of a type row; empty, non-numeric or negative values are replaced with a warning.
+ *
+ * @param row - Raw row
+ * @param base - Values of the template the row belongs to
+ * @param label - `Type "<name>"` for the warnings
+ * @param warnings - Receives the warnings
+ */
+function typeValues(
+	row: Record<string, unknown>,
+	base: TypeThresholds,
+	label: string,
+	warnings: string[],
+): TypeThresholds {
+	const out: TypeThresholds = {
+		startVal: base.startVal,
+		endVal: base.endVal,
+		standby: base.standby,
+		startCount: base.startCount,
+		endCount: base.endCount,
+	};
+	for (const key of LEGACY_VALUE_KEYS) {
+		const raw = row[key];
+		const old = typeof raw === "string" ? raw : raw === undefined || raw === null ? "" : JSON.stringify(raw);
+		const val = parseNumber(raw);
+		if (val === null) {
+			warnings.push(`${label}: ${key} "${old}" is not a number, using ${base[key]}`);
+		} else if (val < 0) {
+			warnings.push(`${label}: ${key} "${old}" is negative, using 0`);
+			out[key] = 0;
+		} else {
+			// 3.1.2 compared "12,5" as NaN (the device never started); V4 reads the value the user entered
+			if (typeof raw === "string" && Number.isNaN(Number(raw))) {
+				warnings.push(`${label}: ${key} "${old}" read as ${val}`);
+			}
+			out[key] = val;
+		}
+	}
+	return out;
+}
+
+/**
+ * Read `default.ids` and `custom.ids`: values per row (with warnings for comments and invalid values) and the id
+ * each row gets in the archive (built-in id or `customN`, as before; unique).
  *
  * @param native - 3.1.2 native
- * @returns The types and the 3.1.2 type name → V4 type ID lookup (default types before custom types, as in 3.1.2)
+ * @param warnings - Receives the warnings
  */
-function convertTypes(native: Record<string, unknown>): { types: DeviceTypeConfig[]; byName: Map<string, string> } {
-	const types = DEFAULT_TYPES.map(t => ({ ...t }));
-	const defaultNames = new Map<string, string>();
-	const customNames = new Map<string, string>();
-	const replace = (t: DeviceTypeConfig): void => {
-		const idx = types.findIndex(x => x.id === t.id);
-		if (idx >= 0) {
-			types[idx] = t;
-		} else {
-			types.push(t);
+function readTypeRows(
+	native: Record<string, unknown>,
+	warnings: string[],
+): { defaults: LegacyTypeRow[]; customs: LegacyTypeRow[] } {
+	const read = (raw: Record<string, unknown>, table: LegacyTypeRow["table"], template?: Template): LegacyTypeRow => {
+		const name = rawText(raw.name);
+		const label = `Type "${name.trim()}"`;
+		const comment = rawText(raw.comment).trim();
+		if (comment !== "") {
+			warnings.push(`${label}: comment "${comment}" not migrated`);
 		}
+		const values = typeValues(raw, (template ?? CUSTOM_TEMPLATE).detection, label, warnings);
+		return { raw, table, name, template, values, archiveId: "" };
 	};
+	const builtin = (name: string): Template | undefined =>
+		TEMPLATES.find(t => t.id !== CUSTOM_TEMPLATE.id && t.id === name.trim().toLowerCase());
+	const defaults = rows(native, "default")
+		.filter(isRecord)
+		.map(raw => read(raw, "default", builtin(rawText(raw.name))));
+	const customs = rows(native, "custom")
+		.filter(isRecord)
+		.map(raw => read(raw, "custom"));
 
-	for (const row of rows(native, "default")) {
-		if (!isRecord(row)) {
-			continue;
-		}
-		const name = str(row.name);
-		const base = types.find(t => t.builtin && (t.id === name || t.name.toLowerCase() === name.toLowerCase()));
-		if (!base) {
-			continue;
-		}
-		replace(thresholds(row, base));
-		defaultNames.set(name, base.id);
+	const taken = new Set<string>();
+	const take = (row: LegacyTypeRow, id: string): void => {
+		row.archiveId = taken.has(id) ? allocateDeviceId(id, taken) : id;
+		taken.add(row.archiveId);
+	};
+	for (const row of defaults.filter(r => r.template)) {
+		take(row, (row.template as Template).id);
 	}
-
-	const addCustom = (row: Record<string, unknown>, id: string): void => {
-		const base = types.find(t => t.id === id) ?? { ...DEFAULT_TYPES[DEFAULT_TYPES.length - 1], id, name: id };
-		const legacyName = str(row.name);
-		// renamed custom types keep their name, unchanged ones (`customN`) get the V4 default name
-		const name = legacyName !== "" && legacyName !== id ? legacyName : base.name;
-		replace({ ...thresholds(row, base), id, name, builtin: false });
-		if (legacyName !== "") {
-			customNames.set(legacyName, id);
-		}
-	};
-
-	const used = new Set<string>();
-	const customRows = rows(native, "custom").filter(isRecord);
-	const pending: Record<string, unknown>[] = [];
-	for (const row of customRows) {
-		// 3.1.2 row id 0..9 belongs to custom1..custom10 (the name may have been changed by the user)
-		const rowId = parseNumber(row.id);
-		const fromName = CUSTOM_ID.exec(str(row.name));
+	// 3.1.2 row id 0..9 belongs to custom1..custom10 (the name may have been changed by the user)
+	const pending: LegacyTypeRow[] = [];
+	for (const row of customs) {
+		const rowId = parseNumber(row.raw.id);
+		const fromName = CUSTOM_ID.exec(row.name.trim());
 		const n =
 			rowId !== null && Number.isInteger(rowId) && rowId >= 0 ? rowId + 1 : fromName ? Number(fromName[1]) : null;
-		if (n === null || used.has(`custom${n}`)) {
+		if (n === null || taken.has(`custom${n}`)) {
 			pending.push(row);
-			continue;
+		} else {
+			take(row, `custom${n}`);
 		}
-		used.add(`custom${n}`);
-		addCustom(row, `custom${n}`);
 	}
 	for (const row of pending) {
 		let n = 1;
-		while (used.has(`custom${n}`)) {
+		while (taken.has(`custom${n}`)) {
 			n++;
 		}
-		used.add(`custom${n}`);
-		addCustom(row, `custom${n}`);
+		take(row, `custom${n}`);
 	}
+	for (const row of defaults.filter(r => !r.template)) {
+		take(row, sanitizeId(row.name.trim() || "type"));
+	}
+	return { defaults, customs };
+}
 
-	const byName = new Map<string, string>();
-	for (const t of types) {
-		byName.set(t.id, t.id);
+/**
+ * Archive (`native.types`): the type rows no device uses whose values or name differ from their template (built-in
+ * template of the same name, "Custom" with the slot name `customN` for custom rows), in the order of the tables.
+ *
+ * @param typeRows - Rows of both tables
+ * @param used - Raw rows a device uses
+ */
+function archiveOf(typeRows: readonly LegacyTypeRow[], used: ReadonlySet<Record<string, unknown>>): DeviceTypeConfig[] {
+	const out: DeviceTypeConfig[] = [];
+	for (const row of typeRows) {
+		if (used.has(row.raw)) {
+			continue;
+		}
+		const ref = (row.template ?? CUSTOM_TEMPLATE).detection;
+		// a default row with a foreign name has no template: it always differs
+		const refName = row.template?.id ?? (row.table === "custom" ? row.archiveId : null);
+		const same = refName !== null && row.name === refName && LEGACY_VALUE_KEYS.every(k => row.values[k] === ref[k]);
+		if (same) {
+			continue;
+		}
+		out.push({
+			id: row.archiveId,
+			name: row.name.trim() || row.archiveId,
+			builtin: row.template !== undefined && row.template.id === row.archiveId,
+			...row.values,
+			mode: "count",
+			startDurationSec: 60,
+			endDurationSec: 300,
+			pauseHoldSec: 0,
+			pauseUntilSec: 0,
+			pauseBelowVal: 0,
+		});
 	}
-	for (const [name, id] of customNames) {
-		byName.set(name, id);
+	return out;
+}
+
+/** Type rows of the 3.1.2 native, read once for all devices. */
+interface TypeTables {
+	/** Rows of `default.ids`. */
+	defaults: LegacyTypeRow[];
+	/** Rows of `custom.ids`. */
+	customs: LegacyTypeRow[];
+	/** Raw rows a device uses (filled while the devices are converted). */
+	used: Set<Record<string, unknown>>;
+}
+
+/**
+ * Detection values of a 3.1.2 device: a copy of the values of its type row (`matchLegacyType`) on the base of the
+ * template (count, 60/300 s, pause protection, anti-crease filter and final phase off). Without an exact match the
+ * device is disabled with a review hint.
+ *
+ * @param typeName - `type` of the 3.1.2 device
+ * @param tables - Type rows
+ */
+function deviceDetection(
+	typeName: string,
+	tables: TypeTables,
+): { detection: DetectionSettings; template?: string; reviewHint?: string } {
+	const { row, via } = matchLegacyType(
+		typeName,
+		tables.defaults.map(r => r.raw),
+		tables.customs.map(r => r.raw),
+	);
+	const found = row ? [...tables.defaults, ...tables.customs].find(r => r.raw === row) : undefined;
+	if (!found) {
+		return {
+			detection: detectionOf(CUSTOM_TEMPLATE.detection),
+			reviewHint: `3.1.2 type "${typeName}" not found exactly; values taken from template Custom`,
+		};
 	}
-	for (const [name, id] of defaultNames) {
-		byName.set(name, id);
+	tables.used.add(found.raw);
+	const detection = detectionOf({ ...(found.template ?? CUSTOM_TEMPLATE).detection, ...found.values });
+	if (via === "default" || via === "custom") {
+		return via === "default" && found.template ? { detection, template: found.template.id } : { detection };
 	}
-	return { types, byName };
+	const from = via === "case" ? `case match "${found.name}"` : `renamed slot ${typeName.trim()}`;
+	return { detection, reviewHint: `3.1.2 type "${typeName}" not found exactly; values taken from ${from}` };
 }
 
 function convertDevice(
 	raw: Record<string, unknown>,
-	byName: Map<string, string>,
-	types: readonly DeviceTypeConfig[],
+	tables: TypeTables,
 	recipientIds: ReadonlySet<string>,
 	warnings: string[],
 ): DeviceConfig {
@@ -362,11 +558,9 @@ function convertDevice(
 		}
 	}
 
-	const typeName = str(raw.type);
-	const typeId = byName.get(typeName);
-	const type = typeId === undefined ? undefined : types.find(t => t.id === typeId);
-	if (!type) {
-		warnings.push(`${label}: device type "${typeName}" not found`);
+	const { detection, template, reviewHint } = deviceDetection(rawText(raw.type), tables);
+	if (reviewHint !== undefined) {
+		warnings.push(`${label}: ${reviewHint}; device disabled`);
 	}
 
 	const recipients: string[] = [];
@@ -390,10 +584,9 @@ function convertDevice(
 		warnings.push(`${label}: no power state configured`);
 	}
 	const config: DeviceConfig = {
-		enabled: type ? bool(raw.enabled) : false,
+		enabled: reviewHint === undefined && bool(raw.enabled),
 		name,
-		detection: detectionOf(type ?? CUSTOM_TEMPLATE.detection),
-		typeId: typeId ?? "",
+		detection,
 		powerId,
 		startText: typeof raw.startText === "string" ? raw.startText : "",
 		endText: typeof raw.endText === "string" ? raw.endText : "",
@@ -409,12 +602,12 @@ function convertDevice(
 	if (switchId !== "") {
 		config.switchId = switchId;
 	}
-	if (type?.builtin) {
-		config.template = type.id;
+	if (template !== undefined) {
+		config.template = template;
 	}
-	if (!type) {
+	if (reviewHint !== undefined) {
 		config.needsReview = true;
-		config.reviewHint = `3.1.2 type "${typeName}" not found; values taken from template Custom`;
+		config.reviewHint = reviewHint;
 	}
 	return config;
 }
@@ -446,8 +639,9 @@ export function migrateLegacyConfig(native: Record<string, unknown>): MigrationR
 		}
 	}
 
-	const recipients = convertRecipients(src, warnings);
-	const { types, byName } = convertTypes(src);
+	const { recipients, paths } = convertRecipients(src, warnings);
+	const { defaults, customs } = readTypeRows(src, warnings);
+	const tables: TypeTables = { defaults, customs, used: new Set() };
 	const statusRow = rows(src, "status")[0];
 	const status = isRecord(statusRow) ? statusRow : {};
 	const normalized = normalizeInstanceConfig({
@@ -456,6 +650,12 @@ export function migrateLegacyConfig(native: Record<string, unknown>): MigrationR
 	});
 	warnings.push(...normalized.warnings);
 	const instance = normalized.config;
+	for (const r of instance.recipients) {
+		const path = paths.get(r.id);
+		if (path !== undefined && r.stateId !== path) {
+			warnings.push(`Recipient ${r.id}: target "${path}" replaced by "${r.stateId ?? ""}"`);
+		}
+	}
 
 	const recipientIds = new Set(instance.recipients.map(r => r.id));
 	const devices: MigrationResult["devices"] = [];
@@ -467,7 +667,7 @@ export function migrateLegacyConfig(native: Record<string, unknown>): MigrationR
 				warnings.push(`Device #${key} ignored: not an object`);
 				continue;
 			}
-			const config = convertDevice(raw, byName, types, recipientIds, warnings);
+			const config = convertDevice(raw, tables, recipientIds, warnings);
 			const id = allocateDeviceId(config.name, taken);
 			taken.add(id);
 			// 3.1.2 used the untrimmed name as state prefix
@@ -475,7 +675,7 @@ export function migrateLegacyConfig(native: Record<string, unknown>): MigrationR
 			devices.push({ id, oldName, config });
 		}
 	}
-	return { instance, types, devices, warnings };
+	return { instance, archive: archiveOf([...defaults, ...customs], tables.used), devices, warnings };
 }
 
 /**

@@ -577,12 +577,12 @@ it("editing keeps fields the form does not show (phases, learned, template) – 
   - Warnungen (genauer Text): `Type "<name>": comment "<text>" not migrated`, `Type "<name>": <feld> "<alt>" is not a number, using <neu>`, `Recipient <kind>-<id>: target "<alt>" replaced by "<neu>"`.
   - `initMigration` schreibt `obj.native = { ...result.instance, types: result.archive }`.
 
-- [ ] **Step 1: Fixture** `test/fixtures/legacy-config/edgeTypes.json` (3.1.2-native, `_comment` beschreibt den Zweck):
+- [x] **Step 1: Fixture** `test/fixtures/legacy-config/edgeTypes.json` (3.1.2-native, `_comment` beschreibt den Zweck):
   - `default.ids`: `{name: "washing-machine", 25/12/1/2/40, id 0}`, `{name: "Washing-Machine", 35/15/1/2/50, id 1}`, `{name: "dryer", 120/15/1/2/20, id 2}`.
   - `custom.ids`: id 2 `{name: "Pumpe", 60/5/1/1/20, comment: "Keller"}`, id 4 `{name: "custom5", startVal: "", 5/1/1/20}`, id 6 `{name: "custom7", 40/5/1/1/20}`.
   - `linkedDevice.finalIds`: Geräte „Waschen“ (`washing-machine`), „Waschen2“ (`Washing-Machine`), „Trockner1“ und „Trockner2“ (beide `dryer`), „Pumpe1“ (`custom3`), „Pumpe2“ (` Pumpe`), „Kessel“ (`Kessel`), „Heizer“ (`custom5`); alle mit `pathConsumption: "x.0.<name>.power"`, `enabled: true`, leeren Messenger-Listen.
   - `sayit.ids`: `{id: "0", name: "Bad", path: "sayit.1.tts.cachetts", volume: 40, activeFrom: "07:00", activeUntil: "22:00"}`; `whatsapp.ids`: `{id: "0", name: "Ich", path: "javascript.0.wa"}`.
-- [ ] **Step 2: Failing tests** (`test/migrationMapping.test.js`; je Zeile der Spec-Tabelle C.5 ein `it`):
+- [x] **Step 2: Failing tests** (`test/migrationMapping.test.js`; je Zeile der Spec-Tabelle C.5 ein `it`):
 
 ```js
 import assert from "node:assert";
@@ -733,11 +733,13 @@ describe("3.1.2 → V4 mapping (Spec C.5, one test per row)", () => {
 
 `createOracle(objVal, { abort })` und `oracle.tick(power)` wie in `test/legacyDetector.test.js:29-35` (Vergleich des ganzen `TickResult`).
 
-- [ ] **Step 3:** `npm run build && npx mocha test/migrationMapping.test.js` → FAIL.
-- [ ] **Step 4: Implementieren**: `convertTypes` ersetzt durch Tabellenlesen + `matchLegacyType`; `detection` = Vorlage (`TEMPLATES`, Basis count, 60/300 s) ⊕ 5 Werte der Zeile; Warnungen wie in Interfaces; `archive` = Zeilen ohne Gerät, deren Werte oder Name von der Vorlage abweichen (id: eingebaute id bzw. `customN`, Felder wie `native.types`-Zeile).
-- [ ] **Step 5:** `npm test` → PASS (bestehende `migration.test.js`-Erwartungen zu `types`/`typeId` auf `detection`/`archive` umgestellt).
-- [ ] **Doku:** `docs/de|en/README.md` §9 (exakte Typnamen, nicht gefundener Typ → deaktiviert mit Hinweis, umbenannte Plätze, Kopie je Gerät bei geteilten Typen, Archiv inkl. Namen, Warnungen M5–M7, Verhaltensänderungen M11); Changelog-Zeile zur Migration umformulieren.
-- [ ] **Step 6: Commit** `fix: 3.1.2 migration copies type values into each device exactly like 3.1.2 and warns about every change`
+- [x] **Step 3:** `npm run build && npx mocha test/migrationMapping.test.js` → FAIL.
+- [x] **Step 4: Implementieren**: `convertTypes` ersetzt durch Tabellenlesen + `matchLegacyType`; `detection` = Vorlage (`TEMPLATES`, Basis count, 60/300 s) ⊕ 5 Werte der Zeile; Warnungen wie in Interfaces; `archive` = Zeilen ohne Gerät, deren Werte oder Name von der Vorlage abweichen (id: eingebaute id bzw. `customN`, Felder wie `native.types`-Zeile).
+- [x] **Step 5:** `npm test` → PASS (bestehende `migration.test.js`-Erwartungen zu `types`/`typeId` auf `detection`/`archive` umgestellt).
+- [x] **Doku:** `docs/de|en/README.md` §9 (exakte Typnamen, nicht gefundener Typ → deaktiviert mit Hinweis, umbenannte Plätze, Kopie je Gerät bei geteilten Typen, Archiv inkl. Namen, Warnungen M5–M7, Verhaltensänderungen M11); Changelog-Zeile zur Migration umformulieren.
+- [x] **Step 6: Commit** `fix: 3.1.2 migration copies type values into each device exactly like 3.1.2 and warns about every change`
+
+**Umsetzungsnotizen (Task 5):** `MigrationResult.archive` ist als `DeviceTypeConfig[]` typisiert (Felder einer `native.types`-Zeile; ein Interface ist in TS nicht an `Record<string, unknown>` zuweisbar), zusätzlich exportiert `LegacyTypeMatch`. `matchLegacyType` vergleicht wie 3.1.2 (`==`) den Rohtext: Strings unverändert, Zahlen als Text; ein leerer Gerätetyp ergibt `none`; `slot` sucht `customN` getrimmt, bei mehreren Zeilen mit id N−1 gilt die letzte. `template` bei `via = "default"` = eingebaute Vorlage, deren id dem Zeilennamen getrimmt ohne Groß-/Kleinschreibung gleicht (so bekommt auch „Washing-Machine“ die Vorlage `washing-machine`, die Werte bleiben die der eigenen Zeile); eine `default.ids`-Zeile mit fremdem Namen liefert Werte, aber keine Vorlage. Als „benutzt“ für das Archiv zählen auch Zeilen, die über `case`/`slot` gefunden wurden (so verlangt es der Archiv-Test: „Pumpe“ wird von Pumpe1/Pumpe2 benutzt). Archiv-ids: eingebaute id, `custom<id+1>`, sonst aus dem Namen `customN`, sonst der nächste freie Platz (wie bisher), Zeilen mit fremdem Namen `sanitizeId(name)`; Kollisionen über `allocateDeviceId` (`washing-machine_2`). Archiv-Name = getrimmter Zeilenname (Test erwartet `custom7`, nicht „Custom 7“; `archiveTemplates` behandelt beide als unverändert). Typzeilen werden einmal gelesen, Warnungen also je Zeile genau einmal (auch für ungenutzte Zeilen): Kommentar, `not a number` (Ersatz: Wert der Vorlage der Zeile, für eigene Zeilen „Benutzerdefiniert“), zusätzlich `<feld> "<alt>" is negative, using 0` und `<feld> "12,5" read as 12.5` – 3.1.2 verglich gegen `NaN` und startete nie, der Wert des Users wird übernommen, aber gemeldet. Der Golden-Test überspringt deshalb Geräte, deren Typzeile einen Wert mit `+wert = NaN` hat (`renamedCustom`/Spüler), und prüft die Zahl der verglichenen Geräte (7). Gerät ohne exakten Treffer: Log-Warnung `Device "<name>": <reviewHint>; device disabled`. SayIt/WhatsApp: Warnung nur bei nicht leerem `path`, der vom normalisierten `stateId` abweicht. `migrateLegacyConfig` schreibt kein `typeId` mehr. Zusätzliche Tests: `matchLegacyType` (Reihenfolge, letzter Treffer, case, slot, none), Archiv mit fremdem Default-Namen und ungültigen Werten, eindeutige Archiv-ids, Archiv als Archiv-Vorlage (`archiveTemplates`). Doku §9 de/en: neuer Abschnitt „Gerätetypen werden zu Werten im Gerät“ und „Verhaltensänderungen durch die vollständige Übernahme“ (M11 schon hier statt erst in Task 26), Tabellenzeile „Gerätetypen“ und Schritt 1 „nach dem Update“; Changelog-Zeile 32 umformuliert (weiter 6 Einträge).
 
 ---
 

@@ -298,15 +298,32 @@ The first start of version 4 converts a 3.1.2 configuration automatically. All n
 
 What is taken over:
 
-- devices (name, type, power and switch state, texts, abort, auto-off, recipients),
+- devices (name, power and switch state, texts, abort, auto-off, recipients) with the detection values of their device type,
 - recipients of all nine messengers of 3.1.2 (IDs are kept),
-- device types, including renamed custom types,
 - status texts,
 - the values of the old states: last operations, last runtime, do not disturb and maximum runtime.
 
-What is fixed during migration: Telegram user name, first name and chat ID are mapped to the fields of the telegram adapter; Pushover priority, device ID and an empty TTL are converted correctly. Devices with the same name, or with umlauts, spaces or dots in the name, get unique and valid object IDs.
+Devices with the same name, or with umlauts, spaces or dots in the name, get unique and valid object IDs.
 
-Only the states created by 3.1.2 are removed. Migration warnings (unknown fields, missing device types, recipients that no longer exist, power states that do not exist) are written to the log; they do not abort the migration. If the migration itself fails, the configuration stays unchanged and the adapter keeps running.
+### Device types become values in the device
+
+Version 4 has no device types any more; the detection values live in the device (see [Detection values and templates](#3-detection-values-and-templates)). The migration looks up the type of every device exactly like 3.1.2: first among the default types with exactly the same name (upper/lower case and spaces count; if several rows have this name, the last one wins), and only without a match among the custom types. The five values of the type (start value, end value, standby value, start and end count) are copied into the device, together with the mode **count**; pause protection, anti-crease and all other new options stay off. If the type comes from the default types, the device remembers the matching template (washing machine, dryer, dishwasher).
+
+- **Shared types:** if several devices use the same type, every device gets its own copy of the values. If you change one device later, only that device changes.
+- **Type not found exactly:** 3.1.2 reported such a device once as started and never as finished. Version 4 takes it over completely, but **disabled**, with a hint in the log and on the device card that says where the values come from: from a type whose name matches only when upper/lower case or leading and trailing spaces are ignored; otherwise from the custom type that was originally called `customN` and renamed later (device type `custom3` → third row of the custom types); otherwise from the template **Custom** (30 / 5 / 1 / 1 / 20). Check the values, save the device in the device form and enable it.
+- **Archive:** custom or edited types that no device uses and whose values or name differ from the template are kept with name and values as archive templates. Unchanged types are dropped; the built-in templates provide their values.
+- **Nothing is lost silently:** a type comment is not taken over. An empty or non-numeric type value is replaced by the value of the template, a negative one by 0; a value with a decimal comma (`12,5`) is read as a number (3.1.2 never started with such a value). A SayIt or WhatsApp target that differs from the target derived from the instance (`<instance>.tts.text` or `<instance>.sendMessage`) is replaced. Each of these cases is logged as a warning with the old and the new value.
+
+Only the states created by 3.1.2 are removed. Migration warnings (unknown fields, device types not found exactly, replaced values and targets, recipients that no longer exist, power states that do not exist) are written to the log; they do not abort the migration. If the migration itself fails, the configuration stays unchanged and the adapter keeps running.
+
+### Changes in behaviour because everything is taken over
+
+3.1.2 stored these settings but did not use them, or used them differently. Version 4 uses them as they were entered:
+
+- **Pushover:** 3.1.2 never sent the priority and the device; version 4 sends the values entered (the TTL too; an empty TTL stays empty).
+- **Telegram:** user name, first name and chat ID go to the fields of the telegram adapter (`user` or `chatId`) instead of `username`, `firstname` or `chatID`.
+- **Matrix:** messages go to the instance `matrix-org.N` of the Matrix adapter instead of `matrix.N`.
+- **Time windows:** a time window across midnight (for example 22:00 to 06:00) now applies; the same start and end time means "always".
 
 ### What changes for you when you update
 
@@ -322,7 +339,7 @@ Only the states created by 3.1.2 are removed. Migration warnings (unknown fields
 | Area | 3.1.2 | Version 4 |
 | --- | --- | --- |
 | Configuring devices | table in the instance settings | Device Manager (tab **Devices**), one form per device; changes apply without restarting the instance |
-| Device types | tables "default" and "custom" | one tab **Device types** with the three default types and ten custom types, also by learning |
+| Device types | tables "default" and "custom", shared by several devices | no types any more: every device has its own detection values; when adding a device a template provides the starting values, learning adapts them |
 | Recipients | one table per messenger, ticked in the device | tab **Recipients** with one list of all recipients, selected in the device; ntfy, Pushsafer and Gotify are new |
 | Object structure | states directly below `<name>` (folder) | a device object `<deviceId>` with states, like other ioBroker adapters |
 | Object ID | device name unchanged (with spaces and umlauts) | built from the name: lower case, umlauts rewritten (`ä` → `ae`), spaces and dots → `_`, duplicate names get `_2`, `_3` … |
@@ -334,7 +351,7 @@ Example: a device "Wäsche Keller" had the state `device-reminder.0.Wäsche Kell
 
 **What you have to do after the update**
 
-1. Check the log for migration warnings (for example missing power states or recipients).
+1. Check the log for migration warnings (for example missing power states or recipients). Devices whose type was not found exactly are disabled: check the values, save and enable the device.
 2. Change scripts, Blockly, scenes and visualisations to the new IDs (table below). The old states are deleted.
 3. If a history adapter was enabled on an old state (for example `live consumption`), enable it on the new state. The old records stay in the database but do not belong to the new state.
 4. Optional: switch on the new features per device.

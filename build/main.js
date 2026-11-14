@@ -128,7 +128,7 @@ class DeviceReminder extends utils.Adapter {
                 this.log.warn(`Migration: ${w}`);
             }
             this.config = { ...result.instance };
-            obj.native = { ...result.instance };
+            obj.native = { ...result.instance, types: result.archive };
             await this.setForeignObjectAsync(objId, obj);
         }
         catch (err) {

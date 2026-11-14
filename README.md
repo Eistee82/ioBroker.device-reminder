@@ -29,7 +29,7 @@ Detects when household devices such as washing machines, dryers and dishwashers 
 
 ### **WORK IN PROGRESS**
 
-- (Eistee82) BREAKING: complete rewrite with new state IDs, requires Node.js 22, js-controller 6 and admin 7.8 - settings from 3.1.2 are migrated automatically
+- (Eistee82) BREAKING: complete rewrite with new state IDs, requires Node.js 22, js-controller 6 and admin 7.8 - settings from 3.1.2 are migrated automatically: every device gets its own copy of the values of its type, found exactly like 3.1.2; a device whose type is not found is taken over disabled with a hint, and every changed value is reported in the log
 - (Eistee82) Device manager to add, edit and operate devices, with automatic detection of sockets and power meters
 - (Eistee82) New detection modes (time-based, combined), corrected abort detection, pause protection for long soaking pauses and an anti-crease filter that reports the end when the anti-crease phase starts (laundry done) and starts no run on drum movements (all default off)
 - (Eistee82) Detection values live in each device (templates for washing machine, dryer, dishwasher and custom devices when adding); reminders until acknowledged, actions, learning from the history (history, SQL, InfluxDB) or a recorded run that writes the values into the device, and an optional automatic optimisation after every run, without a history adapter and without restart, that never breaks a programme seen before; a dialog in the device manager shows the stored runs and can undo, reset, discard a run or save the values in the device

@@ -1,0 +1,287 @@
+{
+	"_comment": [
+		"Edge cases of the 3.1.2 type lookup (main.js 456-503: exact, untrimmed name; default.ids first, last match wins; custom.ids only without a default match).",
+		"Waschen/Waschen2: two default rows that differ only in case are different 3.1.2 types. Trockner1/Trockner2 share one type and each get their own copy.",
+		"Pumpe1 uses custom3, whose row (id 2) was renamed to Pumpe after the device was set up; Pumpe2 uses \" Pumpe\" (leading space) that matches only trimmed; Kessel uses a type that does not exist. 3.1.2 never finished these devices: they are migrated disabled with a review hint.",
+		"Heizer uses custom5 with an empty startVal (template value with warning); the comment of Pumpe is not migrated (warning); custom7 (id 6) has its own values and no device (archive).",
+		"sayit/whatsapp paths differ from the target V4 derives from the instance (warning old/new)."
+	],
+	"linkedDevice": {
+		"finalIds": {
+			"0": {
+				"type": "washing-machine",
+				"pathConsumption": "x.0.Waschen.power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Waschen",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": 0,
+				"autoOff": false,
+				"abort": false,
+				"id": "0"
+			},
+			"1": {
+				"type": "Washing-Machine",
+				"pathConsumption": "x.0.Waschen2.power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Waschen2",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": 0,
+				"autoOff": false,
+				"abort": false,
+				"id": "1"
+			},
+			"2": {
+				"type": "dryer",
+				"pathConsumption": "x.0.Trockner1.power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Trockner1",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": 0,
+				"autoOff": false,
+				"abort": false,
+				"id": "2"
+			},
+			"3": {
+				"type": "dryer",
+				"pathConsumption": "x.0.Trockner2.power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Trockner2",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": 0,
+				"autoOff": false,
+				"abort": false,
+				"id": "3"
+			},
+			"4": {
+				"type": "custom3",
+				"pathConsumption": "x.0.Pumpe1.power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Pumpe1",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": 0,
+				"autoOff": false,
+				"abort": false,
+				"id": "4"
+			},
+			"5": {
+				"type": " Pumpe",
+				"pathConsumption": "x.0.Pumpe2.power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Pumpe2",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": 0,
+				"autoOff": false,
+				"abort": false,
+				"id": "5"
+			},
+			"6": {
+				"type": "Kessel",
+				"pathConsumption": "x.0.Kessel.power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Kessel",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": 0,
+				"autoOff": false,
+				"abort": false,
+				"id": "6"
+			},
+			"7": {
+				"type": "custom5",
+				"pathConsumption": "x.0.Heizer.power",
+				"pathSwitch": "",
+				"startText": "",
+				"endText": "",
+				"enabled": true,
+				"name": "Heizer",
+				"alexa": [],
+				"sayit": [],
+				"telegram": [],
+				"whatsapp": [],
+				"pushover": [],
+				"signal": [],
+				"email": [],
+				"matrix": [],
+				"discord": [],
+				"timer": 0,
+				"autoOff": false,
+				"abort": false,
+				"id": "7"
+			}
+		}
+	},
+	"default": {
+		"ids": [
+			{
+				"comment": "",
+				"name": "washing-machine",
+				"startVal": 25,
+				"endVal": 12,
+				"standby": 1,
+				"startCount": 2,
+				"endCount": 40,
+				"id": 0
+			},
+			{
+				"comment": "",
+				"name": "Washing-Machine",
+				"startVal": 35,
+				"endVal": 15,
+				"standby": 1,
+				"startCount": 2,
+				"endCount": 50,
+				"id": 1
+			},
+			{
+				"comment": "",
+				"name": "dryer",
+				"startVal": 120,
+				"endVal": 15,
+				"standby": 1,
+				"startCount": 2,
+				"endCount": 20,
+				"id": 2
+			}
+		]
+	},
+	"custom": {
+		"ids": [
+			{
+				"comment": "Keller",
+				"name": "Pumpe",
+				"startVal": 60,
+				"endVal": 5,
+				"standby": 1,
+				"startCount": 1,
+				"endCount": 20,
+				"id": 2
+			},
+			{
+				"comment": "",
+				"name": "custom5",
+				"startVal": "",
+				"endVal": 5,
+				"standby": 1,
+				"startCount": 1,
+				"endCount": 20,
+				"id": 4
+			},
+			{
+				"comment": "",
+				"name": "custom7",
+				"startVal": 40,
+				"endVal": 5,
+				"standby": 1,
+				"startCount": 1,
+				"endCount": 20,
+				"id": 6
+			}
+		]
+	},
+	"sayit": {
+		"ids": [
+			{
+				"id": "0",
+				"name": "Bad",
+				"path": "sayit.1.tts.cachetts",
+				"volume": 40,
+				"activeFrom": "07:00",
+				"activeUntil": "22:00"
+			}
+		]
+	},
+	"whatsapp": {
+		"ids": [
+			{
+				"id": "0",
+				"name": "Ich",
+				"path": "javascript.0.wa"
+			}
+		]
+	},
+	"status": {
+		"ids": [
+			{
+				"stateAction": "",
+				"stateStandby": "",
+				"stateOff": ""
+			}
+		]
+	}
+}

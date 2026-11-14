@@ -1,8 +1,7 @@
 import { DEFAULT_REMINDER, normalizeInstanceConfig, } from "./config.js";
-import { allocateDeviceId } from "./ids.js";
-import { DEFAULT_TYPES } from "./legacyTypes.js";
+import { allocateDeviceId, sanitizeId } from "./ids.js";
 import { detectionOf } from "./runStore.js";
-import { CUSTOM_TEMPLATE } from "./templates.js";
+import { CUSTOM_TEMPLATE, TEMPLATES } from "./templates.js";
 import { DEVICE_STATES } from "./stateDefinitions.js";
 import { errorMessage, parseNumber } from "./utils.js";
 export const LEGACY_STATE_MAP = {
@@ -156,6 +155,7 @@ function convertRecipient(kind, row, id) {
 }
 function convertRecipients(native, warnings) {
     const result = [];
+    const paths = new Map();
     const seen = new Set();
     for (const kind of LEGACY_MESSENGERS) {
         rows(native, kind).forEach((row, i) => {
@@ -171,90 +171,177 @@ function convertRecipients(native, warnings) {
             }
             seen.add(id);
             result.push(convertRecipient(kind, row, id));
+            if ((kind === "sayit" || kind === "whatsapp") && str(row.path) !== "") {
+                paths.set(id, str(row.path));
+            }
         });
     }
-    return result;
+    return { recipients: result, paths };
 }
-function thresholds(row, base) {
-    const n = (val, fallback) => Math.max(0, parseNumber(val) ?? fallback);
-    return {
-        ...base,
-        startVal: n(row.startVal, base.startVal),
-        endVal: n(row.endVal, base.endVal),
-        standby: n(row.standby, base.standby),
-        startCount: n(row.startCount, base.startCount),
-        endCount: n(row.endCount, base.endCount),
+const LEGACY_VALUE_KEYS = ["startVal", "endVal", "standby", "startCount", "endCount"];
+function rawText(val) {
+    if (typeof val === "string") {
+        return val;
+    }
+    return typeof val === "number" && Number.isFinite(val) ? String(val) : "";
+}
+function lastOf(list, pred) {
+    for (let i = list.length - 1; i >= 0; i--) {
+        if (pred(list[i])) {
+            return list[i];
+        }
+    }
+    return null;
+}
+export function matchLegacyType(typeName, defaults, customs) {
+    if (typeName === "") {
+        return { row: null, via: "none" };
+    }
+    const exact = (r) => rawText(r.name) === typeName;
+    const fromDefault = lastOf(defaults, exact);
+    if (fromDefault) {
+        return { row: fromDefault, via: "default" };
+    }
+    const fromCustom = lastOf(customs, exact);
+    if (fromCustom) {
+        return { row: fromCustom, via: "custom" };
+    }
+    const key = typeName.trim().toLowerCase();
+    const loose = (r) => rawText(r.name).trim().toLowerCase() === key;
+    const fromCase = key === "" ? null : (lastOf(defaults, loose) ?? lastOf(customs, loose));
+    if (fromCase) {
+        return { row: fromCase, via: "case" };
+    }
+    const slot = CUSTOM_ID.exec(typeName.trim());
+    const fromSlot = slot ? lastOf(customs, r => parseNumber(r.id) === Number(slot[1]) - 1) : null;
+    if (fromSlot) {
+        return { row: fromSlot, via: "slot" };
+    }
+    return { row: null, via: "none" };
+}
+function typeValues(row, base, label, warnings) {
+    const out = {
+        startVal: base.startVal,
+        endVal: base.endVal,
+        standby: base.standby,
+        startCount: base.startCount,
+        endCount: base.endCount,
     };
-}
-function convertTypes(native) {
-    const types = DEFAULT_TYPES.map(t => ({ ...t }));
-    const defaultNames = new Map();
-    const customNames = new Map();
-    const replace = (t) => {
-        const idx = types.findIndex(x => x.id === t.id);
-        if (idx >= 0) {
-            types[idx] = t;
+    for (const key of LEGACY_VALUE_KEYS) {
+        const raw = row[key];
+        const old = typeof raw === "string" ? raw : raw === undefined || raw === null ? "" : JSON.stringify(raw);
+        const val = parseNumber(raw);
+        if (val === null) {
+            warnings.push(`${label}: ${key} "${old}" is not a number, using ${base[key]}`);
+        }
+        else if (val < 0) {
+            warnings.push(`${label}: ${key} "${old}" is negative, using 0`);
+            out[key] = 0;
         }
         else {
-            types.push(t);
+            if (typeof raw === "string" && Number.isNaN(Number(raw))) {
+                warnings.push(`${label}: ${key} "${old}" read as ${val}`);
+            }
+            out[key] = val;
         }
-    };
-    for (const row of rows(native, "default")) {
-        if (!isRecord(row)) {
-            continue;
-        }
-        const name = str(row.name);
-        const base = types.find(t => t.builtin && (t.id === name || t.name.toLowerCase() === name.toLowerCase()));
-        if (!base) {
-            continue;
-        }
-        replace(thresholds(row, base));
-        defaultNames.set(name, base.id);
     }
-    const addCustom = (row, id) => {
-        const base = types.find(t => t.id === id) ?? { ...DEFAULT_TYPES[DEFAULT_TYPES.length - 1], id, name: id };
-        const legacyName = str(row.name);
-        const name = legacyName !== "" && legacyName !== id ? legacyName : base.name;
-        replace({ ...thresholds(row, base), id, name, builtin: false });
-        if (legacyName !== "") {
-            customNames.set(legacyName, id);
+    return out;
+}
+function readTypeRows(native, warnings) {
+    const read = (raw, table, template) => {
+        const name = rawText(raw.name);
+        const label = `Type "${name.trim()}"`;
+        const comment = rawText(raw.comment).trim();
+        if (comment !== "") {
+            warnings.push(`${label}: comment "${comment}" not migrated`);
         }
+        const values = typeValues(raw, (template ?? CUSTOM_TEMPLATE).detection, label, warnings);
+        return { raw, table, name, template, values, archiveId: "" };
     };
-    const used = new Set();
-    const customRows = rows(native, "custom").filter(isRecord);
+    const builtin = (name) => TEMPLATES.find(t => t.id !== CUSTOM_TEMPLATE.id && t.id === name.trim().toLowerCase());
+    const defaults = rows(native, "default")
+        .filter(isRecord)
+        .map(raw => read(raw, "default", builtin(rawText(raw.name))));
+    const customs = rows(native, "custom")
+        .filter(isRecord)
+        .map(raw => read(raw, "custom"));
+    const taken = new Set();
+    const take = (row, id) => {
+        row.archiveId = taken.has(id) ? allocateDeviceId(id, taken) : id;
+        taken.add(row.archiveId);
+    };
+    for (const row of defaults.filter(r => r.template)) {
+        take(row, row.template.id);
+    }
     const pending = [];
-    for (const row of customRows) {
-        const rowId = parseNumber(row.id);
-        const fromName = CUSTOM_ID.exec(str(row.name));
+    for (const row of customs) {
+        const rowId = parseNumber(row.raw.id);
+        const fromName = CUSTOM_ID.exec(row.name.trim());
         const n = rowId !== null && Number.isInteger(rowId) && rowId >= 0 ? rowId + 1 : fromName ? Number(fromName[1]) : null;
-        if (n === null || used.has(`custom${n}`)) {
+        if (n === null || taken.has(`custom${n}`)) {
             pending.push(row);
-            continue;
         }
-        used.add(`custom${n}`);
-        addCustom(row, `custom${n}`);
+        else {
+            take(row, `custom${n}`);
+        }
     }
     for (const row of pending) {
         let n = 1;
-        while (used.has(`custom${n}`)) {
+        while (taken.has(`custom${n}`)) {
             n++;
         }
-        used.add(`custom${n}`);
-        addCustom(row, `custom${n}`);
+        take(row, `custom${n}`);
     }
-    const byName = new Map();
-    for (const t of types) {
-        byName.set(t.id, t.id);
+    for (const row of defaults.filter(r => !r.template)) {
+        take(row, sanitizeId(row.name.trim() || "type"));
     }
-    for (const [name, id] of customNames) {
-        byName.set(name, id);
-    }
-    for (const [name, id] of defaultNames) {
-        byName.set(name, id);
-    }
-    return { types, byName };
+    return { defaults, customs };
 }
-function convertDevice(raw, byName, types, recipientIds, warnings) {
+function archiveOf(typeRows, used) {
+    const out = [];
+    for (const row of typeRows) {
+        if (used.has(row.raw)) {
+            continue;
+        }
+        const ref = (row.template ?? CUSTOM_TEMPLATE).detection;
+        const refName = row.template?.id ?? (row.table === "custom" ? row.archiveId : null);
+        const same = refName !== null && row.name === refName && LEGACY_VALUE_KEYS.every(k => row.values[k] === ref[k]);
+        if (same) {
+            continue;
+        }
+        out.push({
+            id: row.archiveId,
+            name: row.name.trim() || row.archiveId,
+            builtin: row.template !== undefined && row.template.id === row.archiveId,
+            ...row.values,
+            mode: "count",
+            startDurationSec: 60,
+            endDurationSec: 300,
+            pauseHoldSec: 0,
+            pauseUntilSec: 0,
+            pauseBelowVal: 0,
+        });
+    }
+    return out;
+}
+function deviceDetection(typeName, tables) {
+    const { row, via } = matchLegacyType(typeName, tables.defaults.map(r => r.raw), tables.customs.map(r => r.raw));
+    const found = row ? [...tables.defaults, ...tables.customs].find(r => r.raw === row) : undefined;
+    if (!found) {
+        return {
+            detection: detectionOf(CUSTOM_TEMPLATE.detection),
+            reviewHint: `3.1.2 type "${typeName}" not found exactly; values taken from template Custom`,
+        };
+    }
+    tables.used.add(found.raw);
+    const detection = detectionOf({ ...(found.template ?? CUSTOM_TEMPLATE).detection, ...found.values });
+    if (via === "default" || via === "custom") {
+        return via === "default" && found.template ? { detection, template: found.template.id } : { detection };
+    }
+    const from = via === "case" ? `case match "${found.name}"` : `renamed slot ${typeName.trim()}`;
+    return { detection, reviewHint: `3.1.2 type "${typeName}" not found exactly; values taken from ${from}` };
+}
+function convertDevice(raw, tables, recipientIds, warnings) {
     const name = str(raw.name);
     const label = `Device "${name}"`;
     for (const key of Object.keys(raw)) {
@@ -262,11 +349,9 @@ function convertDevice(raw, byName, types, recipientIds, warnings) {
             warnings.push(`${label}: unknown field "${key}" not migrated`);
         }
     }
-    const typeName = str(raw.type);
-    const typeId = byName.get(typeName);
-    const type = typeId === undefined ? undefined : types.find(t => t.id === typeId);
-    if (!type) {
-        warnings.push(`${label}: device type "${typeName}" not found`);
+    const { detection, template, reviewHint } = deviceDetection(rawText(raw.type), tables);
+    if (reviewHint !== undefined) {
+        warnings.push(`${label}: ${reviewHint}; device disabled`);
     }
     const recipients = [];
     for (const kind of LEGACY_MESSENGERS) {
@@ -289,10 +374,9 @@ function convertDevice(raw, byName, types, recipientIds, warnings) {
         warnings.push(`${label}: no power state configured`);
     }
     const config = {
-        enabled: type ? bool(raw.enabled) : false,
+        enabled: reviewHint === undefined && bool(raw.enabled),
         name,
-        detection: detectionOf(type ?? CUSTOM_TEMPLATE.detection),
-        typeId: typeId ?? "",
+        detection,
         powerId,
         startText: typeof raw.startText === "string" ? raw.startText : "",
         endText: typeof raw.endText === "string" ? raw.endText : "",
@@ -308,12 +392,12 @@ function convertDevice(raw, byName, types, recipientIds, warnings) {
     if (switchId !== "") {
         config.switchId = switchId;
     }
-    if (type?.builtin) {
-        config.template = type.id;
+    if (template !== undefined) {
+        config.template = template;
     }
-    if (!type) {
+    if (reviewHint !== undefined) {
         config.needsReview = true;
-        config.reviewHint = `3.1.2 type "${typeName}" not found; values taken from template Custom`;
+        config.reviewHint = reviewHint;
     }
     return config;
 }
@@ -331,8 +415,9 @@ export function migrateLegacyConfig(native) {
             warnings.push(`Unknown setting "${key}" not migrated`);
         }
     }
-    const recipients = convertRecipients(src, warnings);
-    const { types, byName } = convertTypes(src);
+    const { recipients, paths } = convertRecipients(src, warnings);
+    const { defaults, customs } = readTypeRows(src, warnings);
+    const tables = { defaults, customs, used: new Set() };
     const statusRow = rows(src, "status")[0];
     const status = isRecord(statusRow) ? statusRow : {};
     const normalized = normalizeInstanceConfig({
@@ -341,6 +426,12 @@ export function migrateLegacyConfig(native) {
     });
     warnings.push(...normalized.warnings);
     const instance = normalized.config;
+    for (const r of instance.recipients) {
+        const path = paths.get(r.id);
+        if (path !== undefined && r.stateId !== path) {
+            warnings.push(`Recipient ${r.id}: target "${path}" replaced by "${r.stateId ?? ""}"`);
+        }
+    }
     const recipientIds = new Set(instance.recipients.map(r => r.id));
     const devices = [];
     const taken = new Set();
@@ -351,14 +442,14 @@ export function migrateLegacyConfig(native) {
                 warnings.push(`Device #${key} ignored: not an object`);
                 continue;
             }
-            const config = convertDevice(raw, byName, types, recipientIds, warnings);
+            const config = convertDevice(raw, tables, recipientIds, warnings);
             const id = allocateDeviceId(config.name, taken);
             taken.add(id);
             const oldName = typeof raw.name === "string" && raw.name !== "" ? raw.name : config.name;
             devices.push({ id, oldName, config });
         }
     }
-    return { instance, types, devices, warnings };
+    return { instance, archive: archiveOf([...defaults, ...customs], tables.used), devices, warnings };
 }
 function coerce(newLeaf, val) {
     const type = DEVICE_STATES.find(d => d.id === newLeaf)?.type;
