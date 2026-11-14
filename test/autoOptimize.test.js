@@ -10,6 +10,7 @@ import {
 	LOCK_MS,
 	LOCK_RUNS,
 	optimize,
+	TIGHTEN_MIN_RUNS,
 	TIGHTEN_SPACING_MS,
 	withinBounds,
 } from "../build/lib/learn/autoOptimize.js";
@@ -147,7 +148,7 @@ describe("automatic optimisation", function () {
 			}
 			ctx.host.tickClock(DAY);
 		}
-		assert.ok(changedAt >= 0 && changedAt <= 7, `first change after run ${changedAt}`);
+		assert.strictEqual(changedAt, TIGHTEN_MIN_RUNS - 1, `first change after run ${changedAt}`);
 		assert.strictEqual(ctx.host.own("dev.learning.optimized"), true);
 		const params = JSON.parse(ctx.host.own("dev.learning.parameters"));
 		assert.ok(params.effective.trailerBurstSec > 0 && params.base.trailerBurstSec === 0);
