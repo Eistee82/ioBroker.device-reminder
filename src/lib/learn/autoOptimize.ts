@@ -1,7 +1,8 @@
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
+import { FINAL_KEYS } from "../detector/types.js";
 import type { DetectionSettings } from "../detector/types.js";
-import type { Change, DetectionKey, OptimizeInfo, StoredRun, StoreFile } from "../runStore.js";
-import { DETECTION_KEYS, detectionOf, pushChange, refreshInfo } from "../runStore.js";
+import type { BaseKey, Change, OptimizeInfo, StoredRun, StoreFile } from "../runStore.js";
+import { BASE_KEYS, DETECTION_KEYS, detectionOf, pushChange, refreshInfo } from "../runStore.js";
 import type { HistorySuggestion } from "./analyze.js";
 import { analyzeTicks } from "./analyze.js";
 import { margin, minEndSec } from "./optimize.js";
@@ -91,7 +92,7 @@ class BudgetExceeded extends Error {}
  *
  * @param pollSec - Poll interval in s
  */
-export function boundsOf(pollSec: number): Partial<Record<DetectionKey, number>> {
+export function boundsOf(pollSec: number): Partial<Record<BaseKey, number>> {
 	return {
 		endDurationSec: 3600,
 		endCount: Math.floor(3600 / pollSec),
@@ -140,12 +141,12 @@ export function diffOf(p: DetectionSettings, type: DetectionSettings): Partial<D
 export function withinBounds(p: DetectionSettings, pollSec: number): boolean {
 	const d = detectionOf(p);
 	const b = boundsOf(pollSec);
-	for (const [k, max] of Object.entries(b) as [DetectionKey, number][]) {
+	for (const [k, max] of Object.entries(b) as [BaseKey, number][]) {
 		if (typeof d[k] === "number" && d[k] > max) {
 			return false;
 		}
 	}
-	if (DETECTION_KEYS.some(k => typeof d[k] === "number" && (!Number.isFinite(d[k]) || d[k] < 0))) {
+	if (BASE_KEYS.some(k => typeof d[k] === "number" && (!Number.isFinite(d[k]) || d[k] < 0))) {
 		return false;
 	}
 	return d.standby < d.endVal && d.endVal < d.startVal && d.startCount >= 1 && d.endCount >= 1;
@@ -342,12 +343,15 @@ export async function gate(
 }
 
 /**
- * Settings from a learning suggestion.
+ * Settings from a learning suggestion; the final phase stays as in the current values (the
+ * analysis does not learn it).
  *
  * @param sg - Suggestion
+ * @param p0 - Current values
  */
-function fromSuggestion(sg: HistorySuggestion): DetectionSettings {
+function fromSuggestion(sg: HistorySuggestion, p0: DetectionSettings): DetectionSettings {
 	return detectionOf({
+		...finalOf(p0),
 		...sg.thresholds,
 		mode: sg.mode,
 		startDurationSec: sg.startDurationSec,
@@ -361,6 +365,15 @@ function fromSuggestion(sg: HistorySuggestion): DetectionSettings {
 		trailerBlockVal: sg.trailerBlockVal ?? 0,
 		trailerMaxSec: sg.trailerMaxSec ?? 0,
 	});
+}
+
+/**
+ * The final phase fields of values (missing = 0).
+ *
+ * @param p - Values
+ */
+function finalOf(p: DetectionSettings): Partial<DetectionSettings> {
+	return Object.fromEntries(FINAL_KEYS.map(k => [k, p[k] ?? 0]));
 }
 
 /**
@@ -402,7 +415,7 @@ function distance(p: DetectionSettings, p0: DetectionSettings): number {
 	const filterA = (a.trailerBurstSec as number) > 0;
 	const filterB = (b.trailerBurstSec as number) > 0;
 	let d = filterA !== filterB ? 1 : 0;
-	for (const k of DETECTION_KEYS) {
+	for (const k of BASE_KEYS) {
 		if (k.startsWith("trailer") && (!filterA || !filterB)) {
 			continue;
 		}
@@ -448,7 +461,7 @@ export function trailerFromStore(runs: readonly StoredRun[], pollSec: number): P
 
 /**
  * Per field the safer of two value sets: longer waits, higher start threshold, the end threshold of
- * the first.
+ * the first; the final phase of the current values.
  *
  * @param c - Candidate
  * @param p0 - Current values
@@ -465,6 +478,7 @@ function saferOf(c: DetectionSettings, p0: DetectionSettings): DetectionSettings
 		endDurationSec: Math.max(a.endDurationSec, b.endDurationSec),
 		pauseHoldSec: Math.max(a.pauseHoldSec ?? 0, b.pauseHoldSec ?? 0),
 		trailerGapSec: Math.max(a.trailerGapSec ?? 0, b.trailerGapSec ?? 0),
+		...finalOf(b),
 	};
 }
 
@@ -482,7 +496,7 @@ async function repairCandidates(data: Data, p0: DetectionSettings): Promise<Dete
 	if (sg) {
 		// only merged with the current values: the plain analysis may wait much shorter than now and
 		// a repair has seen too few runs for that (a tightening has its own step limits and checks)
-		out.push(saferOf(fromSuggestion(sg), p0));
+		out.push(saferOf(fromSuggestion(sg, p0), p0));
 	}
 	const base = detectionOf(p0);
 	const env = store.envelope;
@@ -562,7 +576,7 @@ export function stepLimit(
 	const out: Record<string, number | string> = { ...a };
 	const thresholds = new Set(["startVal", "endVal", "standby"]);
 	const durations = new Set(["startDurationSec", "endDurationSec", "pauseHoldSec", "trailerMaxSec"]);
-	for (const k of DETECTION_KEYS) {
+	for (const k of BASE_KEYS) {
 		const x = a[k];
 		const y = b[k];
 		if (typeof x !== "number" || typeof y !== "number") {
@@ -914,7 +928,7 @@ async function tighten(data: Data, p0: DetectionSettings, r0: GateResult, done: 
 		const base = recipe.base === "current" ? detectionOf(p0) : analysis;
 		return shape(recipe.filter >= 0 && variants[recipe.filter] ? { ...base, ...variants[recipe.filter] } : base);
 	};
-	const analysis = fromSuggestion(sg);
+	const analysis = fromSuggestion(sg, p0);
 	const variants = filterOptions(trusted, store, p0, withTrailer, poll);
 	const recipes: Recipe[] = [{ base: "analysis", filter: -1 }];
 	variants.forEach((_, i) => {
@@ -1022,7 +1036,7 @@ async function crossCheck(
 			recipe.filter >= 0
 				? filterOptions(rest, store, p0, rest.filter(r => r.feat.trailer).length, ctx.pollSec)
 				: [];
-		const cF = build(recipe, sgF ? fromSuggestion(sgF) : detectionOf(p0), variants);
+		const cF = build(recipe, sgF ? fromSuggestion(sgF, p0) : detectionOf(p0), variants);
 		const gF = await gateOn(data, cF, "none", r => isTrusted(r) && r.family === fam);
 		if (!gF.ok) {
 			return false;

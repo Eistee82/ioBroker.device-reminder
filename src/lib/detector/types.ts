@@ -38,8 +38,40 @@ export interface TickResult {
 /** How start and end are detected. */
 export type DetectionMode = "count" | "timed" | "combined";
 
+/**
+ * Fields of the final phase (Spec A.2), all optional; 0 or missing keeps the 3.1.2 behaviour.
+ * Powers are in the unit of the power state, times in s.
+ */
+export const FINAL_KEYS = [
+	"finalMinVal",
+	"finalMaxVal",
+	"finalHotVal",
+	"finalAfterSec",
+	"finalMinSec",
+	"finalQuietSec",
+	"finalDipSec",
+	"finalRestVal",
+	"finalRestSec",
+	"finalActVal",
+	"finalActShare",
+	"finalCheckSec",
+	"finalLockSec",
+] as const;
+
+/** One field of the final phase. */
+export type FinalKey = (typeof FINAL_KEYS)[number];
+
+/**
+ * Settings of the final phase. `finalMinVal` (lower edge of the final band) and `finalMinSec`
+ * (time in the band) are the master switch: without both the final phase is off.
+ */
+export type FinalSettings = Partial<Record<FinalKey, number>>;
+
+/** How the lock phase after an early end was left (Spec A.3, exits a–g). */
+export type FinalExit = "a" | "b" | "c" | "d" | "e" | "f" | "g";
+
 /** Thresholds plus the time-based settings. */
-export interface DetectionSettings extends TypeThresholds {
+export interface DetectionSettings extends TypeThresholds, FinalSettings {
 	/** Detection mode. */
 	mode: DetectionMode;
 	/** Minimum duration in seconds above the start threshold. */

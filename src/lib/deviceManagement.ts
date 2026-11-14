@@ -25,6 +25,7 @@ import type { DeviceRegistry } from "./deviceRegistry.js";
 import { formatDate } from "./deviceRegistry.js";
 import { plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
+import { FINAL_KEYS } from "./detector/types.js";
 import type { DetectionMode, DetectionSettings } from "./detector/types.js";
 import { analyzeHistory } from "./historyLearning.js";
 import type { ModeEvaluation } from "./historyLearning.js";
@@ -32,8 +33,8 @@ import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import type { HistoryEnv } from "./historySource.js";
 import type { LearningSuggestion } from "./learning.js";
 import type { Notifier } from "./notifier.js";
-import type { StoreFile } from "./runStore.js";
-import { DETECTION_KEYS } from "./runStore.js";
+import type { DetectionKey, StoreFile } from "./runStore.js";
+import { BASE_KEYS } from "./runStore.js";
 import { detectFromHost } from "./typeDetection.js";
 import type { DetectionResult } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
@@ -1152,7 +1153,7 @@ const OPT_KINDS = ["repair", "tighten", "undo", "reset", "typeChanged"] as const
  * @param p - Detection settings
  * @param key - Field
  */
-function fieldText(p: DetectionSettings, key: (typeof DETECTION_KEYS)[number]): string {
+function fieldText(p: DetectionSettings, key: DetectionKey): string {
 	const v = (p as unknown as Record<string, number | string | undefined>)[key];
 	return v === undefined ? "0" : String(v);
 }
@@ -1226,7 +1227,9 @@ export function buildOptimizationView(
 			{ type: "text", attr: "effective", title: tr("dm_optEffective"), width: "30%" },
 		],
 	};
-	data.params = DETECTION_KEYS.map(key => {
+	// final phase fields only when they are used (otherwise the table stays as before)
+	const finalUsed = FINAL_KEYS.filter(k => (type[k] ?? 0) !== 0 || (effective[k] ?? 0) !== 0);
+	data.params = [...BASE_KEYS, ...finalUsed].map(key => {
 		const a = fieldText(type, key);
 		const b = fieldText(effective, key);
 		return { name: key, type: a, effective: a === b ? b : `${b} *` };

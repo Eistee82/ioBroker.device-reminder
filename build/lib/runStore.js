@@ -1,3 +1,4 @@
+import { FINAL_KEYS } from "./detector/types.js";
 import { assignFamilies } from "./learn/families.js";
 import { buildLayout, MAX_PAUSE_MS, MAX_WINDOWS, median } from "./learn/runs.js";
 import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
@@ -10,7 +11,7 @@ export const MAX_PENDING_BYTES = 200_000;
 export const MAX_CHANGES = 10;
 const START_MATCH_MS = 5 * 60_000;
 const POST_ROLL_MS = MAX_PAUSE_MS;
-export const DETECTION_KEYS = [
+export const BASE_KEYS = [
     "startVal",
     "endVal",
     "standby",
@@ -28,8 +29,9 @@ export const DETECTION_KEYS = [
     "trailerBlockVal",
     "trailerMaxSec",
 ];
+export const DETECTION_KEYS = [...BASE_KEYS, ...FINAL_KEYS];
 export function detectionOf(t) {
-    return {
+    const out = {
         startVal: t.startVal,
         endVal: t.endVal,
         standby: t.standby,
@@ -47,9 +49,20 @@ export function detectionOf(t) {
         trailerBlockVal: t.trailerBlockVal ?? 0,
         trailerMaxSec: t.trailerMaxSec ?? 0,
     };
+    for (const k of FINAL_KEYS) {
+        out[k] = t[k] ?? 0;
+    }
+    return out;
 }
 export function typeHash(t) {
-    const text = JSON.stringify(DETECTION_KEYS.map(k => detectionOf(t)[k]));
+    const d = detectionOf(t);
+    let text = JSON.stringify(BASE_KEYS.map(k => d[k]));
+    for (const k of FINAL_KEYS) {
+        const v = d[k] ?? 0;
+        if (v !== 0) {
+            text += `|${k}=${v}`;
+        }
+    }
     let h = 0x811c9dc5;
     for (let i = 0; i < text.length; i++) {
         h ^= text.charCodeAt(i);

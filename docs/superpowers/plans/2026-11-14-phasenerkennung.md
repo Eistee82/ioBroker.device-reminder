@@ -244,7 +244,7 @@ Die Zahlen 19 816 (WM-Punkte) und 2367 (Kessel-Punkte) stammen aus dem Lesen der
   - `finalViolations(f: FinalSettings, standby: number, pollSec: number): FinalKey[]` – verändert nichts; listet Felder, die Bereich, Regel oder die Laufzeit-Untergrenzen je Poll (Y, G ≥ 2·Poll; Z ≥ max(2·Poll, G); `finalRestSec` ≥ 3·Poll; `finalLockSec` ≥ 2·Poll; jeweils nur für Werte ≠ 0) verletzen. Genutzt von `finalLearn` (Grund `outOfRange`, Task 16) – gelernte Werte werden nie geklemmt.
   - autoOptimize: Schleifen über Analysewerte (`boundsOf`, `withinBounds`, `clampBounds`, `distance`, `stepLimit`) laufen über `BASE_KEYS`; `diffOf`, `effectiveOf`, `describeChange` über `DETECTION_KEYS`; `fromSuggestion`/`saferOf` übernehmen `FINAL_KEYS` aus `p0`.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```js
 // test/config.test.js
@@ -387,10 +387,12 @@ for (const k of FINAL_KEYS) {
 
 **Doku:** keine nutzerseitige Änderung (Felder noch ohne Bedienung).
 
-- [ ] **Step 2:** `npm run build && npx mocha test/config.test.js test/runStore.test.js test/detectorGolden.test.js` → FAIL (`normalizeFinal`, `FINAL_KEYS` fehlen).
-- [ ] **Step 3: Implementieren** wie in Interfaces; `createDetector` ändert sich hier noch nicht.
-- [ ] **Step 4:** Tests erneut → PASS; `npm test` komplett grün.
-- [ ] **Step 5: Commit** `feat: final phase fields with bounds and a hash that keeps existing values`
+- [x] **Step 2:** `npm run build && npx mocha test/config.test.js test/runStore.test.js test/detectorGolden.test.js` → FAIL (`normalizeFinal`, `FINAL_KEYS` fehlen).
+- [x] **Step 3: Implementieren** wie in Interfaces; `createDetector` ändert sich hier noch nicht.
+- [x] **Step 4:** Tests erneut → PASS; `npm test` komplett grün.
+- [x] **Step 5: Commit** `feat: final phase fields with bounds and a hash that keeps existing values`
+
+**Umsetzungsnotizen (Task 3):** `normalizeFinal` vergleicht Z ≥ G und Prüffenster ≤ Sperre mit den wirksamen Werten (0 → Z 120 s, G 60 s, Prüffenster 1800 s, Sperre 14 400 s; der Poll-Anteil von G bleibt der Laufzeit); Warnungen zu negativen Werten entfallen, wenn die Schlussphase ohnehin aus ist (Hauptschalter aus oder „alle aus“-Regel mit genau einer Warnung `finalMinVal <alt> → 0 (…; final phase off)`). `FINAL_BOUNDS` enthält nur die Zeitfelder und `finalActShare` (Leistungen ohne absolute Grenzen). `finalViolations` meldet bei ausgeschaltetem Hauptschalter nur ungültige Zahlen; „Ruhepegel ≥ P“ wird als `finalRestVal` (gesetzt) bzw. `finalMinVal` (Ruhepegel = `standby`) gemeldet, „nur einer von beiden 0“ als `finalActVal` und `finalActShare`. Zusätzlich `type BaseKey` in `runStore.ts`. `deviceManagement.ts`: die Wertetabelle des Optimierungsdialogs zeigt die 16 Grundfelder und `final*` nur, wenn Typ- oder wirksamer Wert ≠ 0 (ohne Schlussphase unverändert; Test in `deviceManagement.test.js`). `normalizeFinal` ist noch nicht in `normalizeType` eingehängt (folgt mit `normalizeDetection`, Task 4).
 
 ---
 

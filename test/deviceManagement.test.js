@@ -1164,6 +1164,22 @@ describe("optimisation in the device manager", function () {
 		assert.strictEqual(suggestionOf(dryerType).trailerBurstSec, undefined);
 	});
 
+	it("lists the final phase fields in the value table only when they are used", () => {
+		const store = { runs: [], spikes: [], changes: [], info: { status: "ok", trailer: "none" } };
+		const plainView = buildOptimizationView(store, null, dryerType, dryerType, false);
+		assert.strictEqual(plainView.data.params.length, 16);
+		assert.ok(!plainView.data.params.some(r => r.name.startsWith("final")));
+		const used = { ...dryerType, finalMinVal: 150, finalMinSec: 168 };
+		const view = buildOptimizationView(store, null, dryerType, used, false);
+		assert.deepStrictEqual(
+			view.data.params.filter(r => r.name.startsWith("final")),
+			[
+				{ name: "finalMinVal", type: "0", effective: "150 *" },
+				{ name: "finalMinSec", type: "0", effective: "168 *" },
+			],
+		);
+	});
+
 	it("has all texts of the optimisation in every language", () => {
 		const keys = ["en", "de", "ru", "pt", "nl", "fr", "it", "es", "pl", "uk", "zh-cn"];
 		const ids = [

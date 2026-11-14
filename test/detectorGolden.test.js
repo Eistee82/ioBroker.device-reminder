@@ -1,20 +1,6 @@
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
-import { createDetector } from "../build/lib/detector/index.js";
-import { goldenHashes } from "./helpers/golden.js";
-
-const golden = JSON.parse(readFileSync(new URL("./fixtures/detectorGolden.json", import.meta.url), "utf8"));
-
-/**
- * Keys whose output differs from the 3.1.2 fixture.
- *
- * @param {object} extra settings added to every type
- */
-function differences(extra) {
-	const now = goldenHashes(createDetector, extra);
-	assert.deepStrictEqual(Object.keys(now).sort(), Object.keys(golden).sort());
-	return Object.keys(golden).filter(k => golden[k] !== now[k]);
-}
+import { FINAL_KEYS } from "../build/lib/detector/types.js";
+import { differences } from "./helpers/golden.js";
 
 describe("detector behaviour of 3.1.2 (golden fixture of commit cd5e67f)", () => {
 	it("is unchanged without the pause protection fields", () => {
@@ -42,4 +28,16 @@ describe("detector behaviour of 3.1.2 (golden fixture of commit cd5e67f)", () =>
 	it("notices an active pause protection (the fixture is sensitive)", () => {
 		assert.ok(differences({ pauseHoldSec: 600, pauseUntilSec: 0, pauseBelowVal: 100 }).length > 0);
 	});
+
+	it("is unchanged with all final phase fields 0 (no wrapper is built)", () => {
+		assert.deepStrictEqual(differences(Object.fromEntries(FINAL_KEYS.map(k => [k, 0]))), []);
+	});
+
+	for (const k of FINAL_KEYS) {
+		// Spec 8.2 / G1: golden per field – each field alone (without the master switch) changes nothing
+		it(`is unchanged with only ${k} set (master switch off)`, () => {
+			const v = k === "finalActShare" ? 0.7 : 100;
+			assert.deepStrictEqual(differences({ [k]: v }), []);
+		});
+	}
 });

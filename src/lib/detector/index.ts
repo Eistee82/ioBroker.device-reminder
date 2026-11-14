@@ -9,10 +9,14 @@ export type {
 	Detector,
 	DetectorEvent,
 	DeviceStatus,
+	FinalExit,
+	FinalKey,
+	FinalSettings,
 	TickHints,
 	TickResult,
 	TypeThresholds,
 } from "./types.js";
+export { FINAL_KEYS } from "./types.js";
 export { LegacyDetector } from "./legacy.js";
 export { TimedDetector } from "./timed.js";
 export { PauseGuard } from "./pauseGuard.js";
@@ -38,6 +42,15 @@ export interface DetectorOptions {
  */
 export function trailerGapOf(s: DetectionSettings, pollSec: number): number {
 	return (s.trailerGapSec ?? 0) > 0 ? (s.trailerGapSec as number) : Math.max(3 * pollSec, 30);
+}
+
+/**
+ * Whether the final phase is on: master switch `finalMinVal > 0 && finalMinSec > 0` (Spec A.2).
+ *
+ * @param s - Detection settings
+ */
+export function finalOn(s: DetectionSettings): boolean {
+	return (s.finalMinVal ?? 0) > 0 && (s.finalMinSec ?? 0) > 0;
 }
 
 /**

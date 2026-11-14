@@ -1,6 +1,9 @@
 // Detector behaviour of 3.1.2 (commit cd5e67f) over many curves, used to prove that new optional
 // detector parameters with their default values change nothing.
+import assert from "node:assert";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createDetector } from "../../build/lib/detector/index.js";
 import { curves } from "./curves.js";
 
 /**
@@ -117,4 +120,17 @@ export function goldenHashes(createDetector, extra = {}) {
 		}
 	}
 	return result;
+}
+
+/**
+ * Keys whose output differs from the 3.1.2 fixture `test/fixtures/detectorGolden.json`.
+ *
+ * @param {object} [extra] settings added to every type
+ * @returns {string[]} keys of the combinations that differ
+ */
+export function differences(extra = {}) {
+	const golden = JSON.parse(readFileSync(new URL("../fixtures/detectorGolden.json", import.meta.url), "utf8"));
+	const now = goldenHashes(createDetector, extra);
+	assert.deepStrictEqual(Object.keys(now).sort(), Object.keys(golden).sort());
+	return Object.keys(golden).filter(k => golden[k] !== now[k]);
 }

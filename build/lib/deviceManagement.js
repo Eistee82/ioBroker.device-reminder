@@ -7,9 +7,10 @@ import { enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
 import { formatDate } from "./deviceRegistry.js";
 import { plain, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
+import { FINAL_KEYS } from "./detector/types.js";
 import { analyzeHistory } from "./historyLearning.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
-import { DETECTION_KEYS } from "./runStore.js";
+import { BASE_KEYS } from "./runStore.js";
 import { detectFromHost } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
 const RESERVED_IDS = ["info"];
@@ -936,7 +937,8 @@ export function buildOptimizationView(store, check, type, effective, active) {
             { type: "text", attr: "effective", title: tr("dm_optEffective"), width: "30%" },
         ],
     };
-    data.params = DETECTION_KEYS.map(key => {
+    const finalUsed = FINAL_KEYS.filter(k => (type[k] ?? 0) !== 0 || (effective[k] ?? 0) !== 0);
+    data.params = [...BASE_KEYS, ...finalUsed].map(key => {
         const a = fieldText(type, key);
         const b = fieldText(effective, key);
         return { name: key, type: a, effective: a === b ? b : `${b} *` };

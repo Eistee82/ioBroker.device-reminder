@@ -3,8 +3,11 @@ import fs from "node:fs";
 import {
 	DEFAULT_REMINDER,
 	DEFAULT_TYPES,
+	FINAL_BOUNDS,
+	finalViolations,
 	findType,
 	normalizeDeviceConfig,
+	normalizeFinal,
 	normalizeInstanceConfig,
 } from "../build/lib/config.js";
 
@@ -201,5 +204,155 @@ describe("configuration model", () => {
 			assert.deepStrictEqual(config.actions, [{ event: "end", stateId: "x.y", value: "0" }]);
 			assert.strictEqual(warnings.length, 1);
 		});
+	});
+});
+
+/** Final phase of the washer as checked on the real data (Spec A.3 "Geprüft", y_actexit.mjs). */
+const WM_FINAL = {
+	finalMinVal: 150,
+	finalMaxVal: 1311,
+	finalHotVal: 1311,
+	finalAfterSec: 3600,
+	finalMinSec: 168,
+	finalQuietSec: 120,
+	finalDipSec: 60,
+	finalRestVal: 5.5,
+	finalRestSec: 60,
+	finalActVal: 9,
+	finalActShare: 0.7,
+	finalCheckSec: 2400,
+	finalLockSec: 2700,
+};
+const norm = (over, standby = 1) => {
+	const w = [];
+	return { f: normalizeFinal({ standby, ...WM_FINAL, ...over }, w, "WM"), w };
+};
+
+describe("final phase bounds", () => {
+	it("is off without the master switch, silently", () => {
+		const w = [];
+		assert.deepStrictEqual(normalizeFinal({ standby: 1, finalMinVal: 150 }, w, "WM"), {});
+		assert.deepStrictEqual(normalizeFinal({ standby: 1, finalMinSec: 168 }, w, "WM"), {});
+		assert.deepStrictEqual(w, []);
+	});
+
+	it("keeps the learned washer values unchanged and without warning", () => {
+		const { f, w } = norm({});
+		assert.deepStrictEqual(f, WM_FINAL);
+		assert.deepStrictEqual(w, []);
+		assert.deepStrictEqual(finalViolations(WM_FINAL, 1, 10), []);
+	});
+
+	it("keeps the same values of a kW state (÷ 1000) unchanged", () => {
+		const kw = {
+			...WM_FINAL,
+			finalMinVal: 0.15,
+			finalMaxVal: 1.311,
+			finalHotVal: 1.311,
+			finalRestVal: 0.0055,
+			finalActVal: 0.009,
+		};
+		const w = [];
+		assert.deepStrictEqual(normalizeFinal({ standby: 0.001, ...kw }, w, "WM"), kw);
+		assert.deepStrictEqual(w, []);
+	});
+
+	it("accepts extreme but real devices: kettle Y 30 s, 3D printer X 1 day, charger P 0.4 W", () => {
+		assert.deepStrictEqual(norm({ finalMinSec: 30 }).w, []);
+		assert.deepStrictEqual(norm({ finalAfterSec: 86_400 }).w, []);
+		const charger = {
+			finalMinVal: 0.4,
+			finalMaxVal: 0,
+			finalHotVal: 0,
+			finalRestVal: 0.1,
+			finalActVal: 0,
+			finalActShare: 0,
+		};
+		const { f, w } = norm(charger, 0.05);
+		assert.strictEqual(f.finalMinVal, 0.4);
+		assert.deepStrictEqual(w, []);
+	});
+
+	const CLAMP = [
+		// key, below, clamped low, above, clamped high, extra settings so that no other rule interferes
+		["finalAfterSec", -5, 0, 700_000, 604_800, {}],
+		["finalMinSec", 5, 10, 90_000, 86_400, {}],
+		["finalQuietSec", 10, 30, 8000, 7200, { finalDipSec: 10 }],
+		["finalDipSec", 5, 10, 4000, 3600, { finalQuietSec: 7200 }],
+		["finalRestSec", 5, 10, 20_000, 14_400, {}],
+		["finalCheckSec", 100, 300, 20_000, 14_400, { finalLockSec: 14_400 }],
+		["finalLockSec", 100, 600, 20_000, 14_400, { finalCheckSec: 300 }],
+		["finalActShare", 0.3, 0.5, 0.95, 0.9, {}],
+	];
+	for (const [key, below, lo, above, hi, extra] of CLAMP) {
+		it(`clamps ${key} to [${lo}; ${hi}] with a warning`, () => {
+			const a = norm({ ...extra, [key]: below });
+			assert.strictEqual(a.f[key], lo);
+			assert.ok(
+				a.w.some(m => m.includes(key)),
+				a.w.join(),
+			);
+			const b = norm({ ...extra, [key]: above });
+			assert.strictEqual(b.f[key], hi);
+			assert.ok(
+				b.w.some(m => m.includes(key)),
+				b.w.join(),
+			);
+		});
+	}
+
+	it("FINAL_BOUNDS hold the time ranges of the table", () => {
+		assert.deepStrictEqual(FINAL_BOUNDS.finalAfterSec, [0, 604_800]);
+		assert.deepStrictEqual(FINAL_BOUNDS.finalLockSec, [600, 14_400]);
+		assert.deepStrictEqual(FINAL_BOUNDS.finalActShare, [0.5, 0.9]);
+	});
+
+	it("switches the final phase off when the band is empty or below the rest level", () => {
+		for (const over of [
+			{ finalMaxVal: 150 },
+			{ finalMaxVal: 100 },
+			{ finalRestVal: 150 },
+			{ finalRestVal: 0, finalMinVal: 0.8 },
+		]) {
+			const { f, w } = norm(over);
+			assert.deepStrictEqual(f, {}, JSON.stringify(over));
+			assert.strictEqual(w.length, 1, JSON.stringify(over));
+		}
+	});
+
+	it("turns exit c off when finalHotVal is below Pmax or Pmax is open", () => {
+		assert.strictEqual(norm({ finalHotVal: 900 }).f.finalHotVal, 0);
+		assert.strictEqual(norm({ finalMaxVal: 0 }).f.finalHotVal, 0);
+		assert.strictEqual(norm({ finalHotVal: 2000 }).f.finalHotVal, 2000);
+	});
+
+	it("turns exit f off when the activity level overlaps the band or the rest, or only one of both is set", () => {
+		for (const over of [{ finalActVal: 150 }, { finalActVal: 3 }, { finalActShare: 0 }, { finalActVal: 0 }]) {
+			const { f, w } = norm(over);
+			assert.deepStrictEqual([f.finalActVal, f.finalActShare], [0, 0], JSON.stringify(over));
+			assert.strictEqual(w.length, 1, JSON.stringify(over));
+		}
+	});
+
+	it("raises Z to G and limits the check window to the lock", () => {
+		assert.strictEqual(norm({ finalQuietSec: 60, finalDipSec: 300 }).f.finalQuietSec, 300);
+		assert.strictEqual(norm({ finalCheckSec: 3600, finalLockSec: 2700 }).f.finalCheckSec, 2700);
+	});
+
+	it("reads numbers given as text and treats NaN and negatives as 0", () => {
+		assert.strictEqual(normalizeFinal({ standby: 1, ...WM_FINAL, finalMinVal: "150" }, [], "WM").finalMinVal, 150);
+		assert.deepStrictEqual(normalizeFinal({ standby: 1, ...WM_FINAL, finalMinVal: Number.NaN }, [], "WM"), {});
+		assert.deepStrictEqual(normalizeFinal({ standby: 1, ...WM_FINAL, finalMinSec: -1 }, [], "WM"), {});
+	});
+
+	it("finalViolations reports the per-poll floors without changing anything", () => {
+		assert.deepStrictEqual(finalViolations(WM_FINAL, 1, 10), []);
+		assert.deepStrictEqual(finalViolations(WM_FINAL, 1, 100).sort(), [
+			"finalDipSec",
+			"finalMinSec",
+			"finalQuietSec",
+			"finalRestSec",
+		]);
+		assert.deepStrictEqual(finalViolations({ ...WM_FINAL, finalMaxVal: 100 }, 1, 10), ["finalMaxVal"]);
 	});
 });

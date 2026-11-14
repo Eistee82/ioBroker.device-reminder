@@ -1,7 +1,10 @@
 import assert from "node:assert";
+import { DEFAULT_TYPES } from "../build/lib/config.js";
 import { decodeCells, encodeCells, fromStored, quantOf } from "../build/lib/learn/ticks.js";
 import {
 	addRun,
+	DETECTION_KEYS,
+	detectionOf,
 	emptyStore,
 	fitSize,
 	labelCapture,
@@ -281,5 +284,31 @@ describe("run store", () => {
 		assert.strictEqual(store.runs.length, 0);
 		assert.deepStrictEqual(store.envelope, env);
 		assert.notStrictEqual(typeHash(WASHER), typeHash({ ...WASHER, trailerBurstSec: 30 }));
+	});
+
+	describe("hash of the detection values", () => {
+		it("keeps the hashes of existing values", () => {
+			assert.deepStrictEqual(DEFAULT_TYPES.slice(0, 4).map(typeHash), [
+				"39417b8a",
+				"0af5b9bf",
+				"8b9f87e6",
+				"37a6b30f",
+			]);
+			assert.strictEqual(typeHash({ ...DEFAULT_TYPES[0], finalMinVal: 0, finalLockSec: 0 }), "39417b8a");
+		});
+
+		it("appends non-zero final fields as name=value, without collisions", () => {
+			const a = typeHash({ ...DEFAULT_TYPES[0], finalMinVal: 150, finalMinSec: 160 });
+			const b = typeHash({ ...DEFAULT_TYPES[0], finalMinVal: 160, finalMinSec: 150 });
+			assert.notStrictEqual(a, "39417b8a");
+			assert.notStrictEqual(a, b);
+		});
+
+		it("detectionOf fills 29 fields, final fields 0", () => {
+			const d = detectionOf(DEFAULT_TYPES[0]);
+			assert.strictEqual(DETECTION_KEYS.length, 29);
+			assert.strictEqual(Object.keys(d).length, 29);
+			assert.strictEqual(d.finalLockSec, 0);
+		});
 	});
 });

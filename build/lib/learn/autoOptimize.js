@@ -1,5 +1,6 @@
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
-import { DETECTION_KEYS, detectionOf, pushChange, refreshInfo } from "../runStore.js";
+import { FINAL_KEYS } from "../detector/types.js";
+import { BASE_KEYS, DETECTION_KEYS, detectionOf, pushChange, refreshInfo } from "../runStore.js";
 import { analyzeTicks } from "./analyze.js";
 import { margin, minEndSec } from "./optimize.js";
 import { runOkFull, simulate } from "./replay.js";
@@ -52,7 +53,7 @@ export function withinBounds(p, pollSec) {
             return false;
         }
     }
-    if (DETECTION_KEYS.some(k => typeof d[k] === "number" && (!Number.isFinite(d[k]) || d[k] < 0))) {
+    if (BASE_KEYS.some(k => typeof d[k] === "number" && (!Number.isFinite(d[k]) || d[k] < 0))) {
         return false;
     }
     return d.standby < d.endVal && d.endVal < d.startVal && d.startCount >= 1 && d.endCount >= 1;
@@ -187,8 +188,9 @@ function truncatedOk(s, win, r) {
 export async function gate(store, p, ctx, perturb = "none") {
     return gateOn(new Data(store, ctx), p, perturb);
 }
-function fromSuggestion(sg) {
+function fromSuggestion(sg, p0) {
     return detectionOf({
+        ...finalOf(p0),
         ...sg.thresholds,
         mode: sg.mode,
         startDurationSec: sg.startDurationSec,
@@ -202,6 +204,9 @@ function fromSuggestion(sg) {
         trailerBlockVal: sg.trailerBlockVal ?? 0,
         trailerMaxSec: sg.trailerMaxSec ?? 0,
     });
+}
+function finalOf(p) {
+    return Object.fromEntries(FINAL_KEYS.map(k => [k, p[k] ?? 0]));
 }
 async function analyzeStored(data, p0, keep) {
     const { store, ctx } = data;
@@ -224,7 +229,7 @@ function distance(p, p0) {
     const filterA = a.trailerBurstSec > 0;
     const filterB = b.trailerBurstSec > 0;
     let d = filterA !== filterB ? 1 : 0;
-    for (const k of DETECTION_KEYS) {
+    for (const k of BASE_KEYS) {
         if (k.startsWith("trailer") && (!filterA || !filterB)) {
             continue;
         }
@@ -268,6 +273,7 @@ function saferOf(c, p0) {
         endDurationSec: Math.max(a.endDurationSec, b.endDurationSec),
         pauseHoldSec: Math.max(a.pauseHoldSec ?? 0, b.pauseHoldSec ?? 0),
         trailerGapSec: Math.max(a.trailerGapSec ?? 0, b.trailerGapSec ?? 0),
+        ...finalOf(b),
     };
 }
 async function repairCandidates(data, p0) {
@@ -276,7 +282,7 @@ async function repairCandidates(data, p0) {
     const out = [];
     const sg = await analyzeStored(data, p0, () => true);
     if (sg) {
-        out.push(saferOf(fromSuggestion(sg), p0));
+        out.push(saferOf(fromSuggestion(sg, p0), p0));
     }
     const base = detectionOf(p0);
     const env = store.envelope;
@@ -335,7 +341,7 @@ export function stepLimit(c, p0, trusted, withTrailer, pollSec) {
     const out = { ...a };
     const thresholds = new Set(["startVal", "endVal", "standby"]);
     const durations = new Set(["startDurationSec", "endDurationSec", "pauseHoldSec", "trailerMaxSec"]);
-    for (const k of DETECTION_KEYS) {
+    for (const k of BASE_KEYS) {
         const x = a[k];
         const y = b[k];
         if (typeof x !== "number" || typeof y !== "number") {
@@ -581,7 +587,7 @@ async function tighten(data, p0, r0, done) {
         const base = recipe.base === "current" ? detectionOf(p0) : analysis;
         return shape(recipe.filter >= 0 && variants[recipe.filter] ? { ...base, ...variants[recipe.filter] } : base);
     };
-    const analysis = fromSuggestion(sg);
+    const analysis = fromSuggestion(sg, p0);
     const variants = filterOptions(trusted, store, p0, withTrailer, poll);
     const recipes = [{ base: "analysis", filter: -1 }];
     variants.forEach((_, i) => {
@@ -665,7 +671,7 @@ async function crossCheck(data, p0, recipe, families, sg, isTrusted, build) {
         const variants = recipe.filter >= 0
             ? filterOptions(rest, store, p0, rest.filter(r => r.feat.trailer).length, ctx.pollSec)
             : [];
-        const cF = build(recipe, sgF ? fromSuggestion(sgF) : detectionOf(p0), variants);
+        const cF = build(recipe, sgF ? fromSuggestion(sgF, p0) : detectionOf(p0), variants);
         const gF = await gateOn(data, cF, "none", r => isTrusted(r) && r.family === fam);
         if (!gF.ok) {
             return false;

@@ -1,4 +1,5 @@
-import type { DetectionMode, TypeThresholds } from "./detector/types.js";
+import { FINAL_KEYS } from "./detector/types.js";
+import type { DetectionMode, FinalKey, FinalSettings, TypeThresholds } from "./detector/types.js";
 import { allocateDeviceId } from "./ids.js";
 import { defaultInstance, fixedTextState, kindFromInstance } from "./messenger/adapters.js";
 import { parseNumber } from "./utils.js";
@@ -92,6 +93,201 @@ export function normalizeTrailer(raw: Record<string, unknown>): Partial<Record<(
 		trailerBlockVal: clamp("trailerBlockVal", val("trailerBlockVal"), true),
 		trailerMaxSec: clamp("trailerMaxSec", max > 0 ? max : 7200, false),
 	};
+}
+
+/**
+ * Bounds of the time fields (s) and of the activity share of the final phase: [min, max] for values
+ * other than 0 (Spec A.2). Powers have no absolute bounds, they are in the unit of the state and only
+ * follow the relative rules of `normalizeFinal`.
+ */
+export const FINAL_BOUNDS = {
+	finalAfterSec: [0, 604_800],
+	finalMinSec: [10, 86_400],
+	finalQuietSec: [30, 7200],
+	finalDipSec: [10, 3600],
+	finalRestSec: [10, 14_400],
+	finalActShare: [0.5, 0.9],
+	finalCheckSec: [300, 14_400],
+	finalLockSec: [600, 14_400],
+} as const satisfies Partial<Record<FinalKey, readonly [number, number]>>;
+
+/** Entries of `FINAL_BOUNDS`. */
+const FINAL_RANGES = Object.entries(FINAL_BOUNDS) as [keyof typeof FINAL_BOUNDS, readonly [number, number]][];
+
+/** Values used when a final phase field is 0, as far as they do not depend on the poll interval. */
+const FINAL_ZERO = { finalQuietSec: 120, finalDipSec: 60, finalCheckSec: 1800, finalLockSec: 14_400 } as const;
+
+/** All final phase fields as numbers (missing = 0). */
+type FinalValues = Record<FinalKey, number>;
+
+/**
+ * Value of a final phase field, or its replacement when it is 0.
+ *
+ * @param f - Values
+ * @param key - Field with a replacement for 0
+ */
+function finalEff(f: FinalValues, key: keyof typeof FINAL_ZERO): number {
+	return f[key] > 0 ? f[key] : FINAL_ZERO[key];
+}
+
+/**
+ * Rest level in effect: `finalRestVal`, otherwise `standby`.
+ *
+ * @param f - Values
+ * @param standby - Standby threshold of the device
+ */
+function finalRestOf(f: FinalValues, standby: number): number {
+	return f.finalRestVal > 0 ? f.finalRestVal : standby;
+}
+
+/**
+ * Normalized final phase of raw settings (Spec A.2): empty while the master switch
+ * (`finalMinVal` and `finalMinSec`) is off or the band is empty, otherwise all 13 fields, clamped
+ * and corrected towards the safe side. Every correction is reported as a warning
+ * `Device "<label>": <field> <old> → <new> (<reason>)`.
+ *
+ * @param raw - Raw settings (`standby` gives the rest level when `finalRestVal` is 0)
+ * @param warnings - Receives the warnings
+ * @param label - Device name for the warnings
+ */
+export function normalizeFinal(raw: Record<string, unknown>, warnings: string[], label: string): FinalSettings {
+	const notes: string[] = [];
+	const note = (key: FinalKey, from: number, to: number, why: string): void => {
+		notes.push(`Device "${label}": ${key} ${from} → ${to} (${why})`);
+	};
+	const f = {} as FinalValues;
+	for (const key of FINAL_KEYS) {
+		const v = parseNumber(raw[key]);
+		if (v === null) {
+			f[key] = 0;
+		} else if (v < 0) {
+			f[key] = 0;
+			note(key, v, 0, "negative");
+		} else {
+			f[key] = v;
+		}
+	}
+	if (f.finalMinVal <= 0 || f.finalMinSec <= 0) {
+		return {};
+	}
+	const standby = Math.max(0, parseNumber(raw.standby) ?? 0);
+	const rest = finalRestOf(f, standby);
+	const off = (why: string): FinalSettings => {
+		warnings.push(`Device "${label}": finalMinVal ${f.finalMinVal} → 0 (${why}; final phase off)`);
+		return {};
+	};
+	if (f.finalMinVal <= rest) {
+		return off(`not above the rest level ${rest}`);
+	}
+	if (f.finalMaxVal > 0 && f.finalMaxVal <= f.finalMinVal) {
+		return off(`finalMaxVal ${f.finalMaxVal} not above it, empty band`);
+	}
+	for (const [key, [lo, hi]] of FINAL_RANGES) {
+		const v = f[key];
+		if (v !== 0 && (v < lo || v > hi)) {
+			f[key] = Math.min(hi, Math.max(lo, v));
+			note(key, v, f[key], `range ${lo}–${hi}`);
+		}
+	}
+	if (f.finalHotVal !== 0 && (f.finalMaxVal <= 0 || f.finalHotVal < f.finalMaxVal)) {
+		note(
+			"finalHotVal",
+			f.finalHotVal,
+			0,
+			f.finalMaxVal > 0 ? `below finalMaxVal ${f.finalMaxVal}` : "finalMaxVal open",
+		);
+		f.finalHotVal = 0;
+	}
+	if (f.finalActVal !== 0 && (f.finalActVal < rest || f.finalActVal >= f.finalMinVal)) {
+		note("finalActVal", f.finalActVal, 0, `outside ${rest}–${f.finalMinVal}, finalActShare 0 too`);
+		f.finalActVal = 0;
+		f.finalActShare = 0;
+	} else if ((f.finalActVal === 0) !== (f.finalActShare === 0)) {
+		const key = f.finalActVal === 0 ? "finalActShare" : "finalActVal";
+		note(key, f[key], 0, `needs ${key === "finalActVal" ? "finalActShare" : "finalActVal"} as well`);
+		f.finalActVal = 0;
+		f.finalActShare = 0;
+	}
+	const dip = finalEff(f, "finalDipSec");
+	if (finalEff(f, "finalQuietSec") < dip) {
+		note("finalQuietSec", f.finalQuietSec, dip, `below finalDipSec ${dip}`);
+		f.finalQuietSec = dip;
+	}
+	const lock = finalEff(f, "finalLockSec");
+	if (finalEff(f, "finalCheckSec") > lock) {
+		note("finalCheckSec", f.finalCheckSec, lock, `above finalLockSec ${lock}`);
+		f.finalCheckSec = lock;
+	}
+	warnings.push(...notes);
+	return f;
+}
+
+/**
+ * Final phase fields that break a bound, a rule or a floor of the poll interval (Spec A.2); changes
+ * nothing. Learned values are checked with this and dropped instead of clamped.
+ *
+ * Floors per poll (only for values other than 0): `finalMinSec`, `finalDipSec` ≥ 2 · poll,
+ * `finalQuietSec` ≥ max(2 · poll, G), `finalRestSec` ≥ 3 · poll, `finalLockSec` ≥ 2 · poll.
+ *
+ * @param s - Final phase values
+ * @param standby - Standby threshold of the device (rest level when `finalRestVal` is 0)
+ * @param pollSec - Poll interval in s
+ */
+export function finalViolations(s: FinalSettings, standby: number, pollSec: number): FinalKey[] {
+	const bad = new Set<FinalKey>();
+	const f = {} as FinalValues;
+	for (const key of FINAL_KEYS) {
+		const v = s[key] ?? 0;
+		if (!Number.isFinite(v) || v < 0) {
+			bad.add(key);
+		}
+		f[key] = Number.isFinite(v) ? v : 0;
+	}
+	if (f.finalMinVal > 0 && f.finalMinSec > 0) {
+		const rest = finalRestOf(f, standby);
+		if (f.finalMinVal <= rest) {
+			bad.add(f.finalRestVal > 0 ? "finalRestVal" : "finalMinVal");
+		}
+		if (f.finalMaxVal > 0 && f.finalMaxVal <= f.finalMinVal) {
+			bad.add("finalMaxVal");
+		}
+		for (const [key, [lo, hi]] of FINAL_RANGES) {
+			if (f[key] !== 0 && (f[key] < lo || f[key] > hi)) {
+				bad.add(key);
+			}
+		}
+		if (f.finalHotVal !== 0 && (f.finalMaxVal <= 0 || f.finalHotVal < f.finalMaxVal)) {
+			bad.add("finalHotVal");
+		}
+		if (f.finalActVal !== 0 && (f.finalActVal < rest || f.finalActVal >= f.finalMinVal)) {
+			bad.add("finalActVal");
+		}
+		if ((f.finalActVal === 0) !== (f.finalActShare === 0)) {
+			bad.add("finalActVal");
+			bad.add("finalActShare");
+		}
+		if (finalEff(f, "finalQuietSec") < finalEff(f, "finalDipSec")) {
+			bad.add("finalQuietSec");
+		}
+		if (finalEff(f, "finalCheckSec") > finalEff(f, "finalLockSec")) {
+			bad.add("finalCheckSec");
+		}
+		const poll = Math.max(1, pollSec);
+		const dipRun = f.finalDipSec > 0 ? f.finalDipSec : Math.max(60, 2 * poll);
+		const floors: [FinalKey, number][] = [
+			["finalMinSec", 2 * poll],
+			["finalDipSec", 2 * poll],
+			["finalQuietSec", Math.max(2 * poll, dipRun)],
+			["finalRestSec", 3 * poll],
+			["finalLockSec", 2 * poll],
+		];
+		for (const [key, min] of floors) {
+			if (f[key] !== 0 && f[key] < min) {
+				bad.add(key);
+			}
+		}
+	}
+	return FINAL_KEYS.filter(k => bad.has(k));
 }
 
 /** Recipient config configuration. */

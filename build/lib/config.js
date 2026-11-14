@@ -1,3 +1,4 @@
+import { FINAL_KEYS } from "./detector/types.js";
 import { allocateDeviceId } from "./ids.js";
 import { defaultInstance, fixedTextState, kindFromInstance } from "./messenger/adapters.js";
 import { parseNumber } from "./utils.js";
@@ -33,6 +34,149 @@ export function normalizeTrailer(raw) {
         trailerBlockVal: clamp("trailerBlockVal", val("trailerBlockVal"), true),
         trailerMaxSec: clamp("trailerMaxSec", max > 0 ? max : 7200, false),
     };
+}
+export const FINAL_BOUNDS = {
+    finalAfterSec: [0, 604_800],
+    finalMinSec: [10, 86_400],
+    finalQuietSec: [30, 7200],
+    finalDipSec: [10, 3600],
+    finalRestSec: [10, 14_400],
+    finalActShare: [0.5, 0.9],
+    finalCheckSec: [300, 14_400],
+    finalLockSec: [600, 14_400],
+};
+const FINAL_RANGES = Object.entries(FINAL_BOUNDS);
+const FINAL_ZERO = { finalQuietSec: 120, finalDipSec: 60, finalCheckSec: 1800, finalLockSec: 14_400 };
+function finalEff(f, key) {
+    return f[key] > 0 ? f[key] : FINAL_ZERO[key];
+}
+function finalRestOf(f, standby) {
+    return f.finalRestVal > 0 ? f.finalRestVal : standby;
+}
+export function normalizeFinal(raw, warnings, label) {
+    const notes = [];
+    const note = (key, from, to, why) => {
+        notes.push(`Device "${label}": ${key} ${from} → ${to} (${why})`);
+    };
+    const f = {};
+    for (const key of FINAL_KEYS) {
+        const v = parseNumber(raw[key]);
+        if (v === null) {
+            f[key] = 0;
+        }
+        else if (v < 0) {
+            f[key] = 0;
+            note(key, v, 0, "negative");
+        }
+        else {
+            f[key] = v;
+        }
+    }
+    if (f.finalMinVal <= 0 || f.finalMinSec <= 0) {
+        return {};
+    }
+    const standby = Math.max(0, parseNumber(raw.standby) ?? 0);
+    const rest = finalRestOf(f, standby);
+    const off = (why) => {
+        warnings.push(`Device "${label}": finalMinVal ${f.finalMinVal} → 0 (${why}; final phase off)`);
+        return {};
+    };
+    if (f.finalMinVal <= rest) {
+        return off(`not above the rest level ${rest}`);
+    }
+    if (f.finalMaxVal > 0 && f.finalMaxVal <= f.finalMinVal) {
+        return off(`finalMaxVal ${f.finalMaxVal} not above it, empty band`);
+    }
+    for (const [key, [lo, hi]] of FINAL_RANGES) {
+        const v = f[key];
+        if (v !== 0 && (v < lo || v > hi)) {
+            f[key] = Math.min(hi, Math.max(lo, v));
+            note(key, v, f[key], `range ${lo}–${hi}`);
+        }
+    }
+    if (f.finalHotVal !== 0 && (f.finalMaxVal <= 0 || f.finalHotVal < f.finalMaxVal)) {
+        note("finalHotVal", f.finalHotVal, 0, f.finalMaxVal > 0 ? `below finalMaxVal ${f.finalMaxVal}` : "finalMaxVal open");
+        f.finalHotVal = 0;
+    }
+    if (f.finalActVal !== 0 && (f.finalActVal < rest || f.finalActVal >= f.finalMinVal)) {
+        note("finalActVal", f.finalActVal, 0, `outside ${rest}–${f.finalMinVal}, finalActShare 0 too`);
+        f.finalActVal = 0;
+        f.finalActShare = 0;
+    }
+    else if ((f.finalActVal === 0) !== (f.finalActShare === 0)) {
+        const key = f.finalActVal === 0 ? "finalActShare" : "finalActVal";
+        note(key, f[key], 0, `needs ${key === "finalActVal" ? "finalActShare" : "finalActVal"} as well`);
+        f.finalActVal = 0;
+        f.finalActShare = 0;
+    }
+    const dip = finalEff(f, "finalDipSec");
+    if (finalEff(f, "finalQuietSec") < dip) {
+        note("finalQuietSec", f.finalQuietSec, dip, `below finalDipSec ${dip}`);
+        f.finalQuietSec = dip;
+    }
+    const lock = finalEff(f, "finalLockSec");
+    if (finalEff(f, "finalCheckSec") > lock) {
+        note("finalCheckSec", f.finalCheckSec, lock, `above finalLockSec ${lock}`);
+        f.finalCheckSec = lock;
+    }
+    warnings.push(...notes);
+    return f;
+}
+export function finalViolations(s, standby, pollSec) {
+    const bad = new Set();
+    const f = {};
+    for (const key of FINAL_KEYS) {
+        const v = s[key] ?? 0;
+        if (!Number.isFinite(v) || v < 0) {
+            bad.add(key);
+        }
+        f[key] = Number.isFinite(v) ? v : 0;
+    }
+    if (f.finalMinVal > 0 && f.finalMinSec > 0) {
+        const rest = finalRestOf(f, standby);
+        if (f.finalMinVal <= rest) {
+            bad.add(f.finalRestVal > 0 ? "finalRestVal" : "finalMinVal");
+        }
+        if (f.finalMaxVal > 0 && f.finalMaxVal <= f.finalMinVal) {
+            bad.add("finalMaxVal");
+        }
+        for (const [key, [lo, hi]] of FINAL_RANGES) {
+            if (f[key] !== 0 && (f[key] < lo || f[key] > hi)) {
+                bad.add(key);
+            }
+        }
+        if (f.finalHotVal !== 0 && (f.finalMaxVal <= 0 || f.finalHotVal < f.finalMaxVal)) {
+            bad.add("finalHotVal");
+        }
+        if (f.finalActVal !== 0 && (f.finalActVal < rest || f.finalActVal >= f.finalMinVal)) {
+            bad.add("finalActVal");
+        }
+        if ((f.finalActVal === 0) !== (f.finalActShare === 0)) {
+            bad.add("finalActVal");
+            bad.add("finalActShare");
+        }
+        if (finalEff(f, "finalQuietSec") < finalEff(f, "finalDipSec")) {
+            bad.add("finalQuietSec");
+        }
+        if (finalEff(f, "finalCheckSec") > finalEff(f, "finalLockSec")) {
+            bad.add("finalCheckSec");
+        }
+        const poll = Math.max(1, pollSec);
+        const dipRun = f.finalDipSec > 0 ? f.finalDipSec : Math.max(60, 2 * poll);
+        const floors = [
+            ["finalMinSec", 2 * poll],
+            ["finalDipSec", 2 * poll],
+            ["finalQuietSec", Math.max(2 * poll, dipRun)],
+            ["finalRestSec", 3 * poll],
+            ["finalLockSec", 2 * poll],
+        ];
+        for (const [key, min] of floors) {
+            if (f[key] !== 0 && f[key] < min) {
+                bad.add(key);
+            }
+        }
+    }
+    return FINAL_KEYS.filter(k => bad.has(k));
 }
 const MESSENGER_KINDS = [
     "alexa",

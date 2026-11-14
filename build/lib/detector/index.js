@@ -1,12 +1,16 @@
 import { LegacyDetector } from "./legacy.js";
 import { TimedDetector } from "./timed.js";
 import { TrailerFilter } from "./trailer.js";
+export { FINAL_KEYS } from "./types.js";
 export { LegacyDetector } from "./legacy.js";
 export { TimedDetector } from "./timed.js";
 export { PauseGuard } from "./pauseGuard.js";
 export { TRAILER_BLOCK_SEC, TRAILER_MAX_DEFAULT_SEC, TrailerFilter } from "./trailer.js";
 export function trailerGapOf(s, pollSec) {
     return (s.trailerGapSec ?? 0) > 0 ? s.trailerGapSec : Math.max(3 * pollSec, 30);
+}
+export function finalOn(s) {
+    return (s.finalMinVal ?? 0) > 0 && (s.finalMinSec ?? 0) > 0;
 }
 export function createDetector(s, o) {
     const inner = createInner(s, o);

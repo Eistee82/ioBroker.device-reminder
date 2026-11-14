@@ -1,3 +1,4 @@
+import { FINAL_KEYS } from "./detector/types.js";
 import type { DetectionSettings } from "./detector/types.js";
 import type { FileIO } from "./host.js";
 import type { RunFeatures } from "./learn/families.js";
@@ -176,8 +177,8 @@ export interface StoreFile {
 	info: OptimizeInfo;
 }
 
-/** Detection fields that make up a device type. */
-export const DETECTION_KEYS = [
+/** Base detection fields (thresholds, mode, pause protection, anti-crease filter). */
+export const BASE_KEYS = [
 	"startVal",
 	"endVal",
 	"standby",
@@ -196,6 +197,12 @@ export const DETECTION_KEYS = [
 	"trailerMaxSec",
 ] as const;
 
+/** All detection fields: the base fields and the fields of the final phase. */
+export const DETECTION_KEYS = [...BASE_KEYS, ...FINAL_KEYS] as const;
+
+/** One base detection field. */
+export type BaseKey = (typeof BASE_KEYS)[number];
+
 /** One detection field. */
 export type DetectionKey = (typeof DETECTION_KEYS)[number];
 
@@ -205,7 +212,7 @@ export type DetectionKey = (typeof DETECTION_KEYS)[number];
  * @param t - Type or settings
  */
 export function detectionOf(t: DetectionSettings): DetectionSettings {
-	return {
+	const out: DetectionSettings = {
 		startVal: t.startVal,
 		endVal: t.endVal,
 		standby: t.standby,
@@ -223,15 +230,27 @@ export function detectionOf(t: DetectionSettings): DetectionSettings {
 		trailerBlockVal: t.trailerBlockVal ?? 0,
 		trailerMaxSec: t.trailerMaxSec ?? 0,
 	};
+	for (const k of FINAL_KEYS) {
+		out[k] = t[k] ?? 0;
+	}
+	return out;
 }
 
 /**
- * FNV-1a hash of the detection fields of a type.
+ * FNV-1a hash of the detection values: the base fields as before, each final phase field only when
+ * it is not 0 (appended as `|name=value`), so the hashes of existing values stay the same.
  *
- * @param t - Type
+ * @param t - Type or settings
  */
 export function typeHash(t: DetectionSettings): string {
-	const text = JSON.stringify(DETECTION_KEYS.map(k => detectionOf(t)[k]));
+	const d = detectionOf(t);
+	let text = JSON.stringify(BASE_KEYS.map(k => d[k]));
+	for (const k of FINAL_KEYS) {
+		const v = d[k] ?? 0;
+		if (v !== 0) {
+			text += `|${k}=${v}`;
+		}
+	}
 	let h = 0x811c9dc5;
 	for (let i = 0; i < text.length; i++) {
 		h ^= text.charCodeAt(i);
