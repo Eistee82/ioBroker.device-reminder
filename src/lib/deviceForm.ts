@@ -829,6 +829,10 @@ export function formToDeviceConfig(
 	if (template !== undefined && findTemplate(template)) {
 		config.template = template;
 	}
+	// values changed by hand are the user's own, no longer learned
+	if (!o.isNew && o.previous && typeHash(o.previous.detection) !== typeHash(detection)) {
+		delete config.learned;
+	}
 	return { config, errors, warnings };
 }
 

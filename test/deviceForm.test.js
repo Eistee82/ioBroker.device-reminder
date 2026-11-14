@@ -463,6 +463,7 @@ describe("deviceForm", () => {
 				{ isNew: false, unitFactor: 1, previous },
 			);
 			assert.strictEqual(changed.config.template, undefined, "values differ from the template");
+			assert.strictEqual(changed.config.learned, undefined, "values changed by hand are no longer learned");
 		});
 
 		it("editing drops the old type id and the review hint, and keeps the stored values without form values", () => {

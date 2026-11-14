@@ -107,7 +107,7 @@ Nicht gewünscht: Zerlegung der Summenleistung (NILM).
 - **Eine Fabrik**: `createDetector` (`detector/index.ts:54`) für Live, Nachspielen (`replay.ts:64`), Gate und History-Übernahme.
 - **Laufspeicher**: ioBroker-Dateispeicher, Slots A/B, Format `v: 1`; `isStore` prüft nur Pflichtfelder (`runStore.ts:308-322`), zusätzliche Felder gehen ohne Formatwechsel. Heute: höchstens 20 Läufe/400 KB (`runStore.ts:15/19`), `envelope` wächst nur (`runStore.ts:74-75`, `mergeEnvelope` `:712`), Verdrängung behält je Gruppe 2 Läufe und bevorzugt nicht-bindende Läufe (`pickVictim`, `runStore.ts:807-838`).
 - **Optimierung heute**: Verschärfung ab `TIGHTEN_MIN_RUNS = 4` vertrauenswürdigen Läufen (`autoOptimize.ts:16`, wird 8, D.3), `TIGHTEN_NEW_RUNS = 2`, `TIGHTEN_SPACING_MS = 24 h`, Sperre nach Reparatur/Undo/Reset `LOCK_RUNS = 5` und `LOCK_MS = 14 Tage` (`autoOptimize.ts:18-24`); Budget 30 s Wanduhr je Job (`deviceRegistry.ts:52`).
-- **Einheiten**: Erkennungswerte in der Einheit des States; Lernen rechnet intern in W über `unitFactor`.
+- **Einheiten**: Erkennungswerte in der Einheit des States; Lernen rechnet intern in W über `unitFactor`. Beim Bearbeiten eines Geräts werden gespeicherte Werte bei einem Einheitenwechsel (W/kW) nicht umgerechnet; der User passt sie dann von Hand an (nur beim Anlegen werden unberührte Werte umgerechnet).
 - **Upgrade**: js-controller ergänzt fehlende Default-Keys in der Instanz-native; `main.ts:108-118` filtert sie.
 
 **Wie die Daten aussehen**

@@ -610,6 +610,9 @@ export function formToDeviceConfig(f, o) {
     if (template !== undefined && findTemplate(template)) {
         config.template = template;
     }
+    if (!o.isNew && o.previous && typeHash(o.previous.detection) !== typeHash(detection)) {
+        delete config.learned;
+    }
     return { config, errors, warnings };
 }
 export function deviceConfigToForm(c) {
