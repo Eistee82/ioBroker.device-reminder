@@ -529,9 +529,6 @@ export function normalizeDeviceConfig(native, legacyTypes) {
             config.reviewHint = reviewHint;
         }
     }
-    if (typeId !== undefined) {
-        config.typeId = typeId;
-    }
     return { config, warnings };
 }
 //# sourceMappingURL=config.js.map

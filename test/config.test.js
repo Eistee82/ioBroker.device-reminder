@@ -41,7 +41,7 @@ describe("configuration model", () => {
 			assert.strictEqual(findType(config, "nope"), undefined);
 		});
 
-		it("default types match the 3.1.2 values (config.ts and io-package.json)", () => {
+		it("default types match the 3.1.2 values; io-package.json has no types and configVersion 5", () => {
 			const legacy = {
 				"washing-machine": [30, 15, 1, 2, 50],
 				dryer: [120, 15, 1, 2, 20],
@@ -52,12 +52,12 @@ describe("configuration model", () => {
 			}
 			const pick = t => [t.startVal, t.endVal, t.standby, t.startCount, t.endCount];
 			const pkg = JSON.parse(fs.readFileSync(new URL("../io-package.json", import.meta.url), "utf8"));
-			for (const list of [DEFAULT_TYPES, pkg.native.types]) {
-				assert.strictEqual(list.length, Object.keys(legacy).length);
-				for (const t of list) {
-					assert.deepStrictEqual(pick(t), legacy[t.id], t.id);
-				}
+			assert.strictEqual(DEFAULT_TYPES.length, Object.keys(legacy).length);
+			for (const t of DEFAULT_TYPES) {
+				assert.deepStrictEqual(pick(t), legacy[t.id], t.id);
 			}
+			assert.strictEqual(pkg.native.types, undefined);
+			assert.strictEqual(pkg.native.configVersion, 5);
 		});
 
 		it("generates stable ids for recipients without id and keeps them when the first is deleted", () => {
@@ -123,9 +123,8 @@ describe("configuration model", () => {
 		});
 
 		it("normalizes the pause protection fields (default 0 = off)", () => {
-			const pkg = JSON.parse(fs.readFileSync(new URL("../io-package.json", import.meta.url), "utf8"));
 			const pause = t => [t.pauseHoldSec, t.pauseUntilSec, t.pauseBelowVal];
-			for (const t of [...DEFAULT_TYPES, ...pkg.native.types]) {
+			for (const t of DEFAULT_TYPES) {
 				assert.deepStrictEqual(pause(t), [0, 0, 0], t.id);
 			}
 			const config = resolveLegacyTypes({
@@ -218,6 +217,7 @@ describe("configuration model", () => {
 			assert.deepStrictEqual([config.detection.startVal, config.detection.endCount], [120, 20]);
 			assert.strictEqual(raw.detection, undefined);
 			assert.deepStrictEqual([config.template, config.enabled, config.needsReview], ["dryer", true, undefined]);
+			assert.ok(!("typeId" in config), "the read config has no typeId");
 		});
 
 		it("falls back to Custom, disabled with a review hint, when the detection is missing", () => {
@@ -275,8 +275,8 @@ describe("configuration model", () => {
 			);
 			assert.deepStrictEqual(warnings, []);
 			assert.deepStrictEqual(
-				[config.detection.endCount, config.template, config.needsReview, config.reviewHint, config.typeId],
-				[77, "washing-machine", true, "check", "dryer"],
+				[config.detection.endCount, config.template, config.needsReview, config.reviewHint, "typeId" in config],
+				[77, "washing-machine", true, "check", false],
 			);
 		});
 	});

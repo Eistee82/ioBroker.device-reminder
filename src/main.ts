@@ -13,7 +13,7 @@ import type { FileIO, NotifierHost } from "./lib/host.js";
 import type { DeviceTypeConfig } from "./lib/legacyTypes.js";
 import { resolveLegacyTypes } from "./lib/legacyTypes.js";
 import type { LegacyStateIo } from "./lib/migration.js";
-import { isLegacyConfig, migrateLegacyConfig, migrateLegacyStates } from "./lib/migration.js";
+import { applyV4Migration, isLegacyConfig, migrateLegacyConfig, migrateLegacyStates } from "./lib/migration.js";
 import { Notifier } from "./lib/notifier.js";
 import { errorMessage, isNotFound } from "./lib/utils.js";
 
@@ -46,6 +46,7 @@ class DeviceReminder extends utils.Adapter {
 			// texts of the device manager forms (admin/i18n)
 			await utils.I18n.init(fileURLToPath(new URL("../admin", import.meta.url)), this);
 			await this.initMigration();
+			await this.initV4Migration();
 
 			const { config, warnings, generatedIds, idPatch } = normalizeInstanceConfig(
 				this.config as unknown as Record<string, unknown>,
@@ -168,6 +169,46 @@ class DeviceReminder extends utils.Adapter {
 			await this.setForeignObjectAsync(objId, obj);
 		} catch (err) {
 			this.log.error(`Migration from 3.1.2 failed, configuration left unchanged: ${errorMessage(err)}`);
+		}
+	}
+
+	/**
+	 * Move the device type values of a V4 test installation into the device objects (Spec C.6): every device
+	 * object with `typeId` and without `detection` gets its own values, `typeId` is removed. Runs before the
+	 * devices are loaded, writes only device objects (never the instance object) and needs no restart.
+	 */
+	private async initV4Migration(): Promise<void> {
+		const prefix = `${this.namespace}.`;
+		try {
+			const { migrated, warnings } = await applyV4Migration(
+				{
+					deviceObjects: async () => {
+						const res = await this.getObjectViewAsync("system", "device", {
+							startkey: prefix,
+							endkey: `${prefix}香`,
+						});
+						const objects: Record<string, ioBroker.Object> = {};
+						for (const row of res?.rows ?? []) {
+							const rel = row.id.slice(prefix.length);
+							if (row.value && rel !== "" && !rel.includes(".")) {
+								objects[row.id] = row.value;
+							}
+						}
+						return objects;
+					},
+					getObject: id => this.getForeignObjectAsync(id),
+					setObject: (id, obj) => this.setForeignObjectAsync(id, obj),
+				},
+				this.config as unknown as Record<string, unknown>,
+			);
+			for (const w of warnings) {
+				this.log.warn(`Migration: ${w}`);
+			}
+			if (migrated.length > 0) {
+				this.log.info(`Device type values moved into ${migrated.length} device(s)`);
+			}
+		} catch (err) {
+			this.log.error(`Moving the device type values into the devices failed: ${errorMessage(err)}`);
 		}
 	}
 

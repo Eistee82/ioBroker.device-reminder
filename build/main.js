@@ -7,7 +7,7 @@ import { DeviceRegistry } from "./lib/deviceRegistry.js";
 import { DeviceSync } from "./lib/deviceSync.js";
 import { ensureDeviceObjects } from "./lib/deviceObjects.js";
 import { resolveLegacyTypes } from "./lib/legacyTypes.js";
-import { isLegacyConfig, migrateLegacyConfig, migrateLegacyStates } from "./lib/migration.js";
+import { applyV4Migration, isLegacyConfig, migrateLegacyConfig, migrateLegacyStates } from "./lib/migration.js";
 import { Notifier } from "./lib/notifier.js";
 import { errorMessage, isNotFound } from "./lib/utils.js";
 const OWN_SUBSCRIPTIONS = ["*.config.*", "*.acknowledge", "*.learning.*"];
@@ -33,6 +33,7 @@ class DeviceReminder extends utils.Adapter {
         try {
             await utils.I18n.init(fileURLToPath(new URL("../admin", import.meta.url)), this);
             await this.initMigration();
+            await this.initV4Migration();
             const { config, warnings, generatedIds, idPatch } = normalizeInstanceConfig(this.config);
             for (const w of warnings) {
                 this.log.warn(w);
@@ -133,6 +134,38 @@ class DeviceReminder extends utils.Adapter {
         }
         catch (err) {
             this.log.error(`Migration from 3.1.2 failed, configuration left unchanged: ${errorMessage(err)}`);
+        }
+    }
+    async initV4Migration() {
+        const prefix = `${this.namespace}.`;
+        try {
+            const { migrated, warnings } = await applyV4Migration({
+                deviceObjects: async () => {
+                    const res = await this.getObjectViewAsync("system", "device", {
+                        startkey: prefix,
+                        endkey: `${prefix}香`,
+                    });
+                    const objects = {};
+                    for (const row of res?.rows ?? []) {
+                        const rel = row.id.slice(prefix.length);
+                        if (row.value && rel !== "" && !rel.includes(".")) {
+                            objects[row.id] = row.value;
+                        }
+                    }
+                    return objects;
+                },
+                getObject: id => this.getForeignObjectAsync(id),
+                setObject: (id, obj) => this.setForeignObjectAsync(id, obj),
+            }, this.config);
+            for (const w of warnings) {
+                this.log.warn(`Migration: ${w}`);
+            }
+            if (migrated.length > 0) {
+                this.log.info(`Device type values moved into ${migrated.length} device(s)`);
+            }
+        }
+        catch (err) {
+            this.log.error(`Moving the device type values into the devices failed: ${errorMessage(err)}`);
         }
     }
     async persistGeneratedIds(patch) {

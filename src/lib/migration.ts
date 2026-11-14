@@ -8,7 +8,7 @@ import {
 } from "./config.js";
 import type { DetectionSettings, TypeThresholds } from "./detector/types.js";
 import { allocateDeviceId, sanitizeId } from "./ids.js";
-import type { DeviceTypeConfig } from "./legacyTypes.js";
+import { type DeviceTypeConfig, findType, resolveLegacyTypes } from "./legacyTypes.js";
 import { detectionOf } from "./runStore.js";
 import { CUSTOM_TEMPLATE, TEMPLATES, type Template } from "./templates.js";
 import { DEVICE_STATES } from "./stateDefinitions.js";
@@ -767,4 +767,123 @@ export async function migrateLegacyStates(io: LegacyStateIo, devices: MigrationR
 		}
 	}
 	return warnings;
+}
+
+/** Result of the migration of one device of a V4 test installation. */
+export interface V4DeviceMigration {
+	/** New device native, or null if there is nothing to do (the device has `detection` or no `typeId`). */
+	native: Record<string, unknown> | null;
+	/** Warnings (types that could not be read, device type not found). */
+	warnings: string[];
+}
+
+/**
+ * Move the values of the device type of a V4 test installation into the device (Spec C.6, pure, no I/O).
+ * Detected by structure: a `typeId` and no `detection` (`configVersion` is no criterion, js-controller fills in
+ * the default). The type is resolved exactly as before (`resolveLegacyTypes` + `findType`); every other field
+ * stays unchanged, `typeId` is removed, `template` is set for a built-in type. Without a hit the device gets the
+ * values of "Custom", a review hint and is disabled: it was ignored before and must not start sending messages.
+ *
+ * @param raw - Device native
+ * @param native - Instance native (its `types` are only read)
+ */
+export function migrateV4Device(raw: Record<string, unknown>, native: Record<string, unknown>): V4DeviceMigration {
+	const warnings: string[] = [];
+	if (!isRecord(raw) || typeof raw.typeId !== "string" || isRecord(raw.detection)) {
+		return { native: null, warnings };
+	}
+	const { typeId, ...rest } = raw;
+	const type = findType(resolveLegacyTypes(isRecord(native) ? native : {}, warnings), typeId);
+	if (type) {
+		const out: Record<string, unknown> = { ...rest, detection: detectionOf(type) };
+		if (type.builtin) {
+			out.template = type.id;
+		} else {
+			delete out.template;
+		}
+		return { native: out, warnings };
+	}
+	const reviewHint = `device type "${typeId}" not found; values taken from template Custom`;
+	const label = typeof raw.name === "string" ? raw.name.trim() : "";
+	warnings.push(`Device "${label}": ${reviewHint}; device disabled`);
+	const out: Record<string, unknown> = {
+		...rest,
+		enabled: false,
+		detection: detectionOf(CUSTOM_TEMPLATE.detection),
+		needsReview: true,
+		reviewHint,
+	};
+	delete out.template;
+	return { native: out, warnings };
+}
+
+/**
+ * Device objects of a V4 test installation that still need the migration of their type values (pure).
+ * Only objects of type `device` are planned, never the instance object.
+ *
+ * @param objects - Objects by full id (device objects of the instance)
+ * @param native - Instance native (its `types` are only read)
+ */
+export function planV4Migration(
+	objects: Record<string, ioBroker.Object>,
+	native: Record<string, unknown>,
+): { id: string; native: Record<string, unknown>; warnings: string[] }[] {
+	const plan: { id: string; native: Record<string, unknown>; warnings: string[] }[] = [];
+	for (const [id, obj] of Object.entries(objects)) {
+		if (obj?.type !== "device" || !isRecord(obj.native)) {
+			continue;
+		}
+		const { native: next, warnings } = migrateV4Device(obj.native, native);
+		if (next) {
+			plan.push({ id, native: next, warnings });
+		}
+	}
+	return plan;
+}
+
+/** Object access needed for the migration of a V4 test installation (implemented by the adapter). */
+export interface V4MigrationIo {
+	/** Device objects of the instance by full id. */
+	deviceObjects(): Promise<Record<string, ioBroker.Object>>;
+	/** Read an object (full id). */
+	getObject(id: string): Promise<ioBroker.Object | null | undefined>;
+	/** Write (replace, not extend) an object (full id). */
+	setObject(id: string, obj: ioBroker.Object): Promise<unknown>;
+}
+
+/**
+ * Migrate the device objects of a V4 test installation: each planned object is read again, its `native` is
+ * replaced and the whole object is written (no extend, so `typeId` really disappears). The instance object is
+ * never written and the instance does not restart. A device that fails is reported and left unchanged; the next
+ * start continues with it, devices already migrated are skipped.
+ *
+ * @param io - Object access
+ * @param native - Instance native (its `types` are only read)
+ */
+export async function applyV4Migration(
+	io: V4MigrationIo,
+	native: Record<string, unknown>,
+): Promise<{ migrated: string[]; warnings: string[] }> {
+	const migrated: string[] = [];
+	const warnings = new Set<string>();
+	for (const { id } of planV4Migration(await io.deviceObjects(), native)) {
+		try {
+			const obj = await io.getObject(id);
+			const result = obj && isRecord(obj.native) ? migrateV4Device(obj.native, native) : null;
+			if (!obj || !result?.native) {
+				continue;
+			}
+			for (const w of result.warnings) {
+				warnings.add(w);
+			}
+			obj.native = result.native;
+			await io.setObject(id, obj);
+			migrated.push(id);
+		} catch (err) {
+			warnings.add(
+				`${id}: moving the device type values failed, retried at the next start: ${errorMessage(err)}`,
+			);
+		}
+	}
+	return { migrated, warnings: [...warnings] };
 }

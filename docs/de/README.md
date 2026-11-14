@@ -325,6 +325,13 @@ Diese Einstellungen hat 3.1.2 gespeichert, aber nicht oder anders verwendet. Ver
 - **Matrix:** Nachrichten gehen an die Instanz `matrix-org.N` des Matrix-Adapters statt an `matrix.N`.
 - **Zeitfenster:** Ein Zeitfenster über Mitternacht (zum Beispiel 22:00 bis 06:00) gilt jetzt; gleiche Anfangs- und Endzeit heißt „immer“.
 
+### Testversionen von Version 4
+
+Hast du eine Testversion von Version 4 mit Gerätetypen genutzt, wandern deren Werte beim ersten Start in die Geräte, ohne Neustart der Instanz. Jedes Gerät bekommt eine eigene Kopie der Werte seines Typs, gefunden genau wie in der Testversion (fehlende Standardtypen und eine leere Typtabelle liefern die Standardwerte). Kommt der Typ aus den eingebauten Typen, merkt sich das Gerät die passende Vorlage. Alle anderen Einstellungen des Geräts bleiben unverändert, ebenso die Werte der automatischen Optimierung. Die Typtabelle der Instanz wird nur gelesen und bleibt als Archiv erhalten.
+
+- **Typ nicht gefunden:** Die Testversion hat ein solches Gerät ignoriert. Version 4 gibt ihm die Werte der Vorlage **Benutzerdefiniert**, **deaktiviert** es und zeigt einen Hinweis im Log und auf der Gerätekarte. Prüfe die Werte, speichere das Gerät im Geräteformular und aktiviere es.
+- **Gerät konnte nicht geschrieben werden:** Es steht eine Warnung im Log, das Gerät läuft mit den Werten seines Typs weiter, und beim nächsten Start wird es erneut versucht. Bereits umgestellte Geräte werden übersprungen.
+
 ### Was sich beim Update für dich ändert
 
 **Bleibt gleich**

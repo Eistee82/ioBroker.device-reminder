@@ -1078,7 +1078,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		if (!(await ctx.showConfirmation(filled(confirm, { changes })))) {
 			return;
 		}
-		const { template: _template, typeId: _typeId, ...rest } = cfg;
+		const { template: _template, typeId: _typeId, ...rest } = cfg as DeviceConfig & { typeId?: unknown };
 		await this.writeDevice(id, { ...rest, detection: next });
 		this.adapter.log.info(`${cfg.name}: learned detection values saved (${changes})`);
 		await ctx.showMessage(TEXT.learnSaved);

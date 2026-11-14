@@ -325,6 +325,13 @@ Only the states created by 3.1.2 are removed. Migration warnings (unknown fields
 - **Matrix:** messages go to the instance `matrix-org.N` of the Matrix adapter instead of `matrix.N`.
 - **Time windows:** a time window across midnight (for example 22:00 to 06:00) now applies; the same start and end time means "always".
 
+### Test builds of version 4
+
+If you used a test build of version 4 with device types, their values move into the devices at the first start, without restarting the instance. Every device gets its own copy of the values of its type, found exactly as in the test build (missing default types and an empty type table give the default values). If the type is one of the built-in types, the device remembers the matching template. All other settings of the device stay unchanged, and so do the values of the automatic optimisation. The type table of the instance is only read and is kept as archive.
+
+- **Type not found:** the test build ignored such a device. Version 4 gives it the values of the template **Custom**, **disables** it and shows a hint in the log and on the device card. Check the values, save the device in the device form and enable it.
+- **Device could not be written:** a warning is logged, the device keeps running with the values of its type, and the next start tries again. Devices that were already moved are skipped.
+
 ### What changes for you when you update
 
 **What stays the same**

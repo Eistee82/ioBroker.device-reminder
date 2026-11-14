@@ -1,5 +1,6 @@
 import { DEFAULT_REMINDER, normalizeInstanceConfig, } from "./config.js";
 import { allocateDeviceId, sanitizeId } from "./ids.js";
+import { findType, resolveLegacyTypes } from "./legacyTypes.js";
 import { detectionOf } from "./runStore.js";
 import { CUSTOM_TEMPLATE, TEMPLATES } from "./templates.js";
 import { DEVICE_STATES } from "./stateDefinitions.js";
@@ -521,5 +522,71 @@ export async function migrateLegacyStates(io, devices) {
         }
     }
     return warnings;
+}
+export function migrateV4Device(raw, native) {
+    const warnings = [];
+    if (!isRecord(raw) || typeof raw.typeId !== "string" || isRecord(raw.detection)) {
+        return { native: null, warnings };
+    }
+    const { typeId, ...rest } = raw;
+    const type = findType(resolveLegacyTypes(isRecord(native) ? native : {}, warnings), typeId);
+    if (type) {
+        const out = { ...rest, detection: detectionOf(type) };
+        if (type.builtin) {
+            out.template = type.id;
+        }
+        else {
+            delete out.template;
+        }
+        return { native: out, warnings };
+    }
+    const reviewHint = `device type "${typeId}" not found; values taken from template Custom`;
+    const label = typeof raw.name === "string" ? raw.name.trim() : "";
+    warnings.push(`Device "${label}": ${reviewHint}; device disabled`);
+    const out = {
+        ...rest,
+        enabled: false,
+        detection: detectionOf(CUSTOM_TEMPLATE.detection),
+        needsReview: true,
+        reviewHint,
+    };
+    delete out.template;
+    return { native: out, warnings };
+}
+export function planV4Migration(objects, native) {
+    const plan = [];
+    for (const [id, obj] of Object.entries(objects)) {
+        if (obj?.type !== "device" || !isRecord(obj.native)) {
+            continue;
+        }
+        const { native: next, warnings } = migrateV4Device(obj.native, native);
+        if (next) {
+            plan.push({ id, native: next, warnings });
+        }
+    }
+    return plan;
+}
+export async function applyV4Migration(io, native) {
+    const migrated = [];
+    const warnings = new Set();
+    for (const { id } of planV4Migration(await io.deviceObjects(), native)) {
+        try {
+            const obj = await io.getObject(id);
+            const result = obj && isRecord(obj.native) ? migrateV4Device(obj.native, native) : null;
+            if (!obj || !result?.native) {
+                continue;
+            }
+            for (const w of result.warnings) {
+                warnings.add(w);
+            }
+            obj.native = result.native;
+            await io.setObject(id, obj);
+            migrated.push(id);
+        }
+        catch (err) {
+            warnings.add(`${id}: moving the device type values failed, retried at the next start: ${errorMessage(err)}`);
+        }
+    }
+    return { migrated, warnings: [...warnings] };
 }
 //# sourceMappingURL=migration.js.map

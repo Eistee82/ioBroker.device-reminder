@@ -378,8 +378,6 @@ export interface DeviceConfig {
 	needsReview?: boolean;
 	/** Why the device needs a review (English). */
 	reviewHint?: string;
-	/** Device type of an earlier version (only read when `detection` is missing; removed by the migration). */
-	typeId?: string;
 	/** Source ID. */
 	sourceId?: string;
 	/** Power ID. */
@@ -734,7 +732,8 @@ export function normalizeDetection(raw: unknown, warnings: string[], label: stri
  * Normalize one device configuration; returns null if it is unusable (no power state).
  *
  * Without valid `detection` the values of an old device type are read (`typeId` in `legacyTypes`, nothing is
- * written). Without both the device gets the values of "Custom" and stays off with a review hint: such a device
+ * written; the result has no `typeId`). This only happens if the migration of a V4 test installation could not
+ * write the device (`applyV4Migration`, retried at the next start). Without both the device gets the values of "Custom" and stays off with a review hint: such a device
  * was ignored before and must not start sending messages.
  *
  * @param native - Raw device native object
@@ -847,9 +846,6 @@ export function normalizeDeviceConfig(
 		if (reviewHint !== undefined) {
 			config.reviewHint = reviewHint;
 		}
-	}
-	if (typeId !== undefined) {
-		config.typeId = typeId;
 	}
 	return { config, warnings };
 }

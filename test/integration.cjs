@@ -54,23 +54,26 @@ tests.integration(path.join(__dirname, ".."), {
 			before(async function () {
 				this.timeout(60_000);
 				harness = getHarness();
-				await harness.changeAdapterConfig("device-reminder", {
-					native: {
-						pollIntervalSec: 1,
-						types: [
-							{
-								id: "itest",
-								name: "Integration",
-								startVal: 30,
-								endVal: 5,
-								startCount: 1,
-								endCount: 1,
-								standby: 1,
-								mode: "count",
-							},
-						],
-					},
-				});
+				// A V4 test installation with a device type. Not via changeAdapterConfig, its deep merge turns the
+				// types array into an object (io-package.json has no default types any more).
+				const inst = await getObj(harness, "system.adapter.device-reminder.0");
+				inst.native = {
+					...inst.native,
+					pollIntervalSec: 1,
+					types: [
+						{
+							id: "itest",
+							name: "Integration",
+							startVal: 30,
+							endVal: 5,
+							startCount: 1,
+							endCount: 1,
+							standby: 1,
+							mode: "count",
+						},
+					],
+				};
+				await setObj(harness, "system.adapter.device-reminder.0", inst);
 				await setObj(harness, POWER, {
 					type: "state",
 					common: { name: "Test power", type: "number", role: "value.power", read: true, write: true },
@@ -104,6 +107,14 @@ tests.integration(path.join(__dirname, ".."), {
 				);
 				assert.strictEqual(finished, true, "finished should be true");
 				assert.strictEqual(await stateVal(harness, "device-reminder.0.washer.running"), false);
+			});
+
+			it("moved the values of the V4 test type into the device", async function () {
+				const device = await getObj(harness, "device-reminder.0.washer");
+				assert.strictEqual(device.native.typeId, undefined);
+				assert.deepStrictEqual([device.native.detection.startVal, device.native.detection.endCount], [30, 1]);
+				const inst = await getObj(harness, "system.adapter.device-reminder.0");
+				assert.strictEqual(inst.native.types[0].id, "itest", "the instance native is only read");
 			});
 		});
 
@@ -154,7 +165,8 @@ tests.integration(path.join(__dirname, ".."), {
 					assert.strictEqual(inst.native[key], undefined, `legacy key ${key} should be removed`);
 				}
 				assert.ok(Array.isArray(inst.native.recipients) && inst.native.recipients.length > 0);
-				assert.ok(Array.isArray(inst.native.types) && inst.native.types.length > 0);
+				// archive of the unused own types (none in this fixture)
+				assert.deepStrictEqual(inst.native.types, []);
 
 				const device = await getObj(harness, `${NS}.waschmaschine`);
 				assert.ok(device, "device object waschmaschine should exist");
