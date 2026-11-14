@@ -265,7 +265,7 @@ export const DEVICE_STATES = [
     },
     {
         id: "learning.reset",
-        name: t("Reset to device type values", "Auf Werte des Gerätetyps zurücksetzen", "Сбросить к значениям типа устройства", "Repor os valores do tipo de dispositivo", "Terugzetten naar de waarden van het apparaattype", "Revenir aux valeurs du type d'appareil", "Ripristina i valori del tipo di dispositivo", "Restablecer los valores del tipo de dispositivo", "Przywróć wartości typu urządzenia", "Скинути до значень типу пристрою", "恢复为设备类型的值"),
+        name: t("Reset to the base values of the device", "Auf die Grundwerte des Geräts zurücksetzen", "Сбросить до базовых значений устройства", "Repor os valores base do dispositivo", "Terugzetten naar de basiswaarden van het apparaat", "Revenir aux valeurs de base de l'appareil", "Ripristina i valori di base del dispositivo", "Restablecer los valores base del dispositivo", "Przywróć wartości bazowe urządzenia", "Скинути до базових значень пристрою", "恢复为设备的基础数值"),
         type: "boolean",
         role: "button",
         read: false,

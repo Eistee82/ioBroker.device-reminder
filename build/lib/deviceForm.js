@@ -1,7 +1,8 @@
 import * as I18n from "@iobroker/adapter-core/i18n";
-import { DEFAULT_REMINDER, normalizeDetection, } from "./config.js";
-import { detectionOf, typeHash } from "./runStore.js";
-import { findTemplate, templateDetection, TEMPLATES } from "./templates.js";
+import { DEFAULT_REMINDER, FINAL_BOUNDS, normalizeDetection, } from "./config.js";
+import { TEMPLATE_NAMES } from "./dmTexts.js";
+import { DETECTION_KEYS, detectionOf, typeHash } from "./runStore.js";
+import { CUSTOM_TEMPLATE, findTemplate, scalePowers, templateDetection, TEMPLATES, } from "./templates.js";
 import { parseNumber } from "./utils.js";
 const ACTION_EVENT_KEYS = {
     start: "dev_eventStart",
@@ -10,11 +11,63 @@ const ACTION_EVENT_KEYS = {
     acknowledged: "dev_eventAcknowledged",
 };
 const ACTION_EVENTS = Object.keys(ACTION_EVENT_KEYS);
+const DETECTION_MODES = ["count", "timed", "combined"];
+const POWER_FIELDS = new Set([
+    "startVal",
+    "endVal",
+    "standby",
+    "pauseBelowVal",
+    "trailerBlockVal",
+]);
+const REQUIRED_FIELDS = [
+    "startVal",
+    "endVal",
+    "standby",
+    "startCount",
+    "endCount",
+    "startDurationSec",
+    "endDurationSec",
+];
 const HINT_KEYS = { notFound: "dev_hintNotFound", noPattern: "dev_hintNoPattern" };
-export function buildSourceSchema() {
+export function parseSourceChoice(value) {
+    const m = /^(template|archive|device):(.+)$/.exec(typeof value === "string" ? value : "");
+    return m ? { kind: m[1], id: m[2] } : null;
+}
+export const DEFAULT_SOURCE = `template:${CUSTOM_TEMPLATE.id}`;
+function sourceLabel(kindKey, name) {
+    const kind = I18n.getTranslatedObject(kindKey);
+    const per = typeof name === "string" ? {} : { ...name };
+    const out = {};
+    for (const lang of Object.keys(kind)) {
+        out[lang] = `${kind[lang]}: ${typeof name === "string" ? name : (per[lang] ?? per.en)}`;
+    }
+    return out;
+}
+export function buildSourceSchema(archive = [], devices = []) {
     return {
         type: "panel",
         items: {
+            source: {
+                type: "select",
+                label: I18n.getTranslatedObject("dev_sourceValues"),
+                help: I18n.getTranslatedObject("dev_sourceValuesHelp"),
+                options: [
+                    ...TEMPLATES.map(t => ({
+                        label: sourceLabel("dev_sourceKindTemplate", TEMPLATE_NAMES[t.id]),
+                        value: `template:${t.id}`,
+                    })),
+                    ...archive.map(a => ({
+                        label: sourceLabel("dev_sourceKindArchive", a.name),
+                        value: `archive:${a.id}`,
+                    })),
+                    ...devices.map(d => ({
+                        label: sourceLabel("dev_sourceKindDevice", d.name),
+                        value: `device:${d.id}`,
+                    })),
+                ],
+                newLine: true,
+                xs: 12,
+            },
             sourceInfo: {
                 type: "staticText",
                 text: I18n.getTranslatedObject("dev_sourceInfo"),
@@ -40,13 +93,22 @@ export function buildSourceSchema() {
         },
     };
 }
-export function buildDeviceSchema(cfg, detection, enums, isNew = false) {
+export function buildDeviceSchema(cfg, detection, enums, unit = "W", copyHint = false) {
     const items = {};
     if (detection?.hint) {
         items.hint = {
             type: "infoBox",
             boxType: "warning",
             text: I18n.getTranslatedObject(HINT_KEYS[detection.hint]),
+            newLine: true,
+            xs: 12,
+        };
+    }
+    if (copyHint) {
+        items.copyFinalHint = {
+            type: "infoBox",
+            boxType: "info",
+            text: I18n.getTranslatedObject("dm_copyFinalHint"),
             newLine: true,
             xs: 12,
         };
@@ -68,17 +130,6 @@ export function buildDeviceSchema(cfg, detection, enums, isNew = false) {
         sm: 8,
         md: 5,
     };
-    if (isNew) {
-        items.template = {
-            type: "select",
-            label: I18n.getTranslatedObject("dev_template"),
-            help: I18n.getTranslatedObject("dev_templateHelp"),
-            options: TEMPLATES.map(t => ({ label: t.name, value: t.id })),
-            xs: 12,
-            sm: 6,
-            md: 4,
-        };
-    }
     items.sourceId = {
         type: "objectId",
         label: I18n.getTranslatedObject("dev_sourceId"),
@@ -157,6 +208,7 @@ export function buildDeviceSchema(cfg, detection, enums, isNew = false) {
             sm: 6,
         };
     }
+    items.detectionSection = detectionPanel(unit);
     items.reminderSection = {
         type: "panel",
         label: I18n.getTranslatedObject("dev_reminderSection"),
@@ -266,7 +318,124 @@ export function buildDeviceSchema(cfg, detection, enums, isNew = false) {
             },
         },
     };
+    items.expertSection = expertPanel(unit);
     return { type: "panel", items };
+}
+const FINAL_HIDDEN = "!data.finalMinVal || !data.finalMinSec";
+function numberItem(key, label, extra = {}) {
+    const tooltip = I18n.getTranslatedObject(`${label}Tooltip`);
+    const hasTooltip = Object.values(tooltip).some(v => v !== `${label}Tooltip`);
+    return [
+        key,
+        {
+            type: "number",
+            label: I18n.getTranslatedObject(label),
+            ...(hasTooltip ? { tooltip } : {}),
+            xs: 12,
+            sm: 6,
+            md: 4,
+            ...extra,
+        },
+    ];
+}
+function detectionPanel(unit) {
+    return {
+        type: "panel",
+        label: I18n.getTranslatedObject("dev_detectionSection"),
+        collapsable: true,
+        color: "secondary",
+        newLine: true,
+        xs: 12,
+        items: {
+            mode: {
+                type: "select",
+                label: I18n.getTranslatedObject("typeMode"),
+                options: [
+                    { label: I18n.getTranslatedObject("modeCount"), value: "count" },
+                    { label: I18n.getTranslatedObject("modeTimed"), value: "timed" },
+                    { label: I18n.getTranslatedObject("modeCombined"), value: "combined" },
+                ],
+                xs: 12,
+                sm: 6,
+                md: 4,
+            },
+            ...Object.fromEntries([
+                numberItem("startVal", "typeStartVal", { min: 0, step: 0.05, unit, newLine: true }),
+                numberItem("endVal", "typeEndVal", { min: 0, step: 0.05, unit }),
+                numberItem("standby", "typeStandby", { min: 0, step: 0.05, unit }),
+                numberItem("startCount", "typeStartCount", { min: 1, step: 0.5, newLine: true }),
+                numberItem("endCount", "typeEndCount", { min: 2, step: 1 }),
+                numberItem("startDurationSec", "typeStartDuration", {
+                    min: 0,
+                    unit: "s",
+                    newLine: true,
+                    hidden: "data.mode === 'count'",
+                }),
+                numberItem("endDurationSec", "typeEndDuration", { min: 0, unit: "s", hidden: "data.mode === 'count'" }),
+            ]),
+        },
+    };
+}
+const FINAL_FIELDS = [
+    ["finalMinVal", "power"],
+    ["finalMinSec", "s"],
+    ["finalMaxVal", "power"],
+    ["finalHotVal", "power"],
+    ["finalAfterSec", "s"],
+    ["finalQuietSec", "s"],
+    ["finalDipSec", "s"],
+    ["finalRestVal", "power"],
+    ["finalRestSec", "s"],
+    ["finalActVal", "power"],
+    ["finalActShare", "share"],
+    ["finalCheckSec", "s"],
+    ["finalLockSec", "s"],
+];
+function expertPanel(unit) {
+    const bounds = FINAL_BOUNDS;
+    const trailer = "!data.trailerBurstSec";
+    return {
+        type: "panel",
+        label: I18n.getTranslatedObject("dev_expertValues"),
+        collapsable: true,
+        color: "secondary",
+        newLine: true,
+        xs: 12,
+        items: Object.fromEntries([
+            numberItem("pauseHoldSec", "typePauseHold", { min: 0, step: 1, unit: "s", newLine: true }),
+            numberItem("pauseUntilSec", "typePauseUntil", { min: 0, step: 1, unit: "s" }),
+            numberItem("pauseBelowVal", "typePauseBelow", { min: 0, step: 0.05, unit }),
+            numberItem("trailerBurstSec", "typeTrailerBurst", { min: 0, max: 180, step: 1, unit: "s", newLine: true }),
+            numberItem("trailerGapSec", "typeTrailerGap", { min: 0, max: 600, step: 1, unit: "s", hidden: trailer }),
+            numberItem("trailerAfterSec", "typeTrailerAfter", {
+                min: 0,
+                max: 21_600,
+                step: 1,
+                unit: "s",
+                hidden: trailer,
+            }),
+            numberItem("trailerBlockVal", "typeTrailerBlock", {
+                min: 0,
+                max: 10_000,
+                step: 0.05,
+                unit,
+                hidden: trailer,
+            }),
+            numberItem("trailerMaxSec", "typeTrailerMax", { min: 0, max: 14_400, step: 1, unit: "s", hidden: trailer }),
+            ...FINAL_FIELDS.map(([key, kind], i) => {
+                const range = bounds[key];
+                const master = key === "finalMinVal" || key === "finalMinSec";
+                return numberItem(key, key, {
+                    min: range ? range[0] : 0,
+                    ...(range ? { max: range[1] } : {}),
+                    step: kind === "s" ? 1 : 0.05,
+                    ...(kind === "power" ? { unit } : kind === "s" ? { unit: "s" } : {}),
+                    ...(i === 0 ? { newLine: true } : {}),
+                    ...(master ? {} : { hidden: FINAL_HIDDEN }),
+                });
+            }),
+        ]),
+    };
 }
 function toNumber(val) {
     if (typeof val === "number") {
@@ -300,33 +469,69 @@ const FORM_KEYS = [
     "reviewHint",
     "typeId",
 ];
+function sameValue(a, b) {
+    const n = parseNumber(a);
+    return n !== null && b !== undefined && Math.abs(n - b) <= 1e-9 * Math.max(1, Math.abs(b));
+}
+function formDetection(f, o, errors) {
+    const flat = {};
+    for (const key of DETECTION_KEYS) {
+        if (f[key] !== undefined) {
+            flat[key] = f[key];
+        }
+    }
+    if (f.mode !== undefined) {
+        flat.mode = f.mode;
+        if (!DETECTION_MODES.includes(f.mode)) {
+            errors.push("The detection mode must be count, timed or combined.");
+        }
+    }
+    const required = REQUIRED_FIELDS;
+    for (const [key, val] of Object.entries(flat)) {
+        if (key === "mode") {
+            continue;
+        }
+        const n = parseNumber(val);
+        const optional = !required.includes(key) && (val === "" || val === null);
+        if (!optional && (n === null || n < 0)) {
+            errors.push(`${key} must be a number of 0 or more.`);
+        }
+        else if (key === "startCount" && n !== null && n < 1) {
+            errors.push("startCount must be at least 1.");
+        }
+        else if (key === "endCount" && n !== null && n < 2) {
+            errors.push("endCount must be at least 2.");
+        }
+    }
+    if (!o.isNew) {
+        return { ...(o.previous?.detection ?? CUSTOM_TEMPLATE.detection), ...flat };
+    }
+    const src = o.source ?? { detection: CUSTOM_TEMPLATE.detection, unitFactor: o.unitFactor };
+    const start = scalePowers(src.detection, 1, o.unitFactor);
+    const prefilled = scalePowers(src.detection, 1, src.unitFactor);
+    const values = { ...start };
+    for (const [key, val] of Object.entries(flat)) {
+        const untouched = POWER_FIELDS.has(key) && sameValue(val, prefilled[key]);
+        if (!untouched) {
+            values[key] = val;
+        }
+    }
+    return values;
+}
 export function formToDeviceConfig(f, o) {
     const errors = [];
+    const warnings = [];
     const name = toText(f.name).trim();
     const powerId = toText(f.powerId).trim();
     if (name === "") {
         errors.push("The device needs a name.");
     }
-    let detection;
-    let template;
-    if (o.isNew) {
-        template = toText(f.template).trim();
-        detection = templateDetection(template, o.unitFactor);
-        if (!detection) {
-            errors.push("Select a template.");
-        }
-    }
-    else {
-        detection = normalizeDetection(f.detection ?? o.previous?.detection, [], name);
-        const candidate = o.previous ? o.previous.template : toText(f.template).trim();
-        const values = candidate ? templateDetection(candidate, o.unitFactor) : null;
-        if (detection && values && typeHash(values) === typeHash(detection)) {
-            template = candidate;
-        }
-        if (!detection) {
-            errors.push("The device has no detection values.");
-        }
-    }
+    const detectionErrors = [];
+    const detection = normalizeDetection(formDetection(f, o, detectionErrors), warnings, name);
+    errors.push(...detectionErrors);
+    const candidate = o.isNew ? (o.source ? o.source.template : CUSTOM_TEMPLATE.id) : o.previous?.template;
+    const values = candidate ? templateDetection(candidate, o.unitFactor) : null;
+    const template = detection && values && typeHash(values) === typeHash(detection) ? candidate : undefined;
     if (powerId === "") {
         errors.push("The device needs a power state.");
     }
@@ -360,7 +565,7 @@ export function formToDeviceConfig(f, o) {
         actions.push({ event, stateId, value });
     });
     if (errors.length > 0 || !detection) {
-        return { config: null, errors };
+        return { config: null, errors, warnings };
     }
     const kept = { ...(o.isNew ? {} : (o.previous ?? {})) };
     for (const key of FORM_KEYS) {
@@ -405,14 +610,13 @@ export function formToDeviceConfig(f, o) {
     if (template !== undefined && findTemplate(template)) {
         config.template = template;
     }
-    return { config, errors };
+    return { config, errors, warnings };
 }
 export function deviceConfigToForm(c) {
     return {
         enabled: c.enabled,
         name: c.name,
-        template: c.template ?? "",
-        detection: detectionOf(c.detection),
+        ...detectionOf(c.detection),
         sourceId: c.sourceId ?? "",
         powerId: c.powerId,
         switchId: c.switchId ?? "",

@@ -1,10 +1,12 @@
 import assert from "node:assert";
 import { DEFAULT_REMINDER, normalizeDeviceConfig, normalizeInstanceConfig } from "../build/lib/config.js";
+import { detectionOf } from "../build/lib/runStore.js";
 import { DRYER, WASHER } from "./helpers/devices.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import {
 	buildLearnSchema,
 	buildOptimizationView,
+	deviceModel,
 	parseLearnForm,
 	ReminderDeviceManagement,
 	suggestionOf,
@@ -82,6 +84,7 @@ function createFakeAdapter(host, inst) {
 		states,
 		foreign,
 		extendedForeign: [],
+		setForeign: [],
 		on() {},
 		async getObjectViewAsync(_design, _search, opts) {
 			const rows = [...objects.entries()]
@@ -135,6 +138,9 @@ function createFakeAdapter(host, inst) {
 		},
 		async extendForeignObjectAsync(id, obj) {
 			adapter.extendedForeign.push({ id, obj });
+		},
+		async setForeignObjectAsync(id, obj) {
+			adapter.setForeign.push({ id, obj: structuredClone(obj) });
 		},
 		instanceConfig: inst,
 		setTimeout: (cb, ms) => setTimeout(cb, ms),
@@ -224,6 +230,12 @@ function fakeAction(over = {}) {
 	};
 }
 
+function actionOfInstance(ctx, id) {
+	const action = ctx.dm.getInstanceInfo().actions.find(a => a.id === id);
+	assert.ok(action, `instance action ${id} missing`);
+	return action;
+}
+
 function actionOf(info, id) {
 	const action = info.actions.find(a => a.id === id);
 	assert.ok(action, `action ${id} missing`);
@@ -236,7 +248,7 @@ describe("deviceManagement", () => {
 		const info = dm.getInstanceInfo();
 		assert.deepStrictEqual(
 			info.actions.map(a => a.id),
-			["add"],
+			["add", "removeArchive"],
 		);
 		assert.strictEqual(info.apiVersion, "v3");
 	});
@@ -253,7 +265,7 @@ describe("deviceManagement", () => {
 			);
 			const info = devices[0];
 			assert.strictEqual(info.name, "Trockner");
-			assert.strictEqual(info.model, undefined, "own values, no template");
+			assert.strictEqual(info.model.en, "own values", "no template");
 			assert.strictEqual(info.identifier, POWER);
 			assert.strictEqual(info.enabled, true);
 			assert.strictEqual(devices[1].enabled, false);
@@ -308,7 +320,32 @@ describe("deviceManagement", () => {
 			const ctx = setup();
 			await addDevice(ctx, "trockner", deviceCfg({ detection: DRYER, template: "dryer" }));
 			const [info] = await load(ctx);
-			assert.strictEqual(info.model, "Dryer");
+			assert.strictEqual(info.model.en, "Dryer");
+			assert.strictEqual(info.model.de, "Trockner");
+		});
+
+		it("card model: template name, learned, own values; review warning with hint", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "a", deviceCfg({ name: "A", template: "dryer" }));
+			await addDevice(ctx, "b", deviceCfg({ name: "B", learned: true }));
+			await addDevice(ctx, "c", deviceCfg({ name: "C" }));
+			await addDevice(
+				ctx,
+				"d",
+				deviceCfg({ name: "D", enabled: false, needsReview: true, reviewHint: 'type "Kessel" not found' }),
+			);
+			const devices = await load(ctx);
+			const en = id => devices.find(x => x.id === id).model.en;
+			assert.deepStrictEqual(["a", "b", "c"].map(en), ["Dryer", "learned", "own values"]);
+			assert.match(JSON.stringify(devices.find(x => x.id === "d").status), /Kessel/);
+		});
+
+		it("card model: an active override of the optimisation counts as learned", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "a", deviceCfg({ name: "A" }));
+			assert.strictEqual(deviceModel(deviceCfg(), true).en, "learned");
+			assert.strictEqual(deviceModel(deviceCfg(), false).en, "own values");
+			assert.strictEqual(deviceModel(deviceCfg({ template: "dryer" }), true).en, "learned");
 		});
 	});
 
@@ -329,7 +366,12 @@ describe("deviceManagement", () => {
 				[native.template, native.detection.startVal, native.detection.endCount],
 				["custom", 30, 20],
 			);
-			assert.strictEqual(action.forms[1].schema.items.template.type, "select", "the template is chosen");
+			assert.strictEqual(
+				action.forms[0].schema.items.source.type,
+				"select",
+				"the source of the values is chosen",
+			);
+			assert.strictEqual(action.forms[1].schema.items.template, undefined);
 		});
 
 		it("add with a template on a kW state divides the power values", async () => {
@@ -339,13 +381,162 @@ describe("deviceManagement", () => {
 				common: { type: "number", role: "value.power", unit: "kW" },
 				native: {},
 			});
-			const action = fakeAction({ forms: [{ manual: true }, formOf({ name: "Trockner", template: "dryer" })] });
+			const action = fakeAction({
+				forms: [{ manual: true, source: "template:dryer" }, formOf({ name: "Trockner" })],
+			});
 			await ctx.dm.getInstanceInfo().actions[0].handler(action);
 			const native = ctx.adapter.objects.get(`${NS}.trockner`).native;
 			assert.deepStrictEqual(
 				[native.detection.startVal, native.detection.endVal, native.template],
 				[0.12, 0.015, "dryer"],
 			);
+		});
+
+		it("the form shows the values of the source in the unit of the detected state", async () => {
+			const ctx = setup();
+			ctx.adapter.foreign.set(POWER, {
+				type: "state",
+				common: { type: "number", role: "value.power", unit: "kW" },
+				native: {},
+			});
+			const action = fakeAction({
+				forms: [{ manual: false, sourceId: POWER, source: "template:dryer" }, formOf({ name: "Trockner" })],
+			});
+			await ctx.dm.getInstanceInfo().actions[0].handler(action);
+			const data = action.forms[1].options.data;
+			assert.deepStrictEqual([data.startVal, data.endVal, data.mode], [0.12, 0.015, "count"]);
+			assert.strictEqual(action.forms[1].schema.items.detectionSection.items.startVal.unit, "kW");
+		});
+
+		it("add from another device copies the 16 base values only; final phase and phases are learned at the new device", async () => {
+			const ctx = setup();
+			await addDevice(
+				ctx,
+				"wm",
+				deviceCfg({
+					name: "WM",
+					detection: { ...WASHER, endCount: 77, finalMinVal: 150, finalMinSec: 168 },
+					phases: {
+						v: 1,
+						enabled: true,
+						scope: "run",
+						bands: [],
+						phases: [],
+						learnedAt: 1,
+						quality: { agreement: 1, runsUsed: 3 },
+					},
+				}),
+			);
+			const action = fakeAction({ forms: [{ manual: true, source: "device:wm" }, formOf({ name: "WM2" })] });
+			await ctx.dm.getInstanceInfo().actions[0].handler(action);
+			const native = ctx.adapter.objects.get(`${NS}.wm2`).native;
+			assert.deepStrictEqual(detectionOf(native.detection), detectionOf({ ...WASHER, endCount: 77 }));
+			assert.strictEqual(native.phases, undefined);
+			assert.ok(action.forms[1].schema.items.copyFinalHint, "hint to learn the final phase and phases");
+			assert.strictEqual(
+				action.forms[1].options.data.finalMinVal,
+				0,
+				"the final phase is not part of the prefilled values",
+			);
+		});
+
+		it("add from a device without final phase and phases shows no hint", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "wm", deviceCfg({ name: "WM" }));
+			const action = fakeAction({ forms: [{ manual: true, source: "device:wm" }, formOf({ name: "WM2" })] });
+			await ctx.dm.getInstanceInfo().actions[0].handler(action);
+			assert.strictEqual(action.forms[1].schema.items.copyFinalHint, undefined);
+		});
+
+		it("copying between a W and a kW state converts the power values", async () => {
+			const ctx = setup();
+			ctx.adapter.foreign.set("plug.9.power", {
+				type: "state",
+				common: { type: "number", role: "value.power", unit: "W" },
+				native: {},
+			});
+			await addDevice(
+				ctx,
+				"wm",
+				deviceCfg({ name: "WM", powerId: "plug.9.power", detection: { ...WASHER, endCount: 77 } }),
+			);
+			ctx.adapter.foreign.set(POWER, {
+				type: "state",
+				common: { type: "number", role: "value.power", unit: "kW" },
+				native: {},
+			});
+			const action = fakeAction({ forms: [{ manual: true, source: "device:wm" }, formOf({ name: "WM2" })] });
+			await ctx.dm.getInstanceInfo().actions[0].handler(action);
+			const d = ctx.adapter.objects.get(`${NS}.wm2`).native.detection;
+			assert.deepStrictEqual([d.startVal, d.endVal, d.endCount], [0.03, 0.015, 77]);
+		});
+
+		it("add from an archive template takes its values", async () => {
+			const ctx = setup();
+			ctx.adapter.foreign.set(INSTANCE_OBJ, {
+				type: "instance",
+				common: {},
+				native: {
+					types: [
+						{
+							id: "custom2",
+							name: "Pumpe",
+							startVal: 7,
+							endVal: 3,
+							standby: 1,
+							startCount: 1,
+							endCount: 9,
+						},
+					],
+				},
+			});
+			const action = fakeAction({
+				forms: [{ manual: true, source: "archive:custom2" }, formOf({ name: "Pumpe" })],
+			});
+			await ctx.dm.getInstanceInfo().actions[0].handler(action);
+			assert.deepStrictEqual(action.forms[0].schema.items.source.options.map(o => o.value).slice(-1), [
+				"archive:custom2",
+			]);
+			const native = ctx.adapter.objects.get(`${NS}.pumpe`).native;
+			assert.deepStrictEqual(
+				[native.detection.startVal, native.detection.endCount, native.template],
+				[7, 9, undefined],
+			);
+		});
+
+		it("an unknown source falls back to the template Custom", async () => {
+			const ctx = setup();
+			const action = fakeAction({ forms: [{ manual: true, source: "device:gone" }, formOf({ name: "X" })] });
+			await ctx.dm.getInstanceInfo().actions[0].handler(action);
+			const native = ctx.adapter.objects.get(`${NS}.x`).native;
+			assert.deepStrictEqual([native.detection.startVal, native.template], [30, "custom"]);
+		});
+
+		it("instance action 'remove old templates' deletes native.types after confirmation", async () => {
+			const ctx = setup();
+			ctx.adapter.foreign.set(INSTANCE_OBJ, {
+				type: "instance",
+				common: {},
+				native: { types: [{ id: "custom2", name: "Pumpe" }], configVersion: 5 },
+			});
+			const refused = fakeAction({ confirm: false });
+			await actionOfInstance(ctx, "removeArchive").handler(refused);
+			assert.strictEqual(ctx.adapter.setForeign.length, 0);
+			const action = fakeAction({ confirm: true });
+			await actionOfInstance(ctx, "removeArchive").handler(action);
+			assert.ok(action.confirmations[0].en.includes("restart"), "the confirmation names the restart");
+			const written = ctx.adapter.setForeign.at(-1);
+			assert.strictEqual(written.id, INSTANCE_OBJ);
+			assert.deepStrictEqual(written.obj.native, { types: [], configVersion: 5 });
+		});
+
+		it("instance action 'remove old templates' does nothing without an archive", async () => {
+			const ctx = setup();
+			const action = fakeAction({ confirm: true });
+			await actionOfInstance(ctx, "removeArchive").handler(action);
+			assert.strictEqual(action.confirmations.length, 0);
+			assert.strictEqual(ctx.adapter.setForeign.length, 0);
+			assert.strictEqual(action.messages.length, 1);
 		});
 
 		it("never uses the id of the info channel", async () => {
@@ -654,6 +845,7 @@ describe("deviceManagement", () => {
 				],
 				[20, 3, 4, 20],
 			);
+			assert.strictEqual(native.learned, true, "the card shows the values as learned");
 			assert.strictEqual(
 				ctx.registry.get("trockner").config.detection.startVal,
 				20,
@@ -1174,7 +1366,7 @@ describe("optimisation in the device manager", function () {
 		assert.ok(action.messages[0].en.includes("undone"));
 		assert.strictEqual(ctx.registry.get("trockner").currentOverride, null);
 		action = await openDialog(ctx, { operation: "reset" });
-		assert.ok(action.messages[0].en.includes("device type"));
+		assert.ok(action.messages[0].en.includes("base values"));
 		assert.strictEqual(ctx.registry.learningData("trockner").changes.at(-1).kind, "reset");
 
 		action = await openDialog(ctx, { operation: "discard" });
@@ -1281,7 +1473,7 @@ describe("optimisation in the device manager", function () {
 			"dm_optimizeNotify",
 			"dm_optimization",
 			"dm_optClearConfirm",
-			"dm_optSaveType",
+			"dm_optSaveValues",
 			"dm_optNone",
 			"dm_optStatus_drift",
 			"dm_optTrailer_notSeparable",

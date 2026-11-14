@@ -74,6 +74,24 @@ export function findTemplate(id: string | undefined): Template | undefined {
 }
 
 /**
+ * Detection values with the powers converted from one unit to another (the other fields are copied).
+ *
+ * @param d - Detection values
+ * @param from - Factor from the unit of the values to W (kW: 1000)
+ * @param to - Factor from the target unit to W (kW: 1000)
+ */
+export function scalePowers(d: DetectionSettings, from: number, to: number): DetectionSettings {
+	const out = detectionOf(d);
+	if (from === to) {
+		return out;
+	}
+	for (const key of POWER_KEYS) {
+		out[key] = ((out[key] ?? 0) * from) / to;
+	}
+	return out;
+}
+
+/**
  * Detection values of a built-in template in the unit of the power state, or null for an unknown id.
  *
  * @param id - Template id
@@ -84,12 +102,7 @@ export function templateDetection(id: string, unitFactor: number): DetectionSett
 	if (!t) {
 		return null;
 	}
-	const out = detectionOf(t.detection);
-	const factor = unitFactor > 0 ? unitFactor : 1;
-	for (const key of POWER_KEYS) {
-		out[key] = (out[key] ?? 0) / factor;
-	}
-	return out;
+	return scalePowers(t.detection, 1, unitFactor > 0 ? unitFactor : 1);
 }
 
 /**

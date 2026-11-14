@@ -27,17 +27,22 @@ export const TEMPLATES = [
 export function findTemplate(id) {
     return TEMPLATES.find(t => t.id === id);
 }
+export function scalePowers(d, from, to) {
+    const out = detectionOf(d);
+    if (from === to) {
+        return out;
+    }
+    for (const key of POWER_KEYS) {
+        out[key] = ((out[key] ?? 0) * from) / to;
+    }
+    return out;
+}
 export function templateDetection(id, unitFactor) {
     const t = findTemplate(id);
     if (!t) {
         return null;
     }
-    const out = detectionOf(t.detection);
-    const factor = unitFactor > 0 ? unitFactor : 1;
-    for (const key of POWER_KEYS) {
-        out[key] = (out[key] ?? 0) / factor;
-    }
-    return out;
+    return scalePowers(t.detection, 1, unitFactor > 0 ? unitFactor : 1);
 }
 function unchanged(id) {
     const builtin = TEMPLATES.find(t => t.id === id && t.id !== "custom");

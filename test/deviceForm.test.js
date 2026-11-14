@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import * as I18n from "@iobroker/adapter-core/i18n";
-import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
+import { DEFAULT_REMINDER, FINAL_BOUNDS, normalizeInstanceConfig } from "../build/lib/config.js";
 import {
 	buildDeviceSchema,
 	buildSourceSchema,
@@ -8,10 +8,41 @@ import {
 	formToDeviceConfig,
 } from "../build/lib/deviceForm.js";
 import { TEMPLATES } from "../build/lib/templates.js";
-import { deviceConfig, WASHER } from "./helpers/devices.js";
+import { FINAL_KEYS } from "../build/lib/detector/types.js";
+import { deviceConfig, DRYER, WASHER } from "./helpers/devices.js";
 
+/**
+ * Form data without the detection values.
+ *
+ * @param {object} form form data
+ * @returns {object} form data without the detection fields
+ */
+function withoutValues(form) {
+	return Object.fromEntries(Object.entries(form).filter(([k]) => !(k in WASHER)));
+}
+
+/**
+ * All items of a schema, panels flattened (test helper).
+ *
+ * @param {object} schema schema
+ * @param {object} [out] result
+ * @returns {object} items by key
+ */
+function flatItems(schema, out = {}) {
+	for (const [key, item] of Object.entries(schema.items ?? {})) {
+		if (item.type === "panel") {
+			flatItems(item, out);
+		} else {
+			out[key] = item;
+		}
+	}
+	return out;
+}
+
+/** Source of the values of a new device: the washing machine template (in W). */
+const SOURCE = { detection: TEMPLATES[0].detection, template: "washing-machine", unitFactor: 1 };
 /** Options of a new device on a W state. */
-const NEW = { isNew: true, unitFactor: 1 };
+const NEW = { isNew: true, unitFactor: 1, source: SOURCE };
 /** Options of an edited device on a W state. */
 const EDIT = { isNew: false, unitFactor: 1 };
 
@@ -23,8 +54,7 @@ function formOf(overrides = {}) {
 	return {
 		enabled: true,
 		name: "Waschmaschine",
-		template: "washing-machine",
-		detection: WASHER,
+		...WASHER,
 		sourceId: "alias.0.Waschmaschine",
 		powerId: "alias.0.Waschmaschine.POWER",
 		switchId: "alias.0.Waschmaschine.SWITCH",
@@ -56,24 +86,77 @@ describe("deviceForm", () => {
 			assert.strictEqual(schema.items.manual.type, "checkbox");
 			assert.strictEqual(schema.items.sourceId.hidden, "data.manual === true");
 		});
+
+		it("lists templates, archive templates and other devices as the source of the values", () => {
+			const s = buildSourceSchema(
+				[{ id: "custom2", name: "Pumpe", detection: WASHER }],
+				[{ id: "wm", name: "WM" }],
+			);
+			assert.deepStrictEqual(
+				s.items.source.options.map(o => o.value),
+				[
+					"template:washing-machine",
+					"template:dryer",
+					"template:dishwasher",
+					"template:custom",
+					"archive:custom2",
+					"device:wm",
+				],
+			);
+			assert.deepStrictEqual(
+				buildSourceSchema().items.source.options.map(o => o.value),
+				TEMPLATES.map(t => `template:${t.id}`),
+			);
+		});
 	});
 
 	describe("buildDeviceSchema", () => {
-		it("offers the built-in templates only when the device is added", () => {
-			const select = buildDeviceSchema(instanceConfig(), undefined, undefined, true).items.template;
-			assert.strictEqual(select.type, "select");
-			assert.deepStrictEqual(
-				select.options.map(o => o.value),
-				TEMPLATES.map(t => t.id),
-			);
-			assert.strictEqual(select.options[0].label, "Washing machine");
-			assert.ok(!select.label.en.startsWith("dev_"), "translated");
+		it("has no template or type field: the source is chosen in the first step", () => {
+			const items = flatItems(buildDeviceSchema(instanceConfig()));
+			assert.strictEqual(items.template, undefined);
+			assert.strictEqual(items.typeId, undefined);
+		});
+
+		it("detection panel: mode, five thresholds, two durations; durations only outside the count mode", () => {
+			const items = flatItems(buildDeviceSchema(instanceConfig()));
+			for (const key of [
+				"mode",
+				"startVal",
+				"endVal",
+				"standby",
+				"startCount",
+				"endCount",
+				"startDurationSec",
+				"endDurationSec",
+			]) {
+				assert.ok(items[key], key);
+			}
+			assert.strictEqual(items.startDurationSec.hidden, "data.mode === 'count'");
+			assert.strictEqual(items.startVal.unit, "W");
 			assert.strictEqual(
-				buildDeviceSchema(instanceConfig()).items.template,
-				undefined,
-				"editing keeps the values",
+				flatItems(buildDeviceSchema(instanceConfig(), undefined, undefined, "kW")).startVal.unit,
+				"kW",
 			);
-			assert.strictEqual(buildDeviceSchema(instanceConfig()).items.typeId, undefined);
+		});
+
+		it("expert values: final fields hidden while the master switch is off, time bounds from FINAL_BOUNDS", () => {
+			const items = flatItems(buildDeviceSchema(instanceConfig()));
+			assert.strictEqual(items.finalMaxVal.hidden, "!data.finalMinVal || !data.finalMinSec");
+			assert.strictEqual(items.finalMinVal.hidden, undefined);
+			assert.strictEqual(items.finalMinSec.hidden, undefined);
+			assert.deepStrictEqual([items.finalLockSec.min, items.finalLockSec.max], FINAL_BOUNDS.finalLockSec);
+			assert.deepStrictEqual([items.finalActShare.min, items.finalActShare.max], FINAL_BOUNDS.finalActShare);
+			for (const key of FINAL_KEYS) {
+				assert.ok(items[key], key);
+				assert.ok(!items[key].label.en.startsWith("final"), `${key} translated`);
+			}
+			assert.ok(items.pauseHoldSec && items.trailerBurstSec, "pause and anti-crease protection");
+		});
+
+		it("shows the hint to learn the final phase and phases only when asked for", () => {
+			assert.strictEqual(buildDeviceSchema(instanceConfig()).items.copyFinalHint, undefined);
+			const hint = buildDeviceSchema(instanceConfig(), undefined, undefined, "W", true).items.copyFinalHint;
+			assert.strictEqual(hint.type, "infoBox");
 		});
 
 		it("lists the configured recipients as multi select", () => {
@@ -92,11 +175,10 @@ describe("deviceForm", () => {
 		});
 
 		it("contains the required main fields", () => {
-			const { items } = buildDeviceSchema(instanceConfig(), undefined, undefined, true);
+			const { items } = buildDeviceSchema(instanceConfig());
 			for (const key of [
 				"enabled",
 				"name",
-				"template",
 				"sourceId",
 				"powerId",
 				"switchId",
@@ -153,8 +235,8 @@ describe("deviceForm", () => {
 			assert.deepStrictEqual(config, {
 				enabled: true,
 				name: "Waschmaschine",
-				template: "washing-machine",
 				detection: WASHER,
+				template: "washing-machine",
 				sourceId: "alias.0.Waschmaschine",
 				powerId: "alias.0.Waschmaschine.POWER",
 				switchId: "alias.0.Waschmaschine.SWITCH",
@@ -216,10 +298,22 @@ describe("deviceForm", () => {
 			assert.match(errors[0], /power/i);
 		});
 
-		it("rejects a missing name and template and reports every problem", () => {
-			const { config, errors } = formToDeviceConfig(formOf({ name: "", template: "", powerId: "" }), NEW);
+		it("rejects a missing name, an invalid value and reports every problem", () => {
+			const { config, errors } = formToDeviceConfig(formOf({ name: "", startVal: "x", powerId: "" }), NEW);
 			assert.strictEqual(config, null);
 			assert.strictEqual(errors.length, 3);
+			assert.match(errors.join(" "), /startVal/);
+			const counts = formToDeviceConfig(formOf({ startCount: 0, endCount: 1 }), NEW);
+			assert.strictEqual(counts.errors.length, 2);
+		});
+
+		it("form values become detection; invalid final values are corrected with the normalizer", () => {
+			const { config, warnings } = formToDeviceConfig(
+				{ ...formOf(), ...WASHER, finalMinVal: 150, finalMinSec: 168, finalMaxVal: 100 },
+				EDIT,
+			);
+			assert.strictEqual(config.detection.finalMinVal, 0);
+			assert.ok(warnings.length > 0, "the correction is reported");
 		});
 
 		it("rejects a negative or invalid auto-off time", () => {
@@ -285,8 +379,11 @@ describe("deviceForm", () => {
 			assert.strictEqual(form.switchId, "");
 			assert.deepStrictEqual(form.reminder, DEFAULT_REMINDER);
 			assert.deepStrictEqual(form.actions, []);
-			assert.strictEqual(form.template, "");
-			assert.deepStrictEqual(form.detection, WASHER);
+			assert.strictEqual(form.template, undefined);
+			assert.deepStrictEqual(
+				[form.startVal, form.endCount, form.finalLockSec, form.mode],
+				[WASHER.startVal, WASHER.endCount, 0, "count"],
+			);
 		});
 
 		it("does not share references with the config", () => {
@@ -300,23 +397,44 @@ describe("deviceForm", () => {
 			assert.strictEqual(config.reminder.text, "Bitte ausraeumen");
 		});
 
-		it("a new device takes the values of the chosen template; saving clears needsReview", () => {
+		it("a new device takes the values of the source; saving clears needsReview", () => {
+			const dryer = { detection: TEMPLATES[1].detection, template: "dryer", unitFactor: 1 };
 			const { config } = formToDeviceConfig(
-				{ ...formOf(), template: "dryer", needsReview: true, reviewHint: "x" },
-				NEW,
+				{ ...formOf({ needsReview: true, reviewHint: "x" }), ...DRYER },
+				{ isNew: true, unitFactor: 1, source: dryer },
 			);
 			assert.deepStrictEqual(
 				[config.detection.startVal, config.template, config.needsReview, config.reviewHint],
 				[120, "dryer", undefined, undefined],
 			);
-			const kw = formToDeviceConfig({ ...formOf(), template: "dryer" }, { isNew: true, unitFactor: 1000 }).config;
+			// no values in the form (unit of the state only known now): the source is divided by the unit factor
+			const kw = formToDeviceConfig(withoutValues(formOf()), {
+				isNew: true,
+				unitFactor: 1000,
+				source: dryer,
+			}).config;
 			assert.deepStrictEqual([kw.detection.startVal, kw.detection.endVal, kw.template], [0.12, 0.015, "dryer"]);
-			assert.match(formToDeviceConfig({ ...formOf(), template: "nope" }, NEW).errors[0], /template/);
+		});
+
+		it("a state in kW chosen after the values were prefilled rescales untouched power values only", () => {
+			const dryer = { detection: TEMPLATES[1].detection, template: "dryer", unitFactor: 1 };
+			const form = { ...formOf(), ...DRYER, endVal: 20 };
+			const { config } = formToDeviceConfig(form, { isNew: true, unitFactor: 1000, source: dryer });
+			assert.deepStrictEqual(
+				[config.detection.startVal, config.detection.endVal, config.template],
+				[0.12, 20, undefined],
+				"the edited value stays as entered, so the values no longer equal the template",
+			);
+		});
+
+		it("without a source the values of the template Custom are used", () => {
+			const { config } = formToDeviceConfig(withoutValues(formOf()), { isNew: true, unitFactor: 1 });
+			assert.deepStrictEqual([config.detection.startVal, config.template], [30, "custom"]);
 		});
 
 		it("editing keeps the detection values", () => {
 			const detection = { ...WASHER, endCount: 77 };
-			const { config } = formToDeviceConfig({ ...formOf(), detection }, EDIT);
+			const { config } = formToDeviceConfig({ ...formOf(), ...detection }, EDIT);
 			assert.strictEqual(config.detection.endCount, 77);
 			assert.strictEqual(config.template, undefined, "values differ from the template");
 		});
@@ -333,7 +451,7 @@ describe("deviceForm", () => {
 			};
 			const previous = { ...deviceConfig({ template: "washing-machine" }), phases, learned: true };
 			const { config } = formToDeviceConfig(
-				{ ...formOf(), endText: "Done!", detection: WASHER },
+				{ ...formOf(), endText: "Done!" },
 				{ isNew: false, unitFactor: 1, previous },
 			);
 			assert.deepStrictEqual(
@@ -341,7 +459,7 @@ describe("deviceForm", () => {
 				["Done!", phases, true, "washing-machine"],
 			);
 			const changed = formToDeviceConfig(
-				{ ...formOf(), detection: { ...WASHER, endCount: 77 } },
+				{ ...formOf(), endCount: 77 },
 				{ isNew: false, unitFactor: 1, previous },
 			);
 			assert.strictEqual(changed.config.template, undefined, "values differ from the template");
@@ -356,7 +474,7 @@ describe("deviceForm", () => {
 				switchId: "old.switch",
 				autoOptimize: true,
 			};
-			const { detection: _d, ...form } = formOf({ switchId: "", autoOptimize: false });
+			const form = withoutValues(formOf({ switchId: "", autoOptimize: false }));
 			const { config } = formToDeviceConfig(form, { isNew: false, unitFactor: 1, previous });
 			assert.strictEqual(config.detection.endCount, 66);
 			for (const key of ["typeId", "needsReview", "reviewHint", "switchId", "autoOptimize"]) {

@@ -374,6 +374,8 @@ export interface DeviceConfig {
 	detection: DetectionSettings;
 	/** Id of the built-in template the values come from; missing once the values differ from it. */
 	template?: string;
+	/** The values were learned (recording or history) or saved from the optimisation. */
+	learned?: boolean;
 	/** The values could not be taken over exactly: the device stays off until it is checked and saved. */
 	needsReview?: boolean;
 	/** Why the device needs a review (English). */
@@ -842,6 +844,9 @@ export function normalizeDeviceConfig(
 	}
 	if (template !== undefined) {
 		config.template = template;
+	}
+	if (bool(src.learned, false)) {
+		config.learned = true;
 	}
 	if (needsReview) {
 		config.needsReview = true;

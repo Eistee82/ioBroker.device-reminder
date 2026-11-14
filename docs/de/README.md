@@ -34,7 +34,7 @@ Alles wird in den Instanz-Einstellungen konfiguriert. Geräte verwaltest du im D
 1. Adapter installieren und eine Instanz anlegen.
 2. Instanz-Einstellungen öffnen. Die Reiter sind:
    - **Geräte**: der Device Manager (siehe [Geräte anlegen](#4-geräte-anlegen)).
-   - **Gerätetypen**: die Typen früherer Versionen. Sie werden nur noch gelesen, wenn ein Gerät noch keine eigenen Erkennungswerte hat; die Werte stehen im Gerät (siehe [Erkennungswerte und Vorlagen](#3-erkennungswerte-und-vorlagen)).
+   - **Erkennungswerte**: nur ein Hinweis. Die Werte stehen in jedem Gerät (siehe [Erkennungswerte und Vorlagen](#3-erkennungswerte-und-vorlagen)); eine Tabelle mit Gerätetypen gibt es nicht mehr.
    - **Empfänger**: wer Nachrichten erhält (siehe [Empfänger](#5-empfänger)).
    - **Allgemein**: Statustexte, Abfrageintervall und die optionale HTML-Historie.
 3. Mindestens einen Empfänger anlegen, dann im Device Manager ein Gerät hinzufügen und den Empfänger im Formular auswählen.
@@ -51,7 +51,19 @@ Allgemeine Einstellungen:
 
 Jedes Gerät hat seine eigenen Erkennungswerte: Schwellwerte, Erkennungsmodus, Pausenschutz und Knitterschutz. Sie stehen im Gerät, nicht mehr in einem Gerätetyp, den sich mehrere Geräte teilen. Ändern sich die Werte eines Geräts, gilt das nur für dieses Gerät.
 
-Beim Anlegen wählst du eine **Vorlage**, die die Startwerte liefert: **Waschmaschine**, **Trockner** und **Geschirrspüler** mit den Werten von 3.1.2 und **Benutzerdefiniert** (30 / 5 / 1 / 1 / 20) für jedes andere Gerät. Misst der Leistungs-State in kW, werden die Leistungswerte der Vorlage durch 1000 geteilt. Danach passt du die Werte durch [Anlernen](#8-anlernen) an das eigene Gerät an; das Anlernen schreibt die Werte direkt ins Gerät, ohne Neustart der Instanz.
+Beim Anlegen wählst du, woher die ersten Werte kommen (erster Schritt von **Gerät hinzufügen**, Feld **Werte des neuen Geräts**):
+
+- eine **Vorlage**: **Waschmaschine**, **Trockner** und **Geschirrspüler** mit den Werten von 3.1.2 und **Benutzerdefiniert** (30 / 5 / 1 / 1 / 20) für jedes andere Gerät,
+- eine **alte Vorlage**: ein Gerätetyp einer früheren Version, dessen Werte oder Name von der Vorlage abweichen (auch angelernte Typen von Testversionen ohne Gerät),
+- **ein anderes Gerät**: Übernommen werden nur die Start- und Ende-Werte sowie Pausen- und Knitterschutz. Schlussphase und Phasen werden **nicht** kopiert, sondern am neuen Gerät angelernt, denn sie gelten nur mit Nachweis aus den eigenen Läufen (ein Hinweis im Formular sagt das).
+
+Misst der Leistungs-State in kW, werden die Leistungswerte umgerechnet (eine Vorlage wird durch 1000 geteilt; zwischen einem W- und einem kW-State wird ebenfalls umgerechnet). Danach passt du die Werte im Geräteformular oder durch [Anlernen](#8-anlernen) an das eigene Gerät an; beides schreibt die Werte direkt ins Gerät, ohne Neustart der Instanz.
+
+Im Geräteformular stehen die Werte im Bereich **Erkennung** (Modus, Start-, Ende- und Standby-Wert, Anzahlen und Dauern) und eingeklappt unter **Expertenwerte** (Pausenschutz, Knitterschutz und die 13 Werte der Schlussphase; die Felder der Schlussphase erscheinen erst, wenn Untergrenze und Zeit im Band gesetzt sind). Werte außerhalb des Bereichs oder mit Widerspruch werden beim Speichern korrigiert und gemeldet.
+
+Die Gerätekarte zeigt als Modell, woher die Werte kommen: den Namen der Vorlage, **angelernt** (durch Anlernen oder aus der automatischen Optimierung gespeicherte Werte, oder eine Optimierung ändert sie gerade) oder **eigene Werte**.
+
+Die Instanz-Aktion **Alte Vorlagen entfernen** im Device Manager löscht nach einer Bestätigung das Archiv der alten Gerätetypen (die Instanz startet neu); die Geräte bleiben unverändert.
 
 Ein Gerät ohne gültige Erkennungswerte (zum Beispiel, weil sein Gerätetyp nicht mehr existiert) bekommt die Werte von **Benutzerdefiniert** und wird **deaktiviert**: Es lief vorher nicht und soll nicht plötzlich Nachrichten senden. Die Gerätekarte und das Log nennen den Grund. Prüfe das Gerät, speichere es im Geräteformular und aktiviere es wieder.
 
@@ -101,7 +113,7 @@ Die Werte setzt normalerweise das [Anlernen](#8-anlernen); du kannst sie in der 
 
 ## 4. Geräte anlegen
 
-Öffne den Reiter **Geräte** und drücke **Gerät hinzufügen**. Es gibt drei Wege:
+Öffne den Reiter **Geräte** und drücke **Gerät hinzufügen**. Im ersten Schritt wählst du außerdem die **Werte des neuen Geräts** (Vorlage, alte Vorlage oder anderes Gerät, siehe [Erkennungswerte und Vorlagen](#3-erkennungswerte-und-vorlagen)) und einen von drei Wegen, die States zu finden:
 
 1. **Steckdose / Leistungsmesser**: Der Device Manager nutzt den ioBroker Type-Detector, um Steckdosen und Leistungsmesser (Schalt- und Leistungs-State) zu finden. Wähle eines aus, beide States werden eingetragen.
 2. **Alias oder Gerät**: Wähle ein Alias- oder Geräteobjekt, der Type-Detector sucht darin einen passenden Leistungs-State.
@@ -114,8 +126,8 @@ Das Gerätformular enthält:
 | Feld | Bedeutung |
 | --- | --- |
 | Name | Grundlage der Objekt-ID. IDs sind eindeutig und gültig: Umlaute werden umgeschrieben, Leerzeichen und Punkte werden zu `_`, Duplikate erhalten `_2`, `_3` ... |
-| Vorlage | Nur beim Anlegen: liefert die Erkennungswerte des neuen Geräts (siehe [Erkennungswerte und Vorlagen](#3-erkennungswerte-und-vorlagen)). Beim Bearbeiten bleiben die Werte des Geräts erhalten |
-| Leistungs-State | State mit der Leistung in W (Pflicht) |
+| Erkennung / Expertenwerte | Die Erkennungswerte des Geräts (siehe [Erkennungswerte und Vorlagen](#3-erkennungswerte-und-vorlagen)). Beim Anlegen wählt der erste Schritt, woher sie kommen; das Formular zeigt sie in der Einheit des Leistungs-States |
+| Leistungs-State | State mit der Leistung in W oder kW (Pflicht) |
 | Schalt-State | Optional, für Auto-Aus nötig |
 | Starttext / Endtext | Nachrichtentexte |
 | Abbrucherkennung | Siehe [Abbrucherkennung](#abbrucherkennung) |
@@ -129,7 +141,7 @@ Das Gerätformular enthält:
 
 Pflichtfelder werden vor dem Speichern geprüft.
 
-Jede Gerätekarte zeigt Status, Leistung, Laufzeit, Anzeigen für „läuft“ und „fertig“ und eine Warnung bei fehlendem Leistungs-State. Auf der Karte kannst du das Gerät bearbeiten, löschen, aktivieren oder deaktivieren, Nicht stören schalten, quittieren, eine Testnachricht senden und das Anlernen starten. Die Details zeigen die letzten Läufe, die Vorlage und die Erkennungswerte des Geräts sowie den Erinnerungsstatus. Ein Gerät, das geprüft werden muss, trägt eine Warnung mit dem Grund.
+Jede Gerätekarte zeigt Status, Leistung, Laufzeit, Anzeigen für „läuft“ und „fertig“ und eine Warnung bei fehlendem Leistungs-State. Auf der Karte kannst du das Gerät bearbeiten, löschen, aktivieren oder deaktivieren, Nicht stören schalten, quittieren, eine Testnachricht senden und das Anlernen starten. Die Karte zeigt die Vorlage, **angelernt** oder **eigene Werte** als Modell. Die Details zeigen die letzten Läufe, die Erkennungswerte des Geräts sowie den Erinnerungsstatus. Ein Gerät, das geprüft werden muss, trägt eine Warnung mit dem Grund.
 
 ### Ablauf
 
@@ -468,7 +480,7 @@ Gerätezustände sind relativ zum Geräteobjekt `<deviceId>` angegeben. Info-Zus
 | `learning.optimizeInfo` | string | json | r | - | Status der Optimierung | JSON: status, runs, spikes, families, trailer, lastCheckTs, nextPossibleTs, lastEndDelaySec, unclear |
 | `learning.lastEndDelay` | number | value.interval | r | s | Ende-Verzögerung des letzten Laufs | Zeit vom Programmende bis zur Ende-Meldung des letzten aufgezeichneten Laufs |
 | `learning.undo` | boolean | button | w | - | Letzte Optimierung rückgängig machen | true schreiben macht die letzte Änderung der automatischen Optimierung rückgängig (14 Tage keine Verschärfung) |
-| `learning.reset` | boolean | button | w | - | Auf Werte des Gerätetyps zurücksetzen | true schreiben verwendet wieder die Erkennungswerte des Geräts (14 Tage keine Verschärfung) |
+| `learning.reset` | boolean | button | w | - | Auf die Grundwerte des Geräts zurücksetzen | true schreiben verwendet wieder die Erkennungswerte des Geräts (14 Tage keine Verschärfung) |
 | `lastOperationsHtml` | string | html | r | - | Letzte Vorgänge (HTML) | HTML-Tabelle der letzten Läufe (nur wenn in den allgemeinen Einstellungen aktiviert) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter verbunden | True, wenn der Adapter läuft |
 <!-- END STATES -->

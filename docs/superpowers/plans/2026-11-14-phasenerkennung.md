@@ -857,7 +857,7 @@ Erwartung „`kaffee`“/„`kaffee_2`“: so vergibt `allocateDeviceId("Kaffee"
   - Quelle `device:<id>` bzw. `archive:<id>` übernimmt **nur die 16 Grundfelder** (`BASE_KEYS`); alle `final*` = 0, `phases` werden nicht kopiert (Spec C.2, Risiko 10: Freigabe der Schlussphase nur mit Nachweis am eigenen Gerät, B.6). Leistungsfelder (`startVal`, `endVal`, `standby`, `pauseBelowVal`, `trailerBlockVal`) werden mit `unitFactor(Quelle) / unitFactor(Ziel)` umgerechnet (Archiv-Vorlagen gelten als W). Hinweis im Formular `dm_copyFinalHint` („Schlussphase und Phasen am neuen Gerät anlernen“), nur wenn die Quelle eine Schlussphase oder Phasen hat.
   - i18n entfernt: `tabTypes`, `typesHelp`, `dev_typeId`, `dm_detailsType*`, `dm_learnName`, `dm_learnCurrentType`, `dm_optSaveType`, `dm_optTypeValue`, `typeNeedsName`, `unknownType`.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```js
 // test/deviceForm.test.js
@@ -955,11 +955,21 @@ it("removed type texts are gone and the new texts exist in 11 languages", () => 
 
 Imports: `WASHER`, `instanceConfig` aus `./helpers/devices.js`, `detectionOf` aus `../build/lib/runStore.js`; die Statuskennzeichnung der Karte folgt dem vorhandenen Muster für „Leistungs-State fehlt“ (gleiche Eigenschaft `status`/`warning` wie dort im Test `loadDevices`).
 
-- [ ] **Step 2:** `npm run build && npx mocha test/deviceForm.test.js test/deviceManagement.test.js test/dmTexts.test.js` → FAIL.
-- [ ] **Step 3: Implementieren**; de/en-Texte von Hand, dann `npm run translate`.
-- [ ] **Step 4:** `npm test` → PASS.
-- [ ] **Doku:** `docs/de|en/README.md` §2/§3/§6 (Tab „Gerätetypen“ entfällt, Quelle beim Anlegen: Vorlage, Archiv-Vorlage, anderes Gerät – nur Grundwerte, Schlussphase und Phasen am neuen Gerät anlernen; Expertenwerte; Kartenmodell; „Alte Vorlagen entfernen“); Changelog-Zeile „Werte im Gerät“ ergänzen.
-- [ ] **Step 5: Commit** `feat: device form with templates, archive and expert values; no device type tab`
+- [x] **Step 2:** `npm run build && npx mocha test/deviceForm.test.js test/deviceManagement.test.js test/dmTexts.test.js` → FAIL.
+- [x] **Step 3: Implementieren**; de/en-Texte von Hand, dann `npm run translate`.
+- [x] **Step 4:** `npm test` → PASS.
+- [x] **Doku:** `docs/de|en/README.md` §2/§3/§6 (Tab „Gerätetypen“ entfällt, Quelle beim Anlegen: Vorlage, Archiv-Vorlage, anderes Gerät – nur Grundwerte, Schlussphase und Phasen am neuen Gerät anlernen; Expertenwerte; Kartenmodell; „Alte Vorlagen entfernen“); Changelog-Zeile „Werte im Gerät“ ergänzen.
+- [x] **Step 5: Commit** `feat: device form with templates, archive and expert values; no device type tab`
+
+**Umsetzungsnotizen (Task 7):**
+- Die Quelle der Werte (`source`) steht im **ersten** Schritt von „Gerät hinzufügen“ zusammen mit Objekt-Quelle und „manuell“ (`buildSourceSchema(archive = [], devices = [])`, ein Dialog statt zwei). Ohne Auswahl gilt `template:custom`. Die Tests des Plans mit `forms: [{ source }, form]` haben dafür `manual: true` bekommen.
+- Das Geräteformular hat kein Vorlagenfeld mehr (`buildDeviceSchema(cfg, detection?, enums?, unit = "W", copyHint = false)`). Die Werte stehen als flache Felder in den Panels `detectionSection` und `expertSection` (eingeklappt); `DeviceFormData` erbt `Partial<DetectionSettings>`. Ein verschachteltes `detection` im Formular wird ignoriert, sonst würden die Werte der Quelle überstimmt.
+- `formToDeviceConfig(f, { isNew, unitFactor, source?, previous? })` gibt zusätzlich `warnings` zurück (Korrekturen durch `normalizeDetection`; der Device Manager schreibt sie ins Log und zeigt sie an). Pflichtwerte (Start/Ende/Standby, Anzahlen, Dauern) müssen Zahlen ≥ 0 sein, `startCount` ≥ 1, `endCount` ≥ 2 (wie vorher in der jsonConfig-Tabelle). Das Formular wird mit den Werten der Quelle in der Einheit des erkannten States vorbefüllt; wechselt der Nutzer den State, werden unveränderte Leistungswerte beim Speichern auf die neue Einheit umgerechnet, geänderte bleiben wie eingegeben. `template` bleibt nur, solange die Werte der Vorlage entsprechen (Hash).
+- Quelle `device:<id>` übernimmt die 16 Grundfelder (`final*` = 0), Leistungen mit `unitFactor(Quelle) / unitFactor(Ziel)`; Hinweis `copyFinalHint` nur, wenn die Quelle eine Schlussphase oder `phases` hat. Archiv-Vorlagen gelten als W.
+- `deviceModel` liefert `Translated` (Vorlagenname über `TEMPLATE_NAMES` in 11 Sprachen, „angelernt“, „eigene Werte“); `DeviceConfig.learned` wird von `applyLearned` gesetzt (auch für „Als Grundwerte speichern“ des Optimierungsdialogs) und von `normalizeDeviceConfig` durchgereicht.
+- `removeArchive` schreibt `native.types = []` mit `getForeignObjectAsync` + `setForeignObjectAsync` auf das ganze Objekt (kein `extendForeignObjectAsync`: js-controller führt Arrays beim Erweitern nach Index zusammen, ein leeres Array würde nichts löschen). Ohne Archiv nur ein Hinweis, kein Neustart.
+- i18n: `dm_optSaveType` → `dm_optSaveValues`, `dm_optTypeValue` → `dm_optBaseValue`, `dm_learnCurrentType` → `dm_learnCurrent`, `dm_detailsType` → `dm_detailsDetection` (die Schlüssel werden noch benutzt, der Plan nennt sie als entfallen; nur der Name wechselt). Außerdem entfallen `typeName` und `dev_templateHelp`. Die Beschriftungen `typeStartVal`/`typeEndVal`/`typeStandby` tragen kein „(W)“ mehr, die Einheit zeigt das Feld (W oder kW). Umformuliert (kein „Gerätetyp“ mehr): `dm_learnInfo` (kein Neustart, kein Namensfeld), `dm_learnSourceInfo`, `dm_autoOptimizeHelp`, `dm_optReset`, `learnTitle`, `learnTooFewSamples`, `optResetDone` und der State-Name von `learning.reset`. Die Übersetzungen der übrigen 9 Sprachen kommen von `npm run translate` (Google, maschinell), einzelne schlechte Treffer habe ich von Hand korrigiert.
+- Der Tab der jsonConfig heißt jetzt „Erkennungswerte“ (`tabValues`) und enthält nur `valuesInDeviceHelp`.
 
 ---
 

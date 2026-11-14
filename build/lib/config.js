@@ -523,6 +523,9 @@ export function normalizeDeviceConfig(native, legacyTypes) {
     if (template !== undefined) {
         config.template = template;
     }
+    if (bool(src.learned, false)) {
+        config.learned = true;
+    }
     if (needsReview) {
         config.needsReview = true;
         if (reviewHint !== undefined) {

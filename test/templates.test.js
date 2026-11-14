@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { FINAL_KEYS } from "../build/lib/detector/types.js";
 import { typeHash } from "../build/lib/runStore.js";
-import { archiveTemplates, findTemplate, templateDetection, TEMPLATES } from "../build/lib/templates.js";
+import { archiveTemplates, findTemplate, scalePowers, templateDetection, TEMPLATES } from "../build/lib/templates.js";
 
 describe("templates", () => {
 	it("built-in templates carry the 3.1.2 values and no final phase", () => {
@@ -70,5 +70,14 @@ describe("templates", () => {
 		assert.strictEqual(archiveTemplates(native)[1].detection.startVal, 100);
 		assert.deepStrictEqual(archiveTemplates({}), []);
 		assert.deepStrictEqual(archiveTemplates({ types: [] }), []);
+	});
+
+	it("scalePowers converts only the powers between W and kW", () => {
+		const w = TEMPLATES[1].detection;
+		const kw = scalePowers(w, 1, 1000);
+		assert.deepStrictEqual([kw.startVal, kw.endVal, kw.standby, kw.endCount], [0.12, 0.015, 0.001, 20]);
+		const back = scalePowers(kw, 1000, 1);
+		assert.deepStrictEqual([back.startVal, back.endVal], [120, 15]);
+		assert.deepStrictEqual(scalePowers(w, 1000, 1000), w);
 	});
 });

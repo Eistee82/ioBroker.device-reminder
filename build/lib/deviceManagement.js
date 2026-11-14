@@ -1,18 +1,18 @@
 import * as I18n from "@iobroker/adapter-core/i18n";
 import { ACTIONS, DeviceManagement } from "@iobroker/dm-utils";
 import { DEFAULT_REMINDER, normalizeDetection, normalizeDeviceConfig } from "./config.js";
-import { buildDeviceSchema, buildSourceSchema, deviceConfigToForm, formToDeviceConfig } from "./deviceForm.js";
+import { buildDeviceSchema, buildSourceSchema, DEFAULT_SOURCE, deviceConfigToForm, formToDeviceConfig, parseSourceChoice, } from "./deviceForm.js";
 import { ensureDeviceObjects } from "./deviceObjects.js";
 import { enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
 import { formatDate } from "./deviceRegistry.js";
-import { fill, plain, TEXT } from "./dmTexts.js";
+import { fill, plain, TEMPLATE_NAMES, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import { FINAL_KEYS } from "./detector/types.js";
 import { analyzeHistory } from "./historyLearning.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import { describeChange } from "./learn/autoOptimize.js";
 import { BASE_KEYS, detectionOf } from "./runStore.js";
-import { findTemplate, TEMPLATES } from "./templates.js";
+import { archiveTemplates, CUSTOM_TEMPLATE, findTemplate, scalePowers } from "./templates.js";
 import { detectFromHost } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
 const RESERVED_IDS = ["info"];
@@ -22,6 +22,13 @@ const LEARN_ERRORS = {
 };
 const GENERIC_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#607d8b" d="M16 3h-2v4h-4V3H8v4H7a2 2 0 0 0-2 2v3a6 6 0 0 0 5 5.9V21h4v-3.1a6 6 0 0 0 5-5.9V9a2 2 0 0 0-2-2h-1V3z"/></svg>';
 const GENERIC_ICON = `data:image/svg+xml;base64,${Buffer.from(GENERIC_ICON_SVG).toString("base64")}`;
+export function deviceModel(cfg, hasOverride) {
+    if (cfg.learned === true || hasOverride) {
+        return TEXT.modelLearned;
+    }
+    const template = findTemplate(cfg.template);
+    return template ? TEMPLATE_NAMES[template.id] : TEXT.modelOwn;
+}
 function isRecord(val) {
     return typeof val === "object" && val !== null && !Array.isArray(val);
 }
@@ -64,6 +71,12 @@ export class ReminderDeviceManagement extends DeviceManagement {
                     icon: "add",
                     description: TEXT.addDevice,
                     handler: ctx => this.addDevice(ctx),
+                },
+                {
+                    id: "removeArchive",
+                    icon: "delete",
+                    description: I18n.getTranslatedObject("dm_removeArchive"),
+                    handler: ctx => this.removeArchive(ctx),
                 },
             ],
         };
@@ -112,7 +125,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
         data.lastOperations = await this.readOperations(id);
         items.typeHeader = {
             type: "header",
-            text: I18n.getTranslatedObject("dm_detailsType"),
+            text: I18n.getTranslatedObject("dm_detailsDetection"),
             size: 4,
             newLine: true,
             xs: 12,
@@ -129,7 +142,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
         const rows = [];
         const template = findTemplate(cfg.template);
         if (template) {
-            rows.push([I18n.getTranslatedObject("dev_template"), template.name]);
+            rows.push([I18n.getTranslatedObject("dev_template"), TEMPLATE_NAMES[template.id].en]);
         }
         rows.push([I18n.getTranslatedObject("dm_detailsStartVal"), d.startVal, "W"], [I18n.getTranslatedObject("dm_detailsEndVal"), d.endVal, "W"], [I18n.getTranslatedObject("dm_detailsStandby"), d.standby, "W"], [I18n.getTranslatedObject("dm_detailsStartCount"), d.startCount], [I18n.getTranslatedObject("dm_detailsEndCount"), d.endCount], [I18n.getTranslatedObject("dm_detailsMode"), d.mode]);
         if (d.mode !== "count") {
@@ -300,7 +313,6 @@ export class ReminderDeviceManagement extends DeviceManagement {
             };
         }
         const runtime = this.adapter.registry.get(id);
-        const template = findTemplate(cfg.template);
         const powerMissing = cfg.powerId === "" ||
             runtime?.powerMissing === true ||
             !(await this.adapter.getForeignObjectAsync(cfg.powerId));
@@ -365,7 +377,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             id,
             name: cfg.name,
             identifier: cfg.powerId,
-            ...(template ? { model: template.name } : {}),
+            model: deviceModel(cfg, (runtime?.currentOverride ?? null) !== null),
             icon: GENERIC_ICON,
             enabled: cfg.enabled,
             status: { warning },
@@ -457,37 +469,78 @@ export class ReminderDeviceManagement extends DeviceManagement {
     async updateOf(id) {
         return { update: await this.buildDeviceInfo(id) };
     }
-    async askDevice(ctx, title, data, enums, detection, previous = null) {
+    async askDevice(ctx, title, data, enums, detection, previous = null, source, copyHint = false) {
         let current = { ...data };
         const isNew = previous === null;
         for (;;) {
-            const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection, enums, isNew), {
-                data: current,
-                title,
-            });
+            const shownFactor = await this.unitFactorOf(textOf(current.powerId).trim());
+            const result = await ctx.showForm(buildDeviceSchema(this.adapter.instanceConfig, detection, enums, shownFactor === 1000 ? "kW" : "W", copyHint), { data: current, title });
             if (!result) {
                 return null;
             }
             const form = toFormData(result);
-            const { config, errors } = formToDeviceConfig(form, {
+            const { config, errors, warnings } = formToDeviceConfig(form, {
                 isNew,
                 unitFactor: await this.unitFactorOf(textOf(form.powerId).trim()),
                 ...(previous ? { previous } : {}),
+                ...(source ? { source } : {}),
             });
             if (config) {
+                if (warnings.length > 0) {
+                    for (const warning of warnings) {
+                        this.adapter.log.warn(warning);
+                    }
+                    await ctx.showMessage(warnings.join("\n"));
+                }
                 return { config, rooms: idList(result.rooms), functions: idList(result.functions) };
             }
             await ctx.showMessage(errors.join("\n"));
             current = result;
         }
     }
+    async sourceValues(value, archive, devices) {
+        const choice = parseSourceChoice(value);
+        if (choice?.kind === "archive") {
+            const found = archive.find(a => a.id === choice.id);
+            if (found) {
+                return { detection: found.detection, copyHint: false };
+            }
+        }
+        else if (choice?.kind === "device") {
+            const obj = devices.get(choice.id);
+            const cfg = obj ? this.configOf(obj) : null;
+            if (obj && cfg) {
+                const base = detectionOf(cfg.detection);
+                for (const key of FINAL_KEYS) {
+                    base[key] = 0;
+                }
+                const unitFactor = await this.unitFactorOf(cfg.powerId);
+                const used = FINAL_KEYS.some(key => (cfg.detection[key] ?? 0) !== 0) || isRecord(obj.native?.phases);
+                return { detection: scalePowers(base, unitFactor, 1), copyHint: used };
+            }
+        }
+        else if (choice?.kind === "template") {
+            const template = findTemplate(choice.id);
+            if (template) {
+                return { detection: template.detection, template: template.id, copyHint: false };
+            }
+        }
+        return { detection: CUSTOM_TEMPLATE.detection, template: CUSTOM_TEMPLATE.id, copyHint: false };
+    }
     async addDevice(ctx) {
         let manual = false;
         let sourceId = "";
+        let sourceChoice = DEFAULT_SOURCE;
+        const instanceObj = await this.adapter.getForeignObjectAsync(`system.adapter.${this.adapter.namespace}`);
+        const archive = archiveTemplates((instanceObj?.native ?? {}));
+        const existing = await this.deviceObjects();
+        const known = [...existing.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([id, obj]) => ({ id, name: this.configOf(obj)?.name ?? id }));
         for (;;) {
-            const first = await ctx.showForm(buildSourceSchema(), {
+            const first = await ctx.showForm(buildSourceSchema(archive, known), {
                 title: TEXT.addTitle,
-                data: { manual, sourceId },
+                data: { manual, sourceId, source: sourceChoice },
                 ignoreApplyDisabled: true,
             });
             if (!first) {
@@ -495,6 +548,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             }
             manual = first.manual === true;
             sourceId = textOf(first.sourceId).trim();
+            sourceChoice = textOf(first.source) || DEFAULT_SOURCE;
             if (manual || sourceId !== "") {
                 break;
             }
@@ -509,10 +563,12 @@ export class ReminderDeviceManagement extends DeviceManagement {
             name = nameOf(source?.common?.name, sourceId.split(".").pop() ?? "");
         }
         const enums = await this.loadEnums();
+        const values = await this.sourceValues(sourceChoice, archive, existing);
+        const prefillFactor = await this.unitFactorOf(detection?.powerId ?? "");
         const prefill = {
+            ...scalePowers(values.detection, 1, prefillFactor),
             enabled: true,
             name,
-            template: TEMPLATES[0].id,
             sourceId: manual ? "" : sourceId,
             powerId: detection?.powerId ?? "",
             switchId: detection?.switchId ?? "",
@@ -528,7 +584,11 @@ export class ReminderDeviceManagement extends DeviceManagement {
             rooms: [],
             functions: [],
         };
-        const answer = await this.askDevice(ctx, TEXT.addTitle, prefill, enums.options, detection);
+        const answer = await this.askDevice(ctx, TEXT.addTitle, prefill, enums.options, detection, null, {
+            detection: values.detection,
+            ...(values.template ? { template: values.template } : {}),
+            unitFactor: prefillFactor,
+        }, values.copyHint);
         if (!answer) {
             return { refresh: false };
         }
@@ -539,6 +599,24 @@ export class ReminderDeviceManagement extends DeviceManagement {
         await this.assignEnums(id, enums.members, answer.rooms, answer.functions);
         this.log.info(`Device ${config.name} added as ${id}`);
         return { refresh: true };
+    }
+    async removeArchive(ctx) {
+        const objId = `system.adapter.${this.adapter.namespace}`;
+        const obj = await this.adapter.getForeignObjectAsync(objId);
+        const types = obj?.native?.types;
+        if (!obj || !Array.isArray(types) || types.length === 0) {
+            await ctx.showMessage(TEXT.archiveEmpty);
+            return { refresh: false };
+        }
+        if (!(await ctx.showConfirmation(I18n.getTranslatedObject("dm_removeArchiveConfirm")))) {
+            return { refresh: false };
+        }
+        await this.adapter.setForeignObjectAsync(objId, {
+            ...obj,
+            native: { ...obj.native, types: [] },
+        });
+        this.log.info(`Old templates removed (${types.length})`);
+        return { refresh: false };
     }
     async editDevice(id, ctx) {
         const obj = await this.adapter.getObjectAsync(id);
@@ -834,7 +912,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             return;
         }
         const { template: _template, typeId: _typeId, ...rest } = cfg;
-        await this.writeDevice(id, { ...rest, detection: next });
+        await this.writeDevice(id, { ...rest, detection: next, learned: true });
         this.adapter.log.info(`${cfg.name}: learned detection values saved (${changes})`);
         await ctx.showMessage(TEXT.learnSaved);
     }
@@ -938,7 +1016,7 @@ export function buildOptimizationView(store, check, type, effective, active) {
         xs: 12,
         items: [
             { type: "text", attr: "name", title: tr("dm_optParameter"), width: "40%" },
-            { type: "text", attr: "type", title: tr("dm_optTypeValue"), width: "30%" },
+            { type: "text", attr: "type", title: tr("dm_optBaseValue"), width: "30%" },
             { type: "text", attr: "effective", title: tr("dm_optEffective"), width: "30%" },
         ],
     };
@@ -1026,7 +1104,7 @@ export function buildOptimizationView(store, check, type, effective, active) {
     }
     ops.push({ label: I18n.getTranslatedObject("dm_optClear"), value: "clear" });
     if (active) {
-        ops.push({ label: I18n.getTranslatedObject("dm_optSaveType"), value: "saveType" });
+        ops.push({ label: I18n.getTranslatedObject("dm_optSaveValues"), value: "saveType" });
     }
     items.operation = {
         type: "select",
@@ -1200,7 +1278,7 @@ function historyItems(fromHistory, withCurrent) {
     if (withCurrent) {
         items.eval_current = {
             type: "text",
-            label: I18n.getTranslatedObject("dm_learnCurrentType"),
+            label: I18n.getTranslatedObject("dm_learnCurrent"),
             disabled: true,
             xs: 12,
             sm: 4,

@@ -34,7 +34,7 @@ Everything is configured in the instance settings. Devices are managed in the De
 1. Install the adapter and create an instance.
 2. Open the instance settings. The tabs are:
    - **Devices**: the Device Manager (see [Adding devices](#4-adding-devices)).
-   - **Device types**: the types of earlier versions. They are only read while a device has no detection values of its own yet; the values live in the device (see [Detection values and templates](#3-detection-values-and-templates)).
+   - **Detection values**: only a note. The values live in each device (see [Detection values and templates](#3-detection-values-and-templates)); there is no table of device types any more.
    - **Recipients**: who receives messages (see [Recipients](#5-recipients)).
    - **General**: status texts, polling interval and the optional HTML history.
 3. Create at least one recipient, then add a device in the Device Manager and select the recipient in the device form.
@@ -51,7 +51,19 @@ General settings:
 
 Every device has detection values of its own: thresholds, detection mode, pause protection and anti-crease filter. They live in the device, no longer in a device type shared by several devices. Changing the values of a device changes only this device.
 
-When you add a device you choose a **template** that gives the first values: **Washing machine**, **Dryer** and **Dishwasher** with the values of 3.1.2, and **Custom** (30 / 5 / 1 / 1 / 20) for every other device. If the power state measures kW, the power values of the template are divided by 1000. Then you adapt the values to your device by [learning](#8-learning-mode); learning writes the values directly into the device, without restarting the instance.
+When you add a device you choose where its first values come from (first step of **Add device**, field **Values of the new device**):
+
+- a **template**: **Washing machine**, **Dryer** and **Dishwasher** with the values of 3.1.2, and **Custom** (30 / 5 / 1 / 1 / 20) for every other device,
+- an **old template**: a device type of an earlier version whose values or name differ from the template (also learned types of test builds without a device),
+- **another device**: only the start and end values and the pause and anti-crease protection are copied. The final phase and the phases are **not** copied; they are learned at the new device, because they only apply with proof from its own runs (a hint in the form says so).
+
+If the power state measures kW, the power values are converted (a template is divided by 1000; between a W and a kW state the values are converted as well). Then you adapt the values to your device in the device form or by [learning](#8-learning-mode); both write the values directly into the device, without restarting the instance.
+
+In the device form the values are in the panel **Detection** (mode, start, end and standby value, counts and durations) and, collapsed, in **Expert values** (pause protection, anti-crease filter and the 13 values of the final phase; the final phase fields only appear once its lower edge and time in band are set). Values that are out of range or contradict each other are corrected and reported when you save.
+
+The device card shows where the values come from as its model: the name of the template, **learned** (values written by learning or saved from the automatic optimisation, or an optimisation changes them at the moment) or **own values**.
+
+The instance action **Remove old templates** in the Device Manager deletes the archive of old device types after a confirmation (the instance restarts); the devices stay unchanged.
 
 A device without valid detection values (for example because its device type no longer exists) gets the values of **Custom** and is **disabled**: it did not run before and must not start sending messages. The device card and the log give the reason. Check the device, save it in the device form and enable it again.
 
@@ -101,7 +113,7 @@ The values are usually set by [learning](#8-learning-mode); you can change them 
 
 ## 4. Adding devices
 
-Open the **Devices** tab and press **Add device**. There are three ways:
+Open the **Devices** tab and press **Add device**. In the first step you also choose the **values of the new device** (template, old template or another device, see [Detection values and templates](#3-detection-values-and-templates)) and one of three ways to find the states:
 
 1. **Socket / power meter**: the Device Manager uses the ioBroker type-detector to find sockets and power meters (switch state and power state). Pick one; both states are filled in.
 2. **Alias or device**: select an alias or device object; the type-detector looks for a suitable power state in it.
@@ -114,8 +126,8 @@ The device form contains:
 | Field | Meaning |
 | --- | --- |
 | Name | Used for the object ID. IDs are unique and valid: umlauts are transliterated, spaces and dots become `_`, duplicates get `_2`, `_3` ... |
-| Template | Only when adding: gives the detection values of the new device (see [Detection values and templates](#3-detection-values-and-templates)). Editing keeps the values of the device |
-| Power state | State with the power in W (required) |
+| Detection / Expert values | The detection values of the device (see [Detection values and templates](#3-detection-values-and-templates)). When adding, the first step chooses where they come from; the form shows them in the unit of the power state |
+| Power state | State with the power in W or kW (required) |
 | Switch state | Optional, needed for auto-off |
 | Start text / End text | Message texts |
 | Abort detection | See [Abort detection](#abort-detection) |
@@ -129,7 +141,7 @@ The device form contains:
 
 Required fields are checked before saving.
 
-Each device card shows status, power, runtime, a running and a finished indicator and a warning if the power state is missing. On the card you can edit, delete, enable or disable the device, switch do-not-disturb, acknowledge, send a test message and start learning. The details list the last runs, the template and the detection values of the device and the reminder status. A device that needs a check shows a warning with the reason.
+Each device card shows status, power, runtime, a running and a finished indicator and a warning if the power state is missing. On the card you can edit, delete, enable or disable the device, switch do-not-disturb, acknowledge, send a test message and start learning. The card shows the template, **learned** or **own values** as its model. The details list the last runs, the detection values of the device and the reminder status. A device that needs a check shows a warning with the reason.
 
 ### Run behaviour
 
@@ -468,7 +480,7 @@ Device states are relative to the device object `<deviceId>`. Info states are on
 | `learning.optimizeInfo` | string | json | r | - | Optimisation status | JSON: status, runs, spikes, families, trailer, lastCheckTs, nextPossibleTs, lastEndDelaySec, unclear |
 | `learning.lastEndDelay` | number | value.interval | r | s | End delay of the last run | Time from the end of the programme to the reported end of the last recorded run |
 | `learning.undo` | boolean | button | w | - | Undo last optimisation | Write true to undo the last change of the automatic optimisation (no tightening for 14 days) |
-| `learning.reset` | boolean | button | w | - | Reset to device type values | Write true to use the detection values of the device again (no tightening for 14 days) |
+| `learning.reset` | boolean | button | w | - | Reset to the base values of the device | Write true to use the detection values of the device again (no tightening for 14 days) |
 | `lastOperationsHtml` | string | html | r | - | Last operations (HTML) | HTML table of the last runs (only if enabled in the general settings) |
 | `info.connection` | boolean | indicator.connected | r | - | Adapter connected | True when the adapter is running |
 <!-- END STATES -->
