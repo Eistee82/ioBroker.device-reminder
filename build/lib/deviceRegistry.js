@@ -9,7 +9,7 @@ import { scaled } from "./learn/ticks.js";
 import { LearningRecorder, suggestType } from "./learning.js";
 import { ReminderScheduler } from "./reminder.js";
 import { RunRecorder } from "./runRecorder.js";
-import { addRun, emptyStore, fitSize, labelCapture, loadStore, pushChange, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, typeHash, } from "./runStore.js";
+import { addRun, clearLearningData, decisionOf, emptyStore, fitSize, labelCapture, loadStore, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, typeHash, upgradeStore, } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 const OPTIMIZE_BUDGET_MS = 30_000;
 function isTrue(val) {
@@ -180,7 +180,12 @@ export class DeviceRegistry {
                 continue;
             }
             try {
-                entry.opt?.recorder.setActivityLimit(entry.runtime.effective.endVal);
+                if (entry.opt) {
+                    const store = entry.opt.store;
+                    const runLevel = (store.tail?.runLimit ?? 0) / (store.unitFactor > 0 ? store.unitFactor : 1);
+                    entry.opt.recorder.setActivityLimit(Math.max(entry.runtime.effective.endVal, runLevel));
+                    store.lastSeenTs = this.host.now();
+                }
                 await entry.runtime.tick();
                 if (entry.opt) {
                     const cap = entry.opt.recorder.closeIfDue(this.host.now(), entry.runtime.effective.endVal);
@@ -275,7 +280,11 @@ export class DeviceRegistry {
             return inMemory;
         }
         try {
-            return await loadStore(this.files, deviceId, this.host.log);
+            const read = await loadStore(this.files, deviceId, this.host.log);
+            if (read) {
+                upgradeStore(read);
+            }
+            return read;
         }
         catch (err) {
             this.host.log.debug(`Cannot read the learning data of ${deviceId}: ${errorMessage(err)}`);
@@ -299,37 +308,53 @@ export class DeviceRegistry {
         if (!entry || !store) {
             return false;
         }
-        const before = store.runs.length + store.spikes.length;
-        store.runs = store.runs.filter(r => r.id !== runId);
-        store.spikes = store.spikes.filter(r => r.id !== runId);
-        if (store.runs.length + store.spikes.length === before) {
+        const run = [...store.runs, ...store.spikes].find(r => r.id === runId);
+        if (!run || decisionOf(store, run.key)?.user === "exclude") {
             return false;
         }
+        setDecision(store, run.key, "exclude");
+        recompute(store, this.qualityContext(store));
         refreshInfo(store);
         await this.saveOpt(entry);
         await this.writeOptStates(deviceId, entry);
         this.host.log.info(`${entry.runtime.config.name}: stored run ${runId} discarded`);
         return true;
     }
-    deleteLearningData(deviceId) {
-        return this.serialized(() => this.deleteLearningDataNow(deviceId));
+    deleteLearningData(deviceId, keepDecisions = true) {
+        return this.serialized(() => this.clearLearningDataNow(deviceId, keepDecisions));
     }
-    async deleteLearningDataNow(deviceId) {
+    removeLearningData(deviceId) {
+        return this.serialized(() => this.clearLearningDataNow(deviceId, false));
+    }
+    async clearLearningDataNow(deviceId, keepDecisions) {
         const entry = this.devices.get(deviceId);
+        let kept = null;
         if (entry?.opt) {
             const cfg = entry.runtime.config;
             entry.runtime.setOverride(null);
-            entry.opt.store = emptyStore(deviceId, cfg.template ?? "", typeHash(entry.runtime.baseDetection), entry.opt.store.step, entry.opt.store.unitFactor);
+            const cleared = clearLearningData(entry.opt.store, keepDecisions);
+            cleared.typeId = cfg.template ?? "";
+            cleared.typeHash = typeHash(entry.runtime.baseDetection);
+            entry.opt.store = cleared;
+            kept = cleared;
             this.driftReported.delete(entry);
             await this.writeOptStates(deviceId, entry);
         }
-        if (this.files) {
-            try {
-                await removeStore(this.files, deviceId);
+        else if (keepDecisions && this.files) {
+            const read = await this.readLearningData(deviceId);
+            kept = read ? clearLearningData(read, true) : null;
+        }
+        if (!this.files) {
+            return;
+        }
+        try {
+            await removeStore(this.files, deviceId);
+            if (kept && Object.keys(kept.verdicts).length > 0) {
+                await saveStore(this.files, kept);
             }
-            catch (err) {
-                this.host.log.warn(`Cannot delete the learning data of ${deviceId}: ${errorMessage(err)}`);
-            }
+        }
+        catch (err) {
+            this.host.log.warn(`Cannot delete the learning data of ${deviceId}: ${errorMessage(err)}`);
         }
     }
     undoOptimization(deviceId) {
@@ -445,14 +470,23 @@ export class DeviceRegistry {
             return;
         }
         const store = loaded ?? emptyStore(deviceId, cfg.template ?? "", typeHash(type), step, unitFactor);
+        const upgraded = upgradeStore(store, effectiveOf(type, store.override).endVal * unitFactor);
+        for (const msg of upgraded) {
+            this.host.log.info(`${cfg.name}: ${msg}`);
+        }
         const hadOverride = store.override !== null;
         const base = reconcileBase(store, typeHash(type), typeHash(effectiveOf(type, store.override)), now);
         if (base === "adopted") {
             this.host.log.info(`${cfg.name}: values in use adopted as base values`);
         }
+        const converted = store.step !== step || store.unitFactor !== unitFactor;
         for (const msg of reconcileStore(store, typeHash(type), step, unitFactor, now)) {
             this.host.log.info(`${cfg.name}: ${msg}`);
         }
+        if (upgraded.length > 0 || converted) {
+            recompute(store, this.qualityContext(store));
+        }
+        const wantHistory = store.historyReadTs === undefined && store.runs.length + store.spikes.length === 0;
         if (base === "baseChanged" && hadOverride) {
             await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
         }
@@ -478,7 +512,7 @@ export class DeviceRegistry {
             }
         }
         await this.writeOptStates(deviceId, entry);
-        if (!loaded && this.opts.history) {
+        if (wantHistory && this.opts.history) {
             this.enqueue(deviceId, () => this.bootstrapFromHistory(deviceId));
         }
     }
@@ -520,14 +554,19 @@ export class DeviceRegistry {
         }
         const eff = entry.runtime.effective;
         const factor = store.unitFactor;
+        const now = this.host.now();
         const layout = buildLayout(series, { keepAbove: eff.endVal * factor });
         const sim = factor === 1 ? series : scaled(series, 1 / factor);
         let runs = 0;
         let spikes = 0;
         for (const w of [...layout.windows].sort((a, b) => a.fromIdx - b.fromIdx)) {
             const cells = [];
+            const rep = [];
             for (let i = w.fromIdx; i <= w.toIdx; i++) {
                 cells.push({ min: sim.min[i], max: sim.max[i], last: sim.last[i], valid: sim.valid[i] === 1 });
+                if (series.has[i] === 1) {
+                    rep.push((i - w.fromIdx) * series.stepMs);
+                }
             }
             const r = simulate(sim, w, eff, { abort: cfg.abort, abortFixed: cfg.abortFixed, pollSec: poll });
             const ev = [
@@ -542,10 +581,11 @@ export class DeviceRegistry {
                 cells,
                 ev,
                 postTruncated: false,
+                rep,
             };
             const res = labelCapture(cap, eff.endVal * factor, "history");
             if (res.run) {
-                addRun(store, res.run);
+                addRun(store, res.run, { now, deferred: true });
                 if (res.label === "spike") {
                     spikes++;
                 }
@@ -558,10 +598,12 @@ export class DeviceRegistry {
         if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
             return;
         }
+        store.historyReadTs = now;
         if (runs + spikes === 0) {
             await this.saveOpt(entry);
             return;
         }
+        fitSize(store, now, recompute(store, this.qualityContext(store)));
         refreshInfo(store);
         this.host.log.info(`${cfg.name}: ${runs} runs and ${spikes} false starts taken over from the history (${instance})`);
         await this.saveOpt(entry);
@@ -571,6 +613,17 @@ export class DeviceRegistry {
         return new Promise(resolve => {
             this.host.setTimeout(resolve, 0);
         });
+    }
+    qualityContext(store) {
+        return {
+            bands: store.bands ?? null,
+            unitFactor: store.unitFactor,
+            unit: store.unitFactor === 1000 ? "kW" : "W",
+            settings: null,
+            pollMs: store.step,
+            outages: [],
+            scope: "run",
+        };
     }
     optimizeContext(entry) {
         const cfg = entry.runtime.config;
@@ -619,7 +672,7 @@ export class DeviceRegistry {
             store.info.unclear++;
         }
         else {
-            addRun(store, res.run);
+            addRun(store, res.run, { ctx: this.qualityContext(store), now: this.host.now() });
             if (res.trusted) {
                 store.newSinceChange++;
                 store.lockRuns = Math.max(0, store.lockRuns - 1);

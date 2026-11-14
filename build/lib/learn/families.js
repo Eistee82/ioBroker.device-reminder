@@ -95,6 +95,8 @@ export function featuresOf(s, r, runLimit) {
         minRunW: median(active),
         trailerGapMaxSec: trailGap,
         trailerGapMinSec: r.gapMinMs / 1000,
+        burstMaxW: r.burstMaxW,
+        endBlockMinW: r.endBlockMinW,
     };
 }
 //# sourceMappingURL=families.js.map

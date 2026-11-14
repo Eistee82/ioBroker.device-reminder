@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import { Notifier } from "../build/lib/notifier.js";
+import { setDecision } from "../build/lib/runStore.js";
 import { registrySetup, WASHER } from "./helpers/devices.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 
@@ -323,5 +324,25 @@ describe("DeviceRegistry", () => {
 		await ctx.reg.tickAll();
 		await ctx.host.runTimers();
 		assert.strictEqual(ctx.host.ownWrites.length, writes);
+	});
+
+	it("deleting a device removes its learning data with the decisions; a new device with the same id starts empty", async () => {
+		const ctx = await registrySetup();
+		const st = ctx.reg.learningData("dev");
+		setDecision(st, "dev@100", "exclude");
+		await ctx.reg.removeLearningData("dev");
+		const again = await registrySetup({ host: ctx.host, files: ctx.files });
+		assert.deepStrictEqual(again.reg.learningData("dev").verdicts ?? {}, {});
+	});
+
+	it("clearing the learning data keeps the decisions in the file unless asked", async () => {
+		const ctx = await registrySetup();
+		setDecision(ctx.reg.learningData("dev"), "dev@100", "exclude");
+		await ctx.reg.deleteLearningData("dev");
+		assert.deepStrictEqual(ctx.reg.learningData("dev").verdicts, { "dev@100": { user: "exclude" } });
+		const again = await registrySetup({ host: ctx.host, files: ctx.files });
+		assert.deepStrictEqual(again.reg.learningData("dev").verdicts, { "dev@100": { user: "exclude" } });
+		await again.reg.deleteLearningData("dev", false);
+		assert.strictEqual(again.files.files.size, 0);
 	});
 });

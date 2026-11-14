@@ -98,22 +98,24 @@ describe("automatic optimisation in the registry", function () {
 		assert.strictEqual(ctx.files.writes, 0);
 	});
 
-	it("discards a stored run, keeps the extremes and reads the data while the optimisation is off", async () => {
+	it("discards a stored run as decision of the user, replays it no more and reads the data while the optimisation is off", async () => {
 		const ctx = await setup({ detection: DRYER });
 		const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 3, after: 400 });
 		await play(ctx, run.values);
 		const store = ctx.reg.learningData("dev");
 		const ids = [...store.runs, ...store.spikes].map(r => r.id);
 		assert.ok(ids.length > 0, "a run was stored");
-		const envelope = { ...store.envelope };
 		const check = await ctx.reg.checkStoredRuns("dev");
 		assert.strictEqual(check.perRun.length, store.runs.length);
 
 		assert.strictEqual(await ctx.reg.discardRun("dev", "nope"), false);
 		assert.strictEqual(await ctx.reg.discardRun("dev", ids[0]), true);
+		assert.strictEqual(await ctx.reg.discardRun("dev", ids[0]), false, "already excluded");
 		const after = ctx.reg.learningData("dev");
-		assert.ok(![...after.runs, ...after.spikes].some(r => r.id === ids[0]));
-		assert.deepStrictEqual(after.envelope, envelope, "the envelope never shrinks");
+		const gone = [...after.runs, ...after.spikes].find(r => r.id === ids[0]);
+		assert.deepStrictEqual(after.verdicts[gone.key], { user: "exclude" }, "kept as decision over its key");
+		const replayed = await ctx.reg.checkStoredRuns("dev");
+		assert.ok(!replayed.perRun.some(r => r.id === ids[0]), "no longer replayed");
 
 		// switched off: the data stays in the file and can still be read
 		await ctx.reg.upsert("dev", { ...ctx.cfg, autoOptimize: undefined });
@@ -121,8 +123,13 @@ describe("automatic optimisation in the registry", function () {
 		assert.strictEqual(await ctx.reg.checkStoredRuns("dev"), null);
 		assert.strictEqual(await ctx.reg.discardRun("dev", ids[0]), false);
 		const read = await ctx.reg.readLearningData("dev");
-		assert.strictEqual(read.runs.length + read.spikes.length, ids.length - 1);
+		assert.strictEqual(read.runs.length + read.spikes.length, ids.length);
+		assert.strictEqual(Object.keys(read.verdicts).length, 1);
+		// "clear learning data" keeps the decision, only the extra option removes it
 		await ctx.reg.deleteLearningData("dev");
+		const cleared = await ctx.reg.readLearningData("dev");
+		assert.deepStrictEqual([cleared.runs.length, Object.keys(cleared.verdicts).length], [0, 1]);
+		await ctx.reg.deleteLearningData("dev", false);
 		assert.strictEqual(await ctx.reg.readLearningData("dev"), null);
 	});
 

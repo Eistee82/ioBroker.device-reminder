@@ -919,7 +919,7 @@ function boundsOf(spans: Span[], all: Span[], length: number): Bounds[] {
  * @param r - Run
  * @param level - Level in W
  */
-function endBlockOf(s: TickSeries, r: RunInfo, level: number): Span | null {
+function endBlockOf(s: TickSeries, r: Pick<RunInfo, "from" | "coreEnd">, level: number): Span | null {
 	const merged = mergeBlocks(
 		blocksOf(s, { from: r.from, to: r.coreEnd }, level),
 		Math.floor(END_BLOCK_BRIDGE_MS / s.stepMs) + 1,
@@ -927,59 +927,113 @@ function endBlockOf(s: TickSeries, r: RunInfo, level: number): Span | null {
 	return [...merged].reverse().find(b => (b.to - b.from + 1) * s.stepMs >= SUSTAINED_MS) ?? null;
 }
 
+/** Fields of a run that the tail rule reads and sets. */
+export type TailRun = Pick<
+	RunInfo,
+	| "from"
+	| "coreEnd"
+	| "runEnd"
+	| "trailerFrom"
+	| "burstMaxW"
+	| "progEnd"
+	| "endBlockFrom"
+	| "endBlockTo"
+	| "endBlockMinW"
+>;
+
+/** One run of the tail rule with its series and run level (the runs may come from different series). */
+export interface TailPart {
+	/** Series in W. */
+	s: TickSeries;
+	/** Run (`progEnd`, `endBlockFrom`, `endBlockTo` and `endBlockMinW` are set by `applyTail`). */
+	r: TailRun;
+	/** Run level of its series in W. */
+	runLimit: number;
+}
+
+/** Result of the tail rule. */
+export interface Tail {
+	/** Highest burst maximum of the runs with a trailer in W (0 without). */
+	burstMaxW: number;
+	/** Whether the trailer is separated from the programme. */
+	tailSeparated: boolean;
+	/** Values above it belong to the programme in W. */
+	tailCeil: number;
+}
+
 /**
- * Programme end and tail of all runs (Spec B.4): the tail is separated from the programme if at
- * least 2 runs have a trailer and in each of them the last block above 1.25 times the highest burst
- * maximum reaches the core end. Then values above 1.1 times the burst maximum belong to the
- * programme; otherwise the tail ceiling is the run level and the programme end is the end of the run.
- * Sets `progEnd`, `endBlockFrom`, `endBlockTo` and `endBlockMinW` of every run.
+ * Tail rule of Spec B.4 over runs that may come from different series (the runs of one layout, or the
+ * stored runs of a device): the tail is separated from the programme if at least 2 runs have a trailer
+ * and in each of them the last block above 1.25 times the highest burst maximum reaches the core end.
+ * Then values above 1.1 times the burst maximum belong to the programme; otherwise the tail ceiling is
+ * the run level (the median over the runs).
+ *
+ * @param parts - Runs with their series
+ */
+export function tailRule(parts: readonly TailPart[]): Tail {
+	const withTrailer = parts.filter(p => p.r.trailerFrom !== null);
+	const burstMaxW = withTrailer.length > 0 ? Math.max(...withTrailer.map(p => p.r.burstMaxW)) : 0;
+	const hi = END_BLOCK_SHARE * burstMaxW;
+	const limit = withTrailer.length > 0 ? Math.max(...withTrailer.map(p => p.runLimit)) : 0;
+	const tailSeparated =
+		withTrailer.length >= 2 &&
+		burstMaxW > limit &&
+		withTrailer.every(p => {
+			const b = endBlockOf(p.s, p.r, hi);
+			return b !== null && p.r.coreEnd - b.to <= Math.ceil(END_BLOCK_REACH_MS / p.s.stepMs);
+		});
+	const tailCeil = tailSeparated ? TAIL_CEIL_SHARE * burstMaxW : median(parts.map(p => p.runLimit));
+	return { burstMaxW, tailSeparated, tailCeil };
+}
+
+/**
+ * Programme end and end block of one run under a tail (sets `progEnd`, `endBlockFrom`, `endBlockTo`
+ * and `endBlockMinW`).
+ *
+ * @param p - Run with its series
+ * @param tail - Result of `tailRule`
+ */
+export function applyTail(p: TailPart, tail: Tail): void {
+	const { s, r, runLimit } = p;
+	// without a block above the end block level (a short final spin) the last block above the run level
+	const above = tail.tailSeparated ? endBlockOf(s, r, END_BLOCK_SHARE * tail.burstMaxW) : null;
+	const b = above ?? endBlockOf(s, r, runLimit) ?? { from: r.endBlockFrom, to: r.endBlockTo };
+	r.endBlockFrom = b.from;
+	r.endBlockTo = b.to;
+	let min = Number.POSITIVE_INFINITY;
+	for (let i = b.from; i <= b.to; i++) {
+		if (s.valid[i] === 1) {
+			min = Math.min(min, s.last[i]);
+		}
+	}
+	r.endBlockMinW = Number.isFinite(min) ? min : 0;
+	r.progEnd = r.runEnd;
+	if (tail.tailSeparated) {
+		// a run that never exceeds the ceiling keeps the criterion of today
+		for (let i = r.runEnd; i >= r.from; i--) {
+			if (s.valid[i] === 1 && s.last[i] > tail.tailCeil) {
+				r.progEnd = i;
+				break;
+			}
+		}
+	}
+}
+
+/**
+ * Programme end and tail of the runs of one series (Spec B.4, `tailRule`). Sets `progEnd`,
+ * `endBlockFrom`, `endBlockTo` and `endBlockMinW` of every run.
  *
  * @param s - Series
  * @param runs - Runs (updated)
  * @param runLimit - Run level
  */
-function tailOf(
-	s: TickSeries,
-	runs: RunInfo[],
-	runLimit: number,
-): { burstMaxW: number; tailSeparated: boolean; tailCeil: number } {
-	const withTrailer = runs.filter(r => r.trailerFrom !== null);
-	const burstMaxW = withTrailer.length > 0 ? Math.max(...withTrailer.map(r => r.burstMaxW)) : 0;
-	const hi = END_BLOCK_SHARE * burstMaxW;
-	const reach = Math.ceil(END_BLOCK_REACH_MS / s.stepMs);
-	const tailSeparated =
-		withTrailer.length >= 2 &&
-		burstMaxW > runLimit &&
-		withTrailer.every(r => {
-			const b = endBlockOf(s, r, hi);
-			return b !== null && r.coreEnd - b.to <= reach;
-		});
-	const tailCeil = tailSeparated ? TAIL_CEIL_SHARE * burstMaxW : runLimit;
-	for (const r of runs) {
-		// without a block above the end block level (a short final spin) the last block above the run level
-		const above = tailSeparated ? endBlockOf(s, r, hi) : null;
-		const b = above ?? endBlockOf(s, r, runLimit) ?? { from: r.endBlockFrom, to: r.endBlockTo };
-		r.endBlockFrom = b.from;
-		r.endBlockTo = b.to;
-		let min = Number.POSITIVE_INFINITY;
-		for (let i = b.from; i <= b.to; i++) {
-			if (s.valid[i] === 1) {
-				min = Math.min(min, s.last[i]);
-			}
-		}
-		r.endBlockMinW = Number.isFinite(min) ? min : 0;
-		r.progEnd = r.runEnd;
-		if (tailSeparated) {
-			// a run that never exceeds the ceiling keeps the criterion of today
-			for (let i = r.runEnd; i >= r.from; i--) {
-				if (s.valid[i] === 1 && s.last[i] > tailCeil) {
-					r.progEnd = i;
-					break;
-				}
-			}
-		}
+function tailOf(s: TickSeries, runs: RunInfo[], runLimit: number): Tail {
+	const parts = runs.map(r => ({ s, r, runLimit }));
+	const tail = parts.length > 0 ? tailRule(parts) : { burstMaxW: 0, tailSeparated: false, tailCeil: runLimit };
+	for (const p of parts) {
+		applyTail(p, tail);
 	}
-	return { burstMaxW, tailSeparated, tailCeil };
+	return tail;
 }
 
 /**

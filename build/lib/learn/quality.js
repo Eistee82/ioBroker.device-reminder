@@ -573,7 +573,7 @@ function checkData(x, ctx, reportP999, cv) {
         x.reasons.push({ code: "gap", detail: `proven: outage of ${fmt((outage.to - outage.from) / 1000)} s` });
     }
     if (ctx.bands !== null && !s.fromTicks) {
-        const to = continuous ? f.end : f.coreEnd;
+        const to = continuous ? f.end : Math.min(f.coreEnd, f.progEnd);
         const p = s.points;
         for (let i = 0; i < p.length; i++) {
             const next = i + 1 < p.length ? p[i + 1].ts : s.to;

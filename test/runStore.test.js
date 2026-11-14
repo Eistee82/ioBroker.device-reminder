@@ -1,22 +1,35 @@
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
 import { DEFAULT_TYPES } from "../build/lib/legacyTypes.js";
+import { LAYOUT_REV } from "../build/lib/learn/runs.js";
 import { decodeCells, encodeCells, fromStored, quantOf } from "../build/lib/learn/ticks.js";
 import {
 	addRun,
+	boundaryRuns,
+	clearLearningData,
+	convertRuns,
 	DETECTION_KEYS,
 	detectionOf,
 	emptyStore,
+	evict,
 	fitSize,
 	labelCapture,
 	loadStore,
-	MAX_RUNS,
+	MAX_RUN_META,
 	MAX_STORE_BYTES,
+	MIN_PER_FAMILY,
+	recompute,
+	recomputeEnvelope,
 	reconcileBase,
 	reconcileStore,
 	removeStore,
 	saveStore,
+	setDecision,
 	sizeOf,
+	storeSamples,
 	typeHash,
+	upgradeStore,
+	WINDOW_MS,
 } from "../build/lib/runStore.js";
 import { memoryFiles } from "./helpers/files.js";
 import { runOf } from "./helpers/programmes.js";
@@ -128,19 +141,24 @@ describe("run store", () => {
 		assert.strictEqual(far.label, "unclear");
 	});
 
-	it("stores 20 runs below 400 KB, keeps the last two of every programme group and history runs go first", () => {
+	it("keeps the runs of 30 days; older ones go with two per programme group left, history runs first", () => {
 		const store = emptyStore("dev", "washing-machine", typeHash(WASHER), STEP, 1);
 		const progs = ["cotton60", "quick30", "eco4060", "wool", "spinOnly"];
 		let t = 0;
-		for (let k = 0; k < 30; k++) {
+		for (let k = 0; k < 45; k++) {
 			const run = runOf({ device: "washer", programme: progs[k % 5], shape: "T1", seed: k + 1, after: 400 });
 			const res = labelCapture(captureOf(run, t), 15, k < 3 ? "history" : "live");
 			assert.strictEqual(res.label, "run", `run ${k}`);
 			addRun(store, res.run);
 			t += 86_400_000;
 		}
-		assert.strictEqual(store.runs.length, MAX_RUNS);
 		assert.ok(sizeOf(store) < MAX_STORE_BYTES, `${sizeOf(store)} bytes`);
+		assert.ok(store.runs.every(r => typeof r.key === "string" && r.key.startsWith("dev@")));
+		// days 15 to 44 lie within 30 days of the last run (day 14 is a few hours older)
+		const now = store.runs.at(-1).ts;
+		const recent = store.runs.filter(r => r.ts >= now - WINDOW_MS + 86_400_000).length;
+		assert.strictEqual(recent, 30, "every run of the last 30 days stays");
+		assert.ok(store.runs.length > 30 || store.runs[0].ts >= now - WINDOW_MS);
 		assert.ok(
 			store.runs.every(r => r.src === "live"),
 			"history runs are evicted first",
@@ -150,20 +168,16 @@ describe("run store", () => {
 			perFamily.set(r.family, (perFamily.get(r.family) ?? 0) + 1);
 		}
 		assert.ok(
-			[...perFamily.values()].every(n => n >= 2),
+			[...perFamily.values()].every(n => n >= MIN_PER_FAMILY),
 			JSON.stringify([...perFamily]),
 		);
-		assert.strictEqual(store.envelope.n, 30);
+		// the envelope comes from the stored runs again (no frozen envelope of an earlier version)
 		const env = { ...store.envelope };
-		// the envelope never shrinks
-		addRun(
-			store,
-			labelCapture(captureOf(runOf({ device: "washer", programme: "quick30", seed: 99, after: 400 }), t), 15).run,
-		);
-		assert.ok(store.envelope.maxTrailerSec >= env.maxTrailerSec && store.envelope.minCoreSec <= env.minCoreSec);
+		recomputeEnvelope(store);
+		assert.deepStrictEqual(store.envelope, env);
 	});
 
-	it("never evicts a binding run (the one that sets an extreme of the envelope) while others can go", () => {
+	it("never evicts a boundary run (the one that sets an extreme of the envelope) while others can go", () => {
 		const store = emptyStore("dev", "washing-machine", typeHash(WASHER), STEP, 1);
 		let t = 0;
 		const add = k => {
@@ -175,16 +189,36 @@ describe("run store", () => {
 		// the oldest run has the longest pause of all (slightly, so it stays in the same group)
 		const binding = store.runs[0];
 		binding.feat.maxPauseSec += 5;
-		store.envelope.maxPauseSec = binding.feat.maxPauseSec;
-		for (let k = 1; k < MAX_RUNS + 6; k++) {
+		recomputeEnvelope(store);
+		for (let k = 1; k < 40; k++) {
 			add(k);
 		}
-		assert.strictEqual(store.runs.length, MAX_RUNS);
 		assert.ok(
 			store.runs.some(r => r.id === binding.id),
-			"the binding run is kept",
+			"the boundary run is kept",
 		);
-		assert.ok(store.runs[1].ts > 86_400_000, "the oldest non-binding runs were evicted");
+		assert.ok(boundaryRuns(store).has(binding.key));
+		assert.ok(store.runs[1].ts > 86_400_000, "the oldest runs that bind nothing were evicted");
+		assert.strictEqual(store.envelope.maxPauseSec, binding.feat.maxPauseSec);
+	});
+
+	it("over the size limit the cells of excluded runs go first, then history runs; 400 runs at most", () => {
+		const store = emptyStore("dev", "washing-machine", typeHash(WASHER), STEP, 1);
+		for (let k = 0; k < 6; k++) {
+			const run = runOf({ device: "washer", programme: "cotton60", shape: "T4", seed: k + 1, after: 400 });
+			addRun(store, labelCapture(captureOf(run, k * 3_600_000), 15, k < 2 ? "history" : "live").run);
+		}
+		const excluded = store.runs[3];
+		setDecision(store, excluded.key, "exclude");
+		const size = sizeOf(store);
+		// a limit just below the size: emulated with a run that carries a large report log
+		store.runs[4].rep = new Array(Math.ceil((MAX_STORE_BYTES - size) / 2) + 10).fill(1);
+		evict(store, store.runs.at(-1).ts);
+		assert.strictEqual(excluded.data, undefined, "the excluded run keeps only its metadata");
+		assert.ok(store.runs.includes(excluded));
+		assert.strictEqual(store.runs.length, 6, "the excluded cells were enough");
+		assert.ok(sizeOf(store) <= MAX_STORE_BYTES);
+		assert.strictEqual(MAX_RUN_META, 400);
 	});
 
 	it("keeps ten false starts first in first out", () => {
@@ -255,7 +289,7 @@ describe("run store", () => {
 		assert.deepStrictEqual(back.pending.ev, store.pending.ev);
 
 		// with 20 stored runs the file still stays below the limit
-		for (let k = 0; k < MAX_RUNS; k++) {
+		for (let k = 0; k < 20; k++) {
 			const run = runOf({ device: "washer", programme: "cotton60", shape: "T4", seed: k + 1, after: 400 });
 			addRun(store, labelCapture(captureOf(run, 2e12 + k * 1e8), 15).run);
 		}
@@ -269,7 +303,7 @@ describe("run store", () => {
 		assert.ok(sizeOf(store) <= MAX_STORE_BYTES);
 	});
 
-	it("discards the override when the detection values change and the runs when poll or unit change", () => {
+	it("discards the override when the detection values change and converts the runs when poll or unit change", () => {
 		const store = emptyStore("dev", "washing-machine", typeHash(WASHER), STEP, 1);
 		const run = runOf({ device: "washer", programme: "quick30", shape: "T1", seed: 1, after: 400 });
 		addRun(store, labelCapture(captureOf(run, 0), 15).run);
@@ -281,8 +315,9 @@ describe("run store", () => {
 		assert.strictEqual(store.override, null);
 		assert.strictEqual(store.changes.at(-1).kind, "baseChanged");
 		assert.strictEqual(store.runs.length, 1);
-		reconcileStore(store, store.typeHash, 60_000, 1, 6);
-		assert.strictEqual(store.runs.length, 0);
+		const msgs2 = reconcileStore(store, store.typeHash, 60_000, 1, 6);
+		assert.ok(msgs2[0].includes("converted"), msgs2[0]);
+		assert.deepStrictEqual([store.runs.length, store.runs[0].step, store.step], [1, 60_000, 60_000]);
 		assert.deepStrictEqual(store.envelope, env);
 		assert.notStrictEqual(typeHash(WASHER), typeHash({ ...WASHER, trailerBurstSec: 30 }));
 	});
@@ -343,5 +378,170 @@ describe("run store", () => {
 			assert.strictEqual(Object.keys(d).length, 29);
 			assert.strictEqual(d.finalLockSec, 0);
 		});
+	});
+});
+
+const rawStore = readFileSync(new URL("./fixtures/v4store.json", import.meta.url), "utf8");
+const fresh = () => {
+	const st = JSON.parse(rawStore);
+	upgradeStore(st);
+	return st;
+};
+const DAY = 86_400_000;
+const QCTX = { bands: null, unitFactor: 1, unit: "W", settings: null, pollMs: 10_000, outages: [], scope: "run" };
+
+describe("learning data of V5", () => {
+	it("v4store: legacyEnvelope frozen once, runs re-segmented, families stable, no NaN", () => {
+		const st = JSON.parse(rawStore);
+		const before = st.runs.map(r => r.family);
+		upgradeStore(st);
+		assert.deepStrictEqual(st.legacyEnvelope, JSON.parse(rawStore).envelope);
+		assert.ok(st.runs.every(r => r.rev === LAYOUT_REV && typeof r.key === "string"));
+		assert.deepStrictEqual(
+			st.runs.map(r => r.family),
+			before,
+		);
+		assert.ok(st.runs.every(r => Object.values(r.feat).every(x => typeof x !== "number" || Number.isFinite(x))));
+		const again = structuredClone(st.legacyEnvelope);
+		assert.deepStrictEqual(upgradeStore(st), [], "a store of the current version stays as it is");
+		assert.deepStrictEqual(st.legacyEnvelope, again);
+	});
+
+	it("the recomputed envelope is never narrower than legacyEnvelope (P10)", () => {
+		const st = fresh();
+		st.runs = st.runs.slice(0, 3);
+		recomputeEnvelope(st);
+		const L = st.legacyEnvelope;
+		for (const k of ["maxPauseSec", "maxBurstSec", "maxTrailSec", "maxTrailerSec"]) {
+			assert.ok(st.envelope[k] >= L[k], k);
+		}
+		for (const k of ["minRunW", "minCoreSec"]) {
+			assert.ok(L[k] === 0 || st.envelope[k] <= L[k], k);
+		}
+	});
+
+	it("eviction after 30 days keeps 2 per family and every boundary run (P23)", () => {
+		const st = fresh();
+		const keep = boundaryRuns(st);
+		const families = new Map();
+		for (const r of st.runs) {
+			families.set(r.family, (families.get(r.family) ?? 0) + 1);
+		}
+		evict(st, Math.max(...st.runs.map(r => r.ts)) + WINDOW_MS + 10 * DAY);
+		for (const [f, n] of families) {
+			assert.ok(st.runs.filter(r => r.family === f).length >= Math.min(2, n), `family ${f}`);
+		}
+		for (const k of keep) {
+			assert.ok(
+				st.runs.some(r => r.key === k),
+				k,
+			);
+		}
+		assert.ok(st.runs.length < 10, "older runs that keep nothing went");
+	});
+
+	it("two equally extreme runs → at least one stays", () => {
+		// the order of the step-wise eviction is not fixed, and "at least 2 per family" may keep both
+		const st = fresh();
+		const b = st.runs.find(r => boundaryRuns(st).has(r.key));
+		const twin = { ...structuredClone(b), key: `${b.key}-twin`, id: `${b.id}t`, ts: b.ts + 1000 };
+		st.runs.push(twin);
+		for (let k = 0; k < 6; k++) {
+			st.runs.push({ ...structuredClone(st.runs[0]), key: `x${k}`, id: `x${k}`, family: b.family });
+		}
+		evict(st, Math.max(...st.runs.map(r => r.ts)) + WINDOW_MS + DAY);
+		assert.ok(st.runs.filter(r => r.key === b.key || r.key === twin.key).length >= 1);
+	});
+
+	it("the store carries the tail separation of all admitted runs; storeSamples rebuilds samples with verdicts", () => {
+		const st = fresh();
+		assert.deepStrictEqual([st.tail.separated, Math.round(st.tail.ceil)], [true, 124]);
+		assert.ok(
+			st.runs.every(r => Number.isInteger(r.seg.progEndIdx) && r.feat.burstMaxW >= 0 && r.feat.endBlockMinW > 0),
+		);
+		const out = storeSamples(st, QCTX);
+		assert.strictEqual(out.length, st.runs.filter(r => r.data).length);
+		assert.ok(out.every(x => x.sample.key === x.verdict.key && x.series.length > 0));
+	});
+
+	it("excluding and including again restores the envelope exactly", () => {
+		const st = fresh();
+		recomputeEnvelope(st);
+		const env = structuredClone(st.envelope);
+		const key = [...boundaryRuns(st)][0];
+		setDecision(st, key, "exclude");
+		recomputeEnvelope(st);
+		setDecision(st, key, null);
+		recomputeEnvelope(st);
+		assert.deepStrictEqual(st.envelope, env);
+	});
+
+	it("poll and unit changes convert runs instead of discarding them; boundaries stay in W (P27)", () => {
+		const st = fresh();
+		const n = st.runs.length;
+		const env = structuredClone(st.envelope);
+		assert.ok(convertRuns(st, 30_000, 1).length > 0);
+		assert.deepStrictEqual([st.runs.length, st.step], [n, 30_000]);
+		convertRuns(st, 10_000, 1000);
+		assert.deepStrictEqual([st.runs.length, st.unitFactor, st.step], [n, 1000, 10_000]);
+		assert.deepStrictEqual(st.envelope, env);
+		assert.ok(
+			st.runs.every(r => r.gridFrom === 30_000),
+			"finer grid: property of the run (no phases, no trailer)",
+		);
+		assert.ok(
+			Object.values(st.verdicts).every(v => v.reason !== "finerGrid"),
+			"not mixed with user decisions",
+		);
+	});
+
+	it("clearing keeps the decisions unless asked (P26)", () => {
+		const st = fresh();
+		setDecision(st, "wm@100", "exclude");
+		assert.deepStrictEqual(clearLearningData(st, true).verdicts, { "wm@100": { user: "exclude" } });
+		assert.deepStrictEqual(clearLearningData(st, false).verdicts, {});
+		assert.deepStrictEqual(clearLearningData(st, true).runs, []);
+	});
+
+	it("limits: 1 MB, metadata of 400 runs, 30-day window", () => {
+		assert.deepStrictEqual([MAX_STORE_BYTES, MAX_RUN_META, WINDOW_MS], [1_000_000, 400, 30 * DAY]);
+	});
+
+	it("converted runs keep their cells in time and value; a finer grid repeats the held value", () => {
+		const st = fresh();
+		const r = st.runs[0];
+		const before = fromStored(r, r.unitFactor);
+		const peak = Math.max(...before.max);
+		const startT = r.ts + r.seg.startIdx * r.step;
+		convertRuns(st, 20_000, 1000);
+		const coarse = fromStored(r, r.unitFactor);
+		assert.strictEqual(coarse.length, Math.floor(((before.length - 1) * 10_000) / 20_000) + 1);
+		assert.ok(Math.abs(Math.max(...coarse.max) - peak) < 0.01, "extremes of the time between two grid points");
+		assert.ok(Math.abs(r.ts + r.seg.startIdx * r.step - startT) <= 10_000);
+		convertRuns(st, 5_000, 1);
+		const fine = fromStored(r, r.unitFactor);
+		assert.strictEqual(fine.last[3], fine.last[2], "the held value is repeated");
+		assert.deepStrictEqual([r.gridFrom, r.step], [20_000, 5_000]);
+		const back = storeSamples(st, { ...QCTX, pollMs: 5_000 }).find(x => x.run === r);
+		assert.deepStrictEqual([back.verdict.uses.phases, back.verdict.uses.trailer], [false, false]);
+	});
+
+	it("recompute: bands of the clean runs, band features in every run, verdicts with the decisions", () => {
+		const st = fresh();
+		setDecision(st, st.runs[2].key, "exclude");
+		const verdicts = recompute(st, QCTX);
+		assert.ok(st.bands && st.bands.bands.length >= 3, "bands learned from the stored runs");
+		assert.ok(st.runs.every(r => Number.isFinite(r.feat.topBandSec) && Number.isFinite(r.feat.finalBandBlocks)));
+		assert.strictEqual(verdicts.get(st.runs[2].key).user, "exclude");
+		assert.strictEqual(verdicts.size, st.runs.length);
+		assert.ok(
+			[...verdicts.values()].filter(v => v.stage === "ok" || v.stage === "limited").length >= 8,
+			"most washer runs are usable",
+		);
+		// bands survive the file (the open upper limit is written as null)
+		const back = JSON.parse(JSON.stringify(st));
+		back.layoutRev = 0;
+		upgradeStore(back);
+		assert.strictEqual(back.bands.bands.at(-1).max, Number.POSITIVE_INFINITY);
 	});
 });

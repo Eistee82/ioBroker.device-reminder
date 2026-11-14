@@ -15,7 +15,7 @@ export class DeviceSync {
         if (!cfg) {
             this.applied.delete(deviceId);
             if (deleted) {
-                await this.registry.deleteLearningData(deviceId);
+                await this.registry.removeLearningData(deviceId);
             }
             if (this.registry.get(deviceId)) {
                 this.registry.remove(deviceId);

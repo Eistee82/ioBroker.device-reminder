@@ -1090,7 +1090,9 @@ function checkData(x: Work, ctx: QualityContext, reportP999: number, cv: number[
 	// scope run: the first one in the core is enough; scope continuous: every segment (the day stays
 	// usable, the segments drop out of the duration statistics and the phase learning)
 	if (ctx.bands !== null && !s.fromTicks) {
-		const to = continuous ? f.end : f.coreEnd;
+		// scope run: up to the programme end (a long quiet value between the bursts of a trailer that the layout of
+		// a single recording did not separate is no gap)
+		const to = continuous ? f.end : Math.min(f.coreEnd, f.progEnd);
 		const p = s.points;
 		for (let i = 0; i < p.length; i++) {
 			const next = i + 1 < p.length ? p[i + 1].ts : s.to;

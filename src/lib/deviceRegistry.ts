@@ -7,6 +7,7 @@ import type { HistoryEnv } from "./historySource.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import type { FileIO, MessageSink, NotifierHost, RuntimeEvent, RuntimeListener } from "./host.js";
 import type { GateResult, OptimizeContext, OptimizeOutcome } from "./learn/autoOptimize.js";
+import type { QualityContext } from "./learn/quality.js";
 import { effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
 import { simulate } from "./learn/replay.js";
 import { buildLayout } from "./learn/runs.js";
@@ -20,17 +21,22 @@ import { RunRecorder } from "./runRecorder.js";
 import type { StoreFile } from "./runStore.js";
 import {
 	addRun,
+	clearLearningData,
+	decisionOf,
 	emptyStore,
 	fitSize,
 	labelCapture,
 	loadStore,
 	pushChange,
+	recompute,
 	reconcileBase,
 	reconcileStore,
 	refreshInfo,
 	removeStore,
 	saveStore,
+	setDecision,
 	typeHash,
+	upgradeStore,
 } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 
@@ -284,8 +290,13 @@ export class DeviceRegistry implements RuntimeListener {
 				continue;
 			}
 			try {
-				// a start the runtime misses is still recorded (activity above the end threshold)
-				entry.opt?.recorder.setActivityLimit(entry.runtime.effective.endVal);
+				// a start the runtime misses is still recorded (activity above the end threshold and the run level)
+				if (entry.opt) {
+					const store = entry.opt.store;
+					const runLevel = (store.tail?.runLimit ?? 0) / (store.unitFactor > 0 ? store.unitFactor : 1);
+					entry.opt.recorder.setActivityLimit(Math.max(entry.runtime.effective.endVal, runLevel));
+					store.lastSeenTs = this.host.now();
+				}
 				await entry.runtime.tick();
 				if (entry.opt) {
 					const cap = entry.opt.recorder.closeIfDue(this.host.now(), entry.runtime.effective.endVal);
@@ -418,7 +429,12 @@ export class DeviceRegistry implements RuntimeListener {
 			return inMemory;
 		}
 		try {
-			return await loadStore(this.files, deviceId, this.host.log);
+			const read = await loadStore(this.files, deviceId, this.host.log);
+			if (read) {
+				// for the display only, not saved
+				upgradeStore(read);
+			}
+			return read;
 		} catch (err) {
 			this.host.log.debug(`Cannot read the learning data of ${deviceId}: ${errorMessage(err)}`);
 			return null;
@@ -440,8 +456,9 @@ export class DeviceRegistry implements RuntimeListener {
 	}
 
 	/**
-	 * Remove one stored run or false start (e.g. a run that was no normal use of the device).
-	 * The extremes of all runs ever seen stay.
+	 * Exclude one stored run or false start (e.g. a run that was no normal use of the device): the decision is kept
+	 * over the key of the run (also by "clear learning data" and a new import), the run is no longer replayed and the
+	 * envelope is computed again without it.
 	 *
 	 * @param deviceId - Device id
 	 * @param runId - Id of the stored run
@@ -456,12 +473,12 @@ export class DeviceRegistry implements RuntimeListener {
 		if (!entry || !store) {
 			return false;
 		}
-		const before = store.runs.length + store.spikes.length;
-		store.runs = store.runs.filter(r => r.id !== runId);
-		store.spikes = store.spikes.filter(r => r.id !== runId);
-		if (store.runs.length + store.spikes.length === before) {
+		const run = [...store.runs, ...store.spikes].find(r => r.id === runId);
+		if (!run || decisionOf(store, run.key)?.user === "exclude") {
 			return false;
 		}
+		setDecision(store, run.key, "exclude");
+		recompute(store, this.qualityContext(store));
 		refreshInfo(store);
 		await this.saveOpt(entry);
 		await this.writeOptStates(deviceId, entry);
@@ -470,35 +487,54 @@ export class DeviceRegistry implements RuntimeListener {
 	}
 
 	/**
-	 * Delete the learning data of a device (device deleted, or "Clear learning data").
+	 * "Clear learning data" (P26): runs, optimised values and changes go; the decisions of the user about runs stay
+	 * unless `keepDecisions` is false.
+	 *
+	 * @param deviceId - Device id
+	 * @param keepDecisions - Keep the decisions of the user
+	 */
+	public deleteLearningData(deviceId: string, keepDecisions = true): Promise<void> {
+		return this.serialized(() => this.clearLearningDataNow(deviceId, keepDecisions));
+	}
+
+	/**
+	 * Remove the learning data of a deleted device with its decisions, so that a new device with the same id starts
+	 * empty.
 	 *
 	 * @param deviceId - Device id
 	 */
-	public deleteLearningData(deviceId: string): Promise<void> {
-		return this.serialized(() => this.deleteLearningDataNow(deviceId));
+	public removeLearningData(deviceId: string): Promise<void> {
+		return this.serialized(() => this.clearLearningDataNow(deviceId, false));
 	}
 
-	private async deleteLearningDataNow(deviceId: string): Promise<void> {
+	private async clearLearningDataNow(deviceId: string, keepDecisions: boolean): Promise<void> {
 		const entry = this.devices.get(deviceId);
+		let kept: StoreFile | null = null;
 		if (entry?.opt) {
 			const cfg = entry.runtime.config;
 			entry.runtime.setOverride(null);
-			entry.opt.store = emptyStore(
-				deviceId,
-				cfg.template ?? "",
-				typeHash(entry.runtime.baseDetection),
-				entry.opt.store.step,
-				entry.opt.store.unitFactor,
-			);
+			const cleared = clearLearningData(entry.opt.store, keepDecisions);
+			cleared.typeId = cfg.template ?? "";
+			cleared.typeHash = typeHash(entry.runtime.baseDetection);
+			entry.opt.store = cleared;
+			kept = cleared;
 			this.driftReported.delete(entry);
 			await this.writeOptStates(deviceId, entry);
+		} else if (keepDecisions && this.files) {
+			const read = await this.readLearningData(deviceId);
+			kept = read ? clearLearningData(read, true) : null;
 		}
-		if (this.files) {
-			try {
-				await removeStore(this.files, deviceId);
-			} catch (err) {
-				this.host.log.warn(`Cannot delete the learning data of ${deviceId}: ${errorMessage(err)}`);
+		if (!this.files) {
+			return;
+		}
+		try {
+			// both slots go first: the older one would otherwise come back if the new file cannot be read
+			await removeStore(this.files, deviceId);
+			if (kept && Object.keys(kept.verdicts).length > 0) {
+				await saveStore(this.files, kept);
 			}
+		} catch (err) {
+			this.host.log.warn(`Cannot delete the learning data of ${deviceId}: ${errorMessage(err)}`);
 		}
 	}
 
@@ -675,6 +711,11 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		const store = loaded ?? emptyStore(deviceId, cfg.template ?? "", typeHash(type), step, unitFactor);
+		// learning data of an earlier version: envelope frozen, runs segmented again, keys
+		const upgraded = upgradeStore(store, effectiveOf(type, store.override).endVal * unitFactor);
+		for (const msg of upgraded) {
+			this.host.log.info(`${cfg.name}: ${msg}`);
+		}
 		const hadOverride = store.override !== null;
 		// an adoption whose learning data was not saved any more (instance stopped in between): the stored override
 		// is already part of the new base values
@@ -682,9 +723,15 @@ export class DeviceRegistry implements RuntimeListener {
 		if (base === "adopted") {
 			this.host.log.info(`${cfg.name}: values in use adopted as base values`);
 		}
+		const converted = store.step !== step || store.unitFactor !== unitFactor;
 		for (const msg of reconcileStore(store, typeHash(type), step, unitFactor, now)) {
 			this.host.log.info(`${cfg.name}: ${msg}`);
 		}
+		if (upgraded.length > 0 || converted) {
+			recompute(store, this.qualityContext(store));
+		}
+		// the history is read once (also when it held no runs); older learning data with runs is not read again
+		const wantHistory = store.historyReadTs === undefined && store.runs.length + store.spikes.length === 0;
 		if (base === "baseChanged" && hadOverride) {
 			await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
 		}
@@ -709,7 +756,7 @@ export class DeviceRegistry implements RuntimeListener {
 			}
 		}
 		await this.writeOptStates(deviceId, entry);
-		if (!loaded && this.opts.history) {
+		if (wantHistory && this.opts.history) {
 			this.enqueue(deviceId, () => this.bootstrapFromHistory(deviceId));
 		}
 	}
@@ -759,14 +806,20 @@ export class DeviceRegistry implements RuntimeListener {
 		}
 		const eff = entry.runtime.effective;
 		const factor = store.unitFactor;
+		const now = this.host.now();
 		const layout = buildLayout(series, { keepAbove: eff.endVal * factor });
 		const sim = factor === 1 ? series : scaled(series, 1 / factor);
 		let runs = 0;
 		let spikes = 0;
 		for (const w of [...layout.windows].sort((a, b) => a.fromIdx - b.fromIdx)) {
 			const cells = [];
+			// ticks with a stored value: the report times of a history run
+			const rep: number[] = [];
 			for (let i = w.fromIdx; i <= w.toIdx; i++) {
 				cells.push({ min: sim.min[i], max: sim.max[i], last: sim.last[i], valid: sim.valid[i] === 1 });
+				if (series.has[i] === 1) {
+					rep.push((i - w.fromIdx) * series.stepMs);
+				}
 			}
 			const r = simulate(sim, w, eff, { abort: cfg.abort, abortFixed: cfg.abortFixed, pollSec: poll });
 			const ev: Capture["ev"] = [
@@ -781,10 +834,11 @@ export class DeviceRegistry implements RuntimeListener {
 				cells,
 				ev,
 				postTruncated: false,
+				rep,
 			};
 			const res = labelCapture(cap, eff.endVal * factor, "history");
 			if (res.run) {
-				addRun(store, res.run);
+				addRun(store, res.run, { now, deferred: true });
 				if (res.label === "spike") {
 					spikes++;
 				} else {
@@ -796,11 +850,13 @@ export class DeviceRegistry implements RuntimeListener {
 		if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
 			return;
 		}
+		store.historyReadTs = now;
 		if (runs + spikes === 0) {
 			// the file marks the history as read, so it is not loaded again at every start
 			await this.saveOpt(entry);
 			return;
 		}
+		fitSize(store, now, recompute(store, this.qualityContext(store)));
 		refreshInfo(store);
 		this.host.log.info(
 			`${cfg.name}: ${runs} runs and ${spikes} false starts taken over from the history (${instance})`,
@@ -814,6 +870,23 @@ export class DeviceRegistry implements RuntimeListener {
 		return new Promise<void>(resolve => {
 			this.host.setTimeout(resolve, 0);
 		});
+	}
+
+	/**
+	 * Context of the run check for the stored runs of a device (live recordings, one sample per run).
+	 *
+	 * @param store - Store
+	 */
+	private qualityContext(store: StoreFile): QualityContext {
+		return {
+			bands: store.bands ?? null,
+			unitFactor: store.unitFactor,
+			unit: store.unitFactor === 1000 ? "kW" : "W",
+			settings: null,
+			pollMs: store.step,
+			outages: [],
+			scope: "run",
+		};
 	}
 
 	/**
@@ -887,7 +960,7 @@ export class DeviceRegistry implements RuntimeListener {
 		if (res.label === "unclear" || !res.run) {
 			store.info.unclear++;
 		} else {
-			addRun(store, res.run);
+			addRun(store, res.run, { ctx: this.qualityContext(store), now: this.host.now() });
 			if (res.trusted) {
 				store.newSinceChange++;
 				store.lockRuns = Math.max(0, store.lockRuns - 1);

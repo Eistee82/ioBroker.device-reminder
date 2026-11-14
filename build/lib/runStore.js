@@ -1,16 +1,22 @@
 import { FINAL_KEYS } from "./detector/types.js";
+import { bandFeaturesOf, baseBandsOf } from "./learn/bands.js";
 import { assignFamilies, featuresOf } from "./learn/families.js";
-import { buildLayout, MAX_PAUSE_MS, MAX_WINDOWS } from "./learn/runs.js";
+import { admitted, checkRuns, sameRun, samplesOf, verdictKey } from "./learn/quality.js";
+import { applyTail, buildLayout, LAYOUT_REV, MAX_PAUSE_MS, median, tailRule } from "./learn/runs.js";
 import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
 import { errorMessage } from "./utils.js";
 export const STORE_VERSION = 1;
-export const MAX_RUNS = MAX_WINDOWS;
+export const WINDOW_MS = 30 * 86_400_000;
+export const MAX_RUN_META = 400;
+export const MIN_PER_FAMILY = 2;
+export const REPLAY_PICK_MAX = 60;
 export const MAX_SPIKES = 10;
-export const MAX_STORE_BYTES = 400_000;
+export const MAX_STORE_BYTES = 1_000_000;
 export const MAX_PENDING_BYTES = 200_000;
 export const MAX_CHANGES = 10;
 const START_MATCH_MS = 5 * 60_000;
 const POST_ROLL_MS = MAX_PAUSE_MS;
+const BANDS_MIN_RUNS = 3;
 export const BASE_KEYS = [
     "startVal",
     "endVal",
@@ -105,6 +111,9 @@ export function emptyStore(deviceId, typeId, hash, step, unitFactor) {
             lastEndDelaySec: 0,
             unclear: 0,
         },
+        verdicts: {},
+        legacyEnvelope: emptyEnvelope(),
+        layoutRev: LAYOUT_REV,
     };
 }
 function slotName(deviceId, slot) {
@@ -268,16 +277,7 @@ export function reconcileStore(store, hash, step, unitFactor, now) {
     if (reconcileBase(store, hash, null, now) === "baseChanged" && hadOverride) {
         msgs.push("detection values changed, optimised values discarded");
     }
-    if (store.step !== step || store.unitFactor !== unitFactor) {
-        if (store.runs.length + store.spikes.length > 0) {
-            msgs.push("poll interval or unit changed, stored runs discarded");
-        }
-        store.runs = [];
-        store.spikes = [];
-        store.pending = null;
-        store.step = step;
-        store.unitFactor = unitFactor;
-    }
+    msgs.push(...convertRuns(store, step, unitFactor));
     refreshInfo(store);
     return msgs;
 }
@@ -313,6 +313,9 @@ export function labelCapture(c, keepAboveW, src = "live") {
         src,
         postTruncated: c.postTruncated,
         family: -1,
+        key: "",
+        rev: LAYOUT_REV,
+        ...(c.rep ? { rep: toDiffs(c.rep) } : {}),
     };
     if (layout.runs.length === 0) {
         if (starts.length === 0) {
@@ -324,7 +327,15 @@ export function labelCapture(c, keepAboveW, src = "live") {
         const run = {
             ...base,
             label: "spike",
-            seg: { startIdx: from, coreEndIdx: to, runEndIdx: to, trailerFrom: null, trailerTo: null },
+            seg: {
+                startIdx: from,
+                coreEndIdx: to,
+                runEndIdx: to,
+                trailerFrom: null,
+                trailerTo: null,
+                progEndIdx: to,
+                runLimit: layout.runLimit,
+            },
             feat: {
                 coreSec: 0,
                 energyWh: 0,
@@ -338,6 +349,8 @@ export function labelCapture(c, keepAboveW, src = "live") {
                 minRunW: 0,
                 trailerGapMaxSec: 0,
                 trailerGapMinSec: 0,
+                burstMaxW: 0,
+                endBlockMinW: 0,
             },
         };
         return { label: "spike", run, endDelaySec: null, trusted: false };
@@ -357,6 +370,8 @@ export function labelCapture(c, keepAboveW, src = "live") {
             runEndIdx: r.runEnd,
             trailerFrom: r.trailerFrom,
             trailerTo: r.trailerTo,
+            progEndIdx: r.progEnd,
+            runLimit: layout.runLimit,
         },
         feat: featuresOf(sW, r, layout.runLimit),
     };
@@ -382,18 +397,24 @@ export function labelCapture(c, keepAboveW, src = "live") {
 export function envelopeOf(runs, spikes) {
     const env = emptyEnvelope();
     for (const r of runs) {
-        env.maxPauseSec = Math.max(env.maxPauseSec, r.feat.maxPauseSec);
-        env.maxBurstSec = Math.max(env.maxBurstSec, r.feat.burstMaxSec);
-        env.maxTrailSec = Math.max(env.maxTrailSec, r.feat.trailerGapMaxSec ?? 0);
-        env.maxTrailerSec = Math.max(env.maxTrailerSec, r.feat.trailerSec);
-        env.minRunW = env.minRunW === 0 ? r.feat.minRunW : Math.min(env.minRunW, r.feat.minRunW);
-        env.minCoreSec = env.minCoreSec === 0 ? r.feat.coreSec : Math.min(env.minCoreSec, r.feat.coreSec);
-        env.n++;
+        addEnd(env, r);
+        addTrailer(env, r);
     }
     for (const s of spikes) {
         env.maxBurstSec = Math.max(env.maxBurstSec, s.feat.burstMaxSec);
     }
     return env;
+}
+function addEnd(env, r) {
+    env.maxPauseSec = Math.max(env.maxPauseSec, r.feat.maxPauseSec);
+    env.minRunW = env.minRunW === 0 ? r.feat.minRunW : Math.min(env.minRunW, r.feat.minRunW);
+    env.minCoreSec = env.minCoreSec === 0 ? r.feat.coreSec : Math.min(env.minCoreSec, r.feat.coreSec);
+    env.n++;
+}
+function addTrailer(env, r) {
+    env.maxBurstSec = Math.max(env.maxBurstSec, r.feat.burstMaxSec);
+    env.maxTrailSec = Math.max(env.maxTrailSec, r.feat.trailerGapMaxSec ?? 0);
+    env.maxTrailerSec = Math.max(env.maxTrailerSec, r.feat.trailerSec);
 }
 export function mergeEnvelope(a, b) {
     const lo = (x, y) => (x === 0 ? y : y === 0 ? x : Math.min(x, y));
@@ -408,31 +429,308 @@ export function mergeEnvelope(a, b) {
     };
 }
 const ENVELOPE_KEYS = ["maxPauseSec", "maxBurstSec", "maxTrailSec", "maxTrailerSec", "minRunW", "minCoreSec"];
-export function addRun(store, run) {
-    const evicted = [];
-    if (run.label === "spike") {
-        store.spikes.push(run);
-        while (store.spikes.length > MAX_SPIKES) {
-            evicted.push(store.spikes.shift().id);
+export function decisionOf(store, key) {
+    const all = store.verdicts ?? {};
+    const exact = all[key];
+    if (exact || key === "") {
+        return exact;
+    }
+    const near = Object.keys(all).find(k => sameRun(k, key));
+    return near === undefined ? undefined : all[near];
+}
+export function setDecision(store, key, user, reason) {
+    store.verdicts ??= {};
+    if (user === null) {
+        delete store.verdicts[key];
+        return;
+    }
+    store.verdicts[key] = reason ? { user, reason } : { user };
+}
+export function inUse(store, r) {
+    return typeof r.data === "string" && decisionOf(store, r.key)?.user !== "exclude";
+}
+function usesOfStore(store, verdicts) {
+    const out = new Map();
+    for (const r of [...store.runs, ...store.spikes]) {
+        const d = decisionOf(store, r.key);
+        const v = verdicts?.get(r.key);
+        const ok = (purpose) => (v ? admitted({ ...v, user: d?.user }, purpose) : true);
+        const excluded = d?.user === "exclude";
+        const merged = v?.reasons.some(x => x.code === "merged") === true;
+        const end = !excluded && !merged && ok("end");
+        out.set(r, {
+            excluded,
+            end,
+            trailer: end && r.gridFrom === undefined && ok("trailer"),
+            start: !excluded && ok("start"),
+        });
+    }
+    return out;
+}
+function envelopeWith(store, use, skip) {
+    const env = emptyEnvelope();
+    for (const r of store.runs) {
+        const u = use.get(r);
+        if (r === skip || !u?.end) {
+            continue;
+        }
+        addEnd(env, r);
+        if (u.trailer) {
+            addTrailer(env, r);
+        }
+    }
+    for (const s of store.spikes) {
+        if (s !== skip && use.get(s)?.start) {
+            env.maxBurstSec = Math.max(env.maxBurstSec, s.feat.burstMaxSec);
+        }
+    }
+    return env;
+}
+function isBoundary(store, use, full, r) {
+    if (use.get(r)?.excluded) {
+        return false;
+    }
+    if (r.veto !== undefined) {
+        return true;
+    }
+    const rest = envelopeWith(store, use, r);
+    return ENVELOPE_KEYS.some(k => rest[k] !== full[k]);
+}
+export function boundaryRuns(store, verdicts) {
+    const use = usesOfStore(store, verdicts);
+    const full = envelopeWith(store, use);
+    const out = new Set();
+    for (const r of [...store.runs, ...store.spikes]) {
+        if (isBoundary(store, use, full, r)) {
+            out.add(r.key);
+        }
+    }
+    return out;
+}
+export function recomputeEnvelope(store, verdicts) {
+    const own = envelopeWith(store, usesOfStore(store, verdicts));
+    store.envelope = mergeEnvelope(store.legacyEnvelope ?? emptyEnvelope(), own);
+}
+function seriesOf(r) {
+    if (typeof r.data !== "string") {
+        return null;
+    }
+    const cells = decodeCells(r.data, r.q);
+    return { cells, s: fromCells(cells, r.ts, r.step, r.unitFactor) };
+}
+export function recomputeTail(store, verdicts) {
+    const use = usesOfStore(store, verdicts);
+    const parts = [];
+    for (const r of store.runs) {
+        const dec = r.label === "spike" ? null : seriesOf(r);
+        if (!dec) {
+            continue;
+        }
+        const g = r.seg;
+        parts.push({
+            run: r,
+            part: {
+                s: dec.s,
+                r: {
+                    from: g.startIdx,
+                    coreEnd: g.coreEndIdx,
+                    runEnd: g.runEndIdx,
+                    trailerFrom: g.trailerFrom,
+                    burstMaxW: r.feat.burstMaxW ?? 0,
+                    progEnd: g.progEndIdx,
+                    endBlockFrom: g.coreEndIdx,
+                    endBlockTo: g.coreEndIdx,
+                    endBlockMinW: r.feat.endBlockMinW ?? 0,
+                },
+                runLimit: g.runLimit ?? 0,
+            },
+        });
+    }
+    const used = parts.filter(x => use.get(x.run)?.end);
+    if (used.length === 0) {
+        delete store.tail;
+        return;
+    }
+    const tail = tailRule(used.map(x => x.part));
+    for (const x of parts) {
+        applyTail(x.part, tail);
+        x.run.seg.progEndIdx = x.part.r.progEnd;
+        x.run.feat.endBlockMinW = x.part.r.endBlockMinW;
+    }
+    store.tail = {
+        ceil: tail.tailCeil,
+        separated: tail.tailSeparated,
+        burstMaxW: tail.burstMaxW,
+        runLimit: median(used.map(x => x.part.runLimit)),
+    };
+}
+function pointsOfStored(r, cells) {
+    const out = [];
+    const rep = r.src === "history" ? fromDiffs(r.rep) : undefined;
+    if (rep && rep.length > 0) {
+        for (const t of rep) {
+            const c = cells[Math.max(0, Math.min(cells.length - 1, Math.ceil(t / r.step)))];
+            if (c?.valid) {
+                out.push({ ts: r.ts + t, val: c.last });
+            }
+        }
+        return out;
+    }
+    cells.forEach((c, i) => {
+        if (c.valid && (out.length === 0 || out[out.length - 1].val !== c.last)) {
+            out.push({ ts: r.ts + i * r.step, val: c.last });
+        }
+    });
+    return out;
+}
+function sampleOfStored(store, r) {
+    const dec = seriesOf(r);
+    if (!dec) {
+        return null;
+    }
+    const { cells, s } = dec;
+    const points = pointsOfStored(r, cells);
+    const g = r.seg;
+    const L0 = buildLayout(s, { recording: true, maxRuns: Number.POSITIVE_INFINITY });
+    let L;
+    if (r.label === "spike") {
+        L = { ...L0, runs: [], spikes: [{ from: g.startIdx, to: g.coreEndIdx }], incomplete: [] };
+    }
+    else {
+        const best = [...L0.runs].sort((a, b) => Math.abs(a.from - g.startIdx) - Math.abs(b.from - g.startIdx))[0];
+        if (best) {
+            const info = {
+                ...best,
+                from: g.startIdx,
+                coreEnd: g.coreEndIdx,
+                runEnd: g.runEndIdx,
+                progEnd: g.progEndIdx,
+                trailerFrom: g.trailerFrom,
+                trailerTo: g.trailerTo,
+                to: Math.max(best.to, g.trailerTo ?? g.runEndIdx),
+            };
+            L = {
+                ...L0,
+                runs: [info],
+                spikes: [],
+                incomplete: [],
+                tailSeparated: store.tail?.separated ?? false,
+                burstMaxW: store.tail?.burstMaxW ?? L0.burstMaxW,
+                tailCeil: store.tail?.ceil ?? L0.tailCeil,
+            };
+        }
+        else {
+            L = { ...L0, runs: [], spikes: [], incomplete: [{ from: g.startIdx, to: g.runEndIdx }] };
+        }
+    }
+    const sample = samplesOf(store.deviceId, points, s, L, { src: r.src, unitFactor: r.unitFactor })[0];
+    if (!sample) {
+        return null;
+    }
+    sample.key = r.key;
+    sample.family = r.label === "spike" ? -1 : r.family;
+    if (sample.kind === "run") {
+        sample.facts.feat = r.feat;
+        sample.facts.coreSec = r.feat.coreSec;
+    }
+    const rep = r.src === "live" ? fromDiffs(r.rep) : undefined;
+    if (rep) {
+        sample.reports = rep.map(t => r.ts + t);
+    }
+    sample.starts = r.ev.filter(e => e[1] === "s").map(e => e[0]);
+    if (r.ev.some(e => e[1] === "a")) {
+        sample.aborted = true;
+    }
+    if (r.afterFinal) {
+        sample.afterFinal = r.afterFinal;
+    }
+    return { sample, series: s };
+}
+export function storeSamples(store, ctx) {
+    const built = [];
+    for (const r of [...store.runs, ...store.spikes].sort((a, b) => startOf(a) - startOf(b))) {
+        const x = sampleOfStored(store, r);
+        if (x) {
+            built.push({ run: r, ...x });
+        }
+    }
+    const verdicts = checkRuns(built.map(b => b.sample), ctx);
+    return built.map((b, k) => ({ ...b, verdict: withDecision(store, b.run, verdicts[k]) }));
+}
+function withDecision(store, r, v) {
+    const out = { ...v, uses: { ...v.uses } };
+    const d = decisionOf(store, r.key);
+    if (d?.user) {
+        out.user = d.user;
+    }
+    if (r.gridFrom !== undefined) {
+        out.uses.phases = false;
+        out.uses.trailer = false;
+    }
+    return out;
+}
+export function recomputeBands(store, ctx) {
+    const first = storeSamples(store, { ...ctx, bands: store.bands ? { ...store.bands, holds: [] } : null });
+    const clean = first.filter(x => x.sample.kind === "run" && admitted(x.verdict, "phases"));
+    const factor = store.unitFactor > 0 ? store.unitFactor : 1;
+    if (clean.length >= BANDS_MIN_RUNS) {
+        const runLimit = median(clean.map(x => (x.run.seg.runLimit ?? 0) / factor));
+        const bands = baseBandsOf(clean.map(x => x.sample), runLimit);
+        store.bands = bands;
+        for (const x of first) {
+            if (x.sample.kind === "run") {
+                const f = bandFeaturesOf(x.sample, bands, x.sample.facts.coreEnd);
+                if (f) {
+                    x.run.feat.topBandSec = f.topBandSec;
+                    x.run.feat.finalBandBlocks = f.finalBandBlocks;
+                }
+            }
         }
     }
     else {
+        delete store.bands;
+    }
+    const second = checkRuns(first.map(x => x.sample), { ...ctx, bands: store.bands ?? null });
+    return new Map(first.map((x, k) => [x.run.key, withDecision(store, x.run, second[k])]));
+}
+export function recompute(store, ctx) {
+    const verdicts = recomputeBands(store, ctx);
+    recomputeTail(store, verdicts);
+    recomputeEnvelope(store, verdicts);
+    return verdicts;
+}
+function startOf(r) {
+    return r.ts + r.seg.startIdx * r.step;
+}
+export function addRun(store, run, o = {}) {
+    if (!run.key) {
+        run.key = verdictKey(store.deviceId, startOf(run));
+    }
+    run.rev ??= LAYOUT_REV;
+    if (run.label === "spike") {
+        store.spikes.push(run);
+    }
+    else {
         store.runs.push(run);
+    }
+    const verdicts = o.ctx && !o.deferred ? recomputeBands(store, o.ctx) : undefined;
+    if (run.label !== "spike") {
         const fam = assignFamilies(store.runs.map(r => r.feat), store.runs.map(r => r.family), store.nextFamily ?? 0);
         store.runs.forEach((r, i) => {
             r.family = fam.families[i];
         });
         store.nextFamily = fam.nextId;
     }
-    const prevN = store.envelope.n;
-    store.envelope = mergeEnvelope(store.envelope, envelopeOf(store.runs, store.spikes));
-    store.envelope.n = prevN + (run.label === "spike" ? 0 : 1);
-    evicted.push(...fitSize(store));
+    if (!o.deferred) {
+        recomputeTail(store, verdicts);
+    }
+    recomputeEnvelope(store, verdicts);
+    const now = o.now ?? run.ts + Math.max(0, (run.seg.runEndIdx + 1) * run.step);
+    const evicted = fitSize(store, now, verdicts);
     refreshInfo(store);
     return evicted;
 }
-export function fitSize(store) {
-    const evicted = [];
+export function fitSize(store, now, verdicts) {
     if (store.pending?.rep && JSON.stringify(encodePending(store.pending)).length > MAX_PENDING_BYTES) {
         const lighter = { ...store.pending };
         delete lighter.rep;
@@ -441,18 +739,87 @@ export function fitSize(store) {
     if (store.pending && JSON.stringify(encodePending(store.pending)).length > MAX_PENDING_BYTES) {
         store.pending = null;
     }
-    while (store.runs.length > MAX_RUNS || (sizeOf(store) > MAX_STORE_BYTES && store.runs.length > 2)) {
-        const victim = pickVictim(store);
-        if (victim < 0) {
+    const newest = Math.max(0, ...[...store.runs, ...store.spikes].map(startOf));
+    return evict(store, now ?? newest, verdicts);
+}
+export function evict(store, now, verdicts) {
+    const evicted = [];
+    const use = usesOfStore(store, verdicts);
+    const remove = (r) => {
+        const list = store.runs.includes(r) ? store.runs : store.spikes;
+        list.splice(list.indexOf(r), 1);
+        evicted.push(r.id);
+    };
+    const counts = () => {
+        const m = new Map();
+        for (const r of store.runs) {
+            if (!use.get(r)?.excluded) {
+                m.set(r.family, (m.get(r.family) ?? 0) + 1);
+            }
+        }
+        return m;
+    };
+    const step = (pool, perFamily) => {
+        const full = envelopeWith(store, use);
+        const count = counts();
+        for (const r of pool()) {
+            if (use.get(r)?.excluded) {
+                remove(r);
+                return true;
+            }
+            if (perFamily && (count.get(r.family) ?? 0) <= MIN_PER_FAMILY) {
+                continue;
+            }
+            if (!isBoundary(store, use, full, r)) {
+                remove(r);
+                return true;
+            }
+        }
+        return false;
+    };
+    const old = (r) => now - r.ts > WINDOW_MS;
+    const byTs = (a, b) => a.ts - b.ts;
+    const historyFirst = (a, b) => (a.src === "history" ? 0 : 1) - (b.src === "history" ? 0 : 1) || byTs(a, b);
+    const over = () => store.runs.length > MAX_RUN_META || sizeOf(store) > MAX_STORE_BYTES;
+    while (step(() => store.runs.filter(old).sort(historyFirst), true)) {
+    }
+    while (step(() => store.spikes.filter(old).sort(byTs), false)) {
+    }
+    if (sizeOf(store) > MAX_STORE_BYTES) {
+        for (const r of [...store.runs, ...store.spikes].filter(x => use.get(x)?.excluded && x.data).sort(byTs)) {
+            delete r.data;
+            if (sizeOf(store) <= MAX_STORE_BYTES) {
+                break;
+            }
+        }
+    }
+    while (store.runs.length > MAX_RUN_META) {
+        const ex = store.runs.filter(x => use.get(x)?.excluded).sort(byTs)[0];
+        if (!ex) {
             break;
         }
-        evicted.push(store.runs[victim].id);
-        store.runs.splice(victim, 1);
+        remove(ex);
     }
-    while (sizeOf(store) > MAX_STORE_BYTES && store.spikes.length > 0) {
-        evicted.push(store.spikes.shift().id);
+    while (over() && step(() => store.runs.filter(r => r.src === "history").sort(byTs), true)) {
+    }
+    while (over() &&
+        step(() => {
+            const count = counts();
+            return [...store.runs].sort((a, b) => (count.get(b.family) ?? 0) - (count.get(a.family) ?? 0) || byTs(a, b));
+        }, true)) {
+    }
+    while (store.spikes.length > MAX_SPIKES || (sizeOf(store) > MAX_STORE_BYTES && store.spikes.length > 0)) {
+        if (!step(() => [...store.spikes].sort(byTs), false)) {
+            if (store.spikes.length <= MAX_SPIKES) {
+                break;
+            }
+            remove([...store.spikes].sort(byTs)[0]);
+        }
+    }
+    while (over() && step(() => [...store.runs].sort(byTs), false)) {
     }
     if (evicted.length > 0) {
+        recomputeEnvelope(store, verdicts);
         refreshInfo(store);
     }
     return evicted;
@@ -460,29 +827,207 @@ export function fitSize(store) {
 export function sizeOf(store) {
     return serializeStore(store).length;
 }
-function pickVictim(store) {
-    const count = new Map();
-    for (const r of store.runs) {
-        count.set(r.family, (count.get(r.family) ?? 0) + 1);
+export function upgradeStore(store, keepAboveW) {
+    const msgs = [];
+    let changed = store.layoutRev !== LAYOUT_REV;
+    if (typeof store.verdicts !== "object" || store.verdicts === null || Array.isArray(store.verdicts)) {
+        store.verdicts = {};
     }
-    const full = envelopeOf(store.runs, []);
-    const binding = (i) => {
-        const rest = envelopeOf(store.runs.filter((_, k) => k !== i), []);
-        return ENVELOPE_KEYS.some(k => rest[k] !== full[k]);
+    if (!store.legacyEnvelope) {
+        store.legacyEnvelope = { ...emptyEnvelope(), ...store.envelope };
+        changed = true;
+    }
+    let again = 0;
+    for (const r of [...store.runs, ...store.spikes]) {
+        if (((r.rev ?? 0) < LAYOUT_REV || r.seg.runLimit === undefined) && typeof r.data === "string") {
+            changed = true;
+            if (resegment(r, keepAboveW)) {
+                again++;
+            }
+        }
+        const g = r.seg;
+        if (!Number.isInteger(g.progEndIdx)) {
+            g.progEndIdx = g.runEndIdx;
+            changed = true;
+        }
+        if (!Number.isFinite(r.feat.burstMaxW)) {
+            r.feat.burstMaxW = 0;
+            changed = true;
+        }
+        if (!Number.isFinite(r.feat.endBlockMinW)) {
+            r.feat.endBlockMinW = r.label === "spike" ? 0 : r.feat.minRunW;
+            changed = true;
+        }
+        if (typeof r.key !== "string" || r.key === "") {
+            r.key = verdictKey(store.deviceId, startOf(r));
+            changed = true;
+        }
+    }
+    if (store.bands) {
+        for (const b of store.bands.bands) {
+            if (typeof b.max !== "number") {
+                b.max = Number.POSITIVE_INFINITY;
+            }
+        }
+    }
+    if (!changed) {
+        return msgs;
+    }
+    store.layoutRev = LAYOUT_REV;
+    recomputeTail(store);
+    recomputeEnvelope(store);
+    refreshInfo(store);
+    msgs.push(again > 0
+        ? `learning data brought to the current version, ${again} stored runs segmented again`
+        : "learning data brought to the current version");
+    return msgs;
+}
+function resegment(r, keepAboveW) {
+    const dec = seriesOf(r);
+    if (!dec) {
+        return false;
+    }
+    const L = buildLayout(dec.s, {
+        recording: true,
+        maxRuns: Number.POSITIVE_INFINITY,
+        ...(keepAboveW !== undefined ? { keepAbove: keepAboveW } : {}),
+    });
+    r.rev = LAYOUT_REV;
+    r.seg.runLimit = L.runLimit;
+    if (r.label === "spike") {
+        return false;
+    }
+    const g = r.seg;
+    const best = [...L.runs].sort((a, b) => Math.abs(a.from - g.startIdx) - Math.abs(b.from - g.startIdx))[0];
+    if (!best) {
+        return false;
+    }
+    const bands = { topBandSec: r.feat.topBandSec, finalBandBlocks: r.feat.finalBandBlocks };
+    r.seg = {
+        startIdx: best.from,
+        coreEndIdx: best.coreEnd,
+        runEndIdx: best.runEnd,
+        trailerFrom: best.trailerFrom,
+        trailerTo: best.trailerTo,
+        progEndIdx: best.progEnd,
+        runLimit: L.runLimit,
     };
-    const candidates = store.runs
-        .map((r, i) => ({ r, i }))
-        .filter(({ r }) => (count.get(r.family) ?? 0) > 2)
-        .sort((a, b) => (a.r.src === "history" ? 0 : 1) - (b.r.src === "history" ? 0 : 1) ||
-        (count.get(b.r.family) ?? 0) - (count.get(a.r.family) ?? 0) ||
-        a.r.ts - b.r.ts);
-    const free = candidates.find(c => !binding(c.i));
-    if (free) {
-        return free.i;
+    const feat = featuresOf(dec.s, best, L.runLimit);
+    if (bands.topBandSec !== undefined && bands.finalBandBlocks !== undefined) {
+        feat.topBandSec = bands.topBandSec;
+        feat.finalBandBlocks = bands.finalBandBlocks;
     }
-    if (candidates.length > 0) {
-        return candidates[0].i;
+    r.feat = feat;
+    return true;
+}
+function regrid(cells, from, to) {
+    if (cells.length === 0 || from === to) {
+        return [...cells];
     }
-    return store.runs.length > 0 ? 0 : -1;
+    const n = Math.floor(((cells.length - 1) * from) / to) + 1;
+    const out = [];
+    for (let j = 0; j < n; j++) {
+        const t = j * to;
+        const hi = Math.min(cells.length - 1, Math.floor(t / from));
+        if (to > from) {
+            const lo = j === 0 ? 0 : Math.floor((t - to) / from) + 1;
+            let min = Number.POSITIVE_INFINITY;
+            let max = Number.NEGATIVE_INFINITY;
+            let valid = true;
+            for (let i = Math.max(0, lo); i <= hi; i++) {
+                const c = cells[i];
+                valid &&= c.valid;
+                if (c.valid) {
+                    min = Math.min(min, c.min, c.last);
+                    max = Math.max(max, c.max, c.last);
+                }
+            }
+            const last = cells[hi].last;
+            out.push({ min: Number.isFinite(min) ? min : last, max: Number.isFinite(max) ? max : last, last, valid });
+        }
+        else {
+            const c = cells[hi];
+            out.push(t === hi * from ? { ...c } : { min: c.last, max: c.last, last: c.last, valid: c.valid });
+        }
+    }
+    return out;
+}
+function rescale(cells, factor) {
+    return factor === 1
+        ? cells
+        : cells.map(c => ({ min: c.min * factor, max: c.max * factor, last: c.last * factor, valid: c.valid }));
+}
+function convertRun(r, step, unitFactor) {
+    const q = quantOf(unitFactor);
+    if (typeof r.data === "string") {
+        const cells = rescale(regrid(decodeCells(r.data, r.q), r.step, step), r.unitFactor / unitFactor);
+        r.data = encodeCells(cells, q);
+        const last = cells.length - 1;
+        const idx = (i) => Math.max(0, Math.min(last, Math.round((i * r.step) / step)));
+        const g = r.seg;
+        r.seg = {
+            ...g,
+            startIdx: idx(g.startIdx),
+            coreEndIdx: idx(g.coreEndIdx),
+            runEndIdx: idx(g.runEndIdx),
+            trailerFrom: g.trailerFrom === null ? null : idx(g.trailerFrom),
+            trailerTo: g.trailerTo === null ? null : idx(g.trailerTo),
+            progEndIdx: idx(g.progEndIdx),
+        };
+    }
+    if (step < r.step) {
+        r.gridFrom = Math.max(r.gridFrom ?? r.step, r.step);
+    }
+    else if (r.gridFrom !== undefined && step >= r.gridFrom) {
+        delete r.gridFrom;
+    }
+    r.step = step;
+    r.unitFactor = unitFactor;
+    r.q = q;
+}
+export function convertRuns(store, step, unitFactor) {
+    if (store.step === step && store.unitFactor === unitFactor) {
+        return [];
+    }
+    const all = [...store.runs, ...store.spikes];
+    for (const r of all) {
+        convertRun(r, step, unitFactor);
+    }
+    if (store.pending) {
+        const c = store.pending;
+        store.pending = {
+            ...c,
+            cells: rescale(regrid(c.cells, c.stepMs, step), c.unitFactor / unitFactor),
+            stepMs: step,
+            unitFactor,
+        };
+    }
+    if (store.bands && store.unitFactor !== unitFactor) {
+        const k = store.unitFactor / unitFactor;
+        store.bands = {
+            ...store.bands,
+            runLimit: store.bands.runLimit * k,
+            bands: store.bands.bands.map(b => ({ ...b, min: b.min * k, max: b.max * k })),
+        };
+    }
+    const what = `poll interval ${store.step / 1000} s → ${step / 1000} s, unit factor ${store.unitFactor} → ${unitFactor}`;
+    store.step = step;
+    store.unitFactor = unitFactor;
+    return all.length > 0 ? [`${what}: ${all.length} stored runs converted`] : [];
+}
+export function clearLearningData(store, keepDecisions) {
+    const out = emptyStore(store.deviceId, store.typeId, store.typeHash, store.step, store.unitFactor);
+    out.seq = store.seq;
+    if (store.lastSeenTs !== undefined) {
+        out.lastSeenTs = store.lastSeenTs;
+    }
+    if (keepDecisions) {
+        for (const [key, d] of Object.entries(store.verdicts ?? {})) {
+            if (d.user) {
+                out.verdicts[key] = d.reason ? { user: d.user, reason: d.reason } : { user: d.user };
+            }
+        }
+    }
+    return out;
 }
 //# sourceMappingURL=runStore.js.map

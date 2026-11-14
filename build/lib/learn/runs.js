@@ -486,41 +486,50 @@ function endBlockOf(s, r, level) {
     const merged = mergeBlocks(blocksOf(s, { from: r.from, to: r.coreEnd }, level), Math.floor(END_BLOCK_BRIDGE_MS / s.stepMs) + 1);
     return [...merged].reverse().find(b => (b.to - b.from + 1) * s.stepMs >= SUSTAINED_MS) ?? null;
 }
-function tailOf(s, runs, runLimit) {
-    const withTrailer = runs.filter(r => r.trailerFrom !== null);
-    const burstMaxW = withTrailer.length > 0 ? Math.max(...withTrailer.map(r => r.burstMaxW)) : 0;
+export function tailRule(parts) {
+    const withTrailer = parts.filter(p => p.r.trailerFrom !== null);
+    const burstMaxW = withTrailer.length > 0 ? Math.max(...withTrailer.map(p => p.r.burstMaxW)) : 0;
     const hi = END_BLOCK_SHARE * burstMaxW;
-    const reach = Math.ceil(END_BLOCK_REACH_MS / s.stepMs);
+    const limit = withTrailer.length > 0 ? Math.max(...withTrailer.map(p => p.runLimit)) : 0;
     const tailSeparated = withTrailer.length >= 2 &&
-        burstMaxW > runLimit &&
-        withTrailer.every(r => {
-            const b = endBlockOf(s, r, hi);
-            return b !== null && r.coreEnd - b.to <= reach;
+        burstMaxW > limit &&
+        withTrailer.every(p => {
+            const b = endBlockOf(p.s, p.r, hi);
+            return b !== null && p.r.coreEnd - b.to <= Math.ceil(END_BLOCK_REACH_MS / p.s.stepMs);
         });
-    const tailCeil = tailSeparated ? TAIL_CEIL_SHARE * burstMaxW : runLimit;
-    for (const r of runs) {
-        const above = tailSeparated ? endBlockOf(s, r, hi) : null;
-        const b = above ?? endBlockOf(s, r, runLimit) ?? { from: r.endBlockFrom, to: r.endBlockTo };
-        r.endBlockFrom = b.from;
-        r.endBlockTo = b.to;
-        let min = Number.POSITIVE_INFINITY;
-        for (let i = b.from; i <= b.to; i++) {
-            if (s.valid[i] === 1) {
-                min = Math.min(min, s.last[i]);
-            }
+    const tailCeil = tailSeparated ? TAIL_CEIL_SHARE * burstMaxW : median(parts.map(p => p.runLimit));
+    return { burstMaxW, tailSeparated, tailCeil };
+}
+export function applyTail(p, tail) {
+    const { s, r, runLimit } = p;
+    const above = tail.tailSeparated ? endBlockOf(s, r, END_BLOCK_SHARE * tail.burstMaxW) : null;
+    const b = above ?? endBlockOf(s, r, runLimit) ?? { from: r.endBlockFrom, to: r.endBlockTo };
+    r.endBlockFrom = b.from;
+    r.endBlockTo = b.to;
+    let min = Number.POSITIVE_INFINITY;
+    for (let i = b.from; i <= b.to; i++) {
+        if (s.valid[i] === 1) {
+            min = Math.min(min, s.last[i]);
         }
-        r.endBlockMinW = Number.isFinite(min) ? min : 0;
-        r.progEnd = r.runEnd;
-        if (tailSeparated) {
-            for (let i = r.runEnd; i >= r.from; i--) {
-                if (s.valid[i] === 1 && s.last[i] > tailCeil) {
-                    r.progEnd = i;
-                    break;
-                }
+    }
+    r.endBlockMinW = Number.isFinite(min) ? min : 0;
+    r.progEnd = r.runEnd;
+    if (tail.tailSeparated) {
+        for (let i = r.runEnd; i >= r.from; i--) {
+            if (s.valid[i] === 1 && s.last[i] > tail.tailCeil) {
+                r.progEnd = i;
+                break;
             }
         }
     }
-    return { burstMaxW, tailSeparated, tailCeil };
+}
+function tailOf(s, runs, runLimit) {
+    const parts = runs.map(r => ({ s, r, runLimit }));
+    const tail = parts.length > 0 ? tailRule(parts) : { burstMaxW: 0, tailSeparated: false, tailCeil: runLimit };
+    for (const p of parts) {
+        applyTail(p, tail);
+    }
+    return tail;
 }
 export function buildLayout(s, opts = {}) {
     const step = s.stepMs;

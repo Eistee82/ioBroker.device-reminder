@@ -1,21 +1,33 @@
 import { FINAL_KEYS } from "./detector/types.js";
-import type { DetectionSettings } from "./detector/types.js";
+import type { DetectionSettings, FinalExit } from "./detector/types.js";
 import type { FileIO } from "./host.js";
+import type { BaseBands } from "./learn/bands.js";
+import { bandFeaturesOf, baseBandsOf } from "./learn/bands.js";
 import type { StoredFeatures } from "./learn/families.js";
 import { assignFamilies, featuresOf } from "./learn/families.js";
-import { buildLayout, MAX_PAUSE_MS, MAX_WINDOWS } from "./learn/runs.js";
+import type { QualityContext, RunSample, Uses, Verdict } from "./learn/quality.js";
+import { admitted, checkRuns, sameRun, samplesOf, verdictKey } from "./learn/quality.js";
+import type { Layout, RunInfo, TailPart } from "./learn/runs.js";
+import { applyTail, buildLayout, LAYOUT_REV, MAX_PAUSE_MS, median, tailRule } from "./learn/runs.js";
+import type { TickCell, TickSeries } from "./learn/ticks.js";
 import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
 import type { Capture, CaptureEvent } from "./runRecorder.js";
 import { errorMessage } from "./utils.js";
 
 /** Version of the store format. */
 export const STORE_VERSION = 1;
-/** Most stored runs. */
-export const MAX_RUNS = MAX_WINDOWS;
+/** Time window of the learning data: older runs go unless they are boundary runs or keep a group alive. */
+export const WINDOW_MS = 30 * 86_400_000;
+/** Most stored runs (metadata; their cells only while there is room). */
+export const MAX_RUN_META = 400;
+/** Every programme group keeps at least this many runs. */
+export const MIN_PER_FAMILY = 2;
+/** Most runs replayed by the optimisation (the newest of every group plus all boundary runs). */
+export const REPLAY_PICK_MAX = 60;
 /** Most stored false starts. */
 export const MAX_SPIKES = 10;
 /** Largest store file in bytes (characters). */
-export const MAX_STORE_BYTES = 400_000;
+export const MAX_STORE_BYTES = 1_000_000;
 /** Largest persisted capture of a run in progress in bytes (characters, encoded). */
 export const MAX_PENDING_BYTES = 200_000;
 /** Most kept changes. */
@@ -24,6 +36,8 @@ export const MAX_CHANGES = 10;
 const START_MATCH_MS = 5 * 60_000;
 /** Time after the programme that a trusted run must contain. */
 const POST_ROLL_MS = MAX_PAUSE_MS;
+/** Base bands are learned from at least this many clean runs. */
+const BANDS_MIN_RUNS = 3;
 
 /** Classification of a stored capture. */
 export type RunLabel = "run" | "split" | "spike";
@@ -32,6 +46,10 @@ export type RunLabel = "run" | "split" | "spike";
 export interface StoredRun {
 	/** Id (time of the first cell and number of events in base 36; for display and selection). */
 	id: string;
+	/** Key of the run (`verdictKey`: device and start minute; set by `addRun` and `upgradeStore`). */
+	key: string;
+	/** Revision of the layout the segmentation comes from (`LAYOUT_REV`; missing: before V5). */
+	rev?: number;
 	/** Time of cell 0 in ms. */
 	ts: number;
 	/** Poll interval in ms. */
@@ -40,8 +58,8 @@ export interface StoredRun {
 	q: number;
 	/** Factor from the unit of the state to W. */
 	unitFactor: number;
-	/** Encoded cells (unit of the state). */
-	data: string;
+	/** Encoded cells (unit of the state); missing: only the metadata are kept (no room). */
+	data?: string;
 	/** Runtime events with their time. */
 	ev: [number, CaptureEvent][];
 	/** Classification. */
@@ -50,6 +68,20 @@ export interface StoredRun {
 	src: "live" | "history";
 	/** Whether the time after the end was cut short (restart). */
 	postTruncated: boolean;
+	/** The start came from the lock phase of the final phase with this exit. */
+	afterFinal?: FinalExit;
+	/** Time the run last stopped a candidate of the optimisation (boundary run, Spec D.2). */
+	veto?: number;
+	/**
+	 * Report times as differences (`toDiffs`, ms after `ts`): live the reports of the power state, history the
+	 * ticks with a stored value. Missing: unknown.
+	 */
+	rep?: number[];
+	/**
+	 * Poll interval in ms before the run was converted to a finer grid: short bursts are missing, so the run is not
+	 * used for phases and the trailer (a property of the run, not a decision of the user).
+	 */
+	gridFrom?: number;
 	/** Segmentation (cell indices). */
 	seg: {
 		startIdx: number;
@@ -57,6 +89,10 @@ export interface StoredRun {
 		runEndIdx: number;
 		trailerFrom: number | null;
 		trailerTo: number | null;
+		/** Programme end (`RunInfo.progEnd` under the tail of the store; `runEndIdx` without a separated tail). */
+		progEndIdx: number;
+		/** Run level of the capture in W (missing: before V5). */
+		runLimit?: number;
 	};
 	/** Features (W, s). */
 	feat: StoredFeatures;
@@ -64,7 +100,10 @@ export interface StoredRun {
 	family: number;
 }
 
-/** Extremes over all runs ever stored (never shrinks). */
+/**
+ * Extremes of the admitted runs, never narrower than the envelope of a store before V5 (`legacyEnvelope`). Kept
+ * in W and s; computed again whenever the runs or the decisions change.
+ */
 export interface Envelope {
 	/** Longest pause inside a programme in s. */
 	maxPauseSec: number;
@@ -128,6 +167,38 @@ export interface OptimizeInfo {
 	unclear: number;
 }
 
+/** Decision of the user about one run (kept over its key, also by "clear learning data"). */
+export interface Decision {
+	/** Use the run although the run check holds it back, or never use it. */
+	user?: "include" | "exclude";
+	/** Reason (shown with the key when the run itself is gone). */
+	reason?: string;
+}
+
+/** Tail of the stored runs (Spec B.4, over all admitted runs; W). */
+export interface StoreTail {
+	/** Values above it belong to the programme in W. */
+	ceil: number;
+	/** Whether the trailer is separated from the programme. */
+	separated: boolean;
+	/** Highest burst maximum of the trailers in W (0 without). */
+	burstMaxW: number;
+	/** Median run level of the captures in W. */
+	runLimit: number;
+}
+
+/** State of the final phase in the store. */
+export interface FinalState {
+	/** Off, on, or suspended after a split programme. */
+	state: "off" | "on" | "suspended";
+	/** Keys of the runs judged `finalSplit`. */
+	splits: string[];
+	/** Time of the suspension (0 = none). */
+	suspendedAt: number;
+	/** Reason of the suspension (English). */
+	reason?: string;
+}
+
 /** Learning data of one device. */
 export interface StoreFile {
 	/** Format version. */
@@ -170,6 +241,26 @@ export interface StoreFile {
 	nextFamily: number;
 	/** Status. */
 	info: OptimizeInfo;
+	/** Decisions of the user per run key (only those; the stages of the run check are computed again). */
+	verdicts: Record<string, Decision>;
+	/** Base bands and hold time profile (unit of the state). */
+	bands?: BaseBands;
+	/** Tail of the admitted runs. */
+	tail?: StoreTail;
+	/** Final phase. */
+	final?: FinalState;
+	/** Last check of the phases. */
+	phaseCheck?: { lastTs: number; runs: number };
+	/** Envelope of a store before V5, frozen at the first load: the envelope is never narrower. */
+	legacyEnvelope?: Envelope;
+	/** Progress of an expensive step of the optimisation. */
+	job?: { step: "tighten" | "final" | "phases"; cursor: number; startedTs: number };
+	/** Revision of the layout of the stored runs. */
+	layoutRev?: number;
+	/** Time of the last poll (for an outage of more than an hour). */
+	lastSeenTs?: number;
+	/** Time the history was read when the optimisation started (also without runs). */
+	historyReadTs?: number;
 }
 
 /** Base detection fields (thresholds, mode, pause protection, anti-crease filter). */
@@ -306,6 +397,9 @@ export function emptyStore(
 			lastEndDelaySec: 0,
 			unclear: 0,
 		},
+		verdicts: {},
+		legacyEnvelope: emptyEnvelope(),
+		layoutRev: LAYOUT_REV,
 	};
 }
 
@@ -572,7 +666,7 @@ export function reconcileBase(
 /**
  * Adapt a loaded store to the current detection values, poll interval and unit. Only the hash of the detection
  * values is compared (the template id may differ, e.g. after the migration); other detection values drop the
- * override. The registry compares the base values with `reconcileBase` before (that also catches up an adoption
+ * override. Another poll interval or unit converts the stored runs (`convertRuns`). The registry compares the base values with `reconcileBase` before (that also catches up an adoption
  * whose store was not saved any more) and reports the result itself.
  *
  * @param store - Store
@@ -594,16 +688,7 @@ export function reconcileStore(
 	if (reconcileBase(store, hash, null, now) === "baseChanged" && hadOverride) {
 		msgs.push("detection values changed, optimised values discarded");
 	}
-	if (store.step !== step || store.unitFactor !== unitFactor) {
-		if (store.runs.length + store.spikes.length > 0) {
-			msgs.push("poll interval or unit changed, stored runs discarded");
-		}
-		store.runs = [];
-		store.spikes = [];
-		store.pending = null;
-		store.step = step;
-		store.unitFactor = unitFactor;
-	}
+	msgs.push(...convertRuns(store, step, unitFactor));
 	refreshInfo(store);
 	return msgs;
 }
@@ -672,6 +757,10 @@ export function labelCapture(c: Capture, keepAboveW: number, src: "live" | "hist
 		src,
 		postTruncated: c.postTruncated,
 		family: -1,
+		// set by addRun (the key needs the device id)
+		key: "",
+		rev: LAYOUT_REV,
+		...(c.rep ? { rep: toDiffs(c.rep) } : {}),
 	};
 	if (layout.runs.length === 0) {
 		if (starts.length === 0) {
@@ -683,7 +772,15 @@ export function labelCapture(c: Capture, keepAboveW: number, src: "live" | "hist
 		const run: StoredRun = {
 			...base,
 			label: "spike",
-			seg: { startIdx: from, coreEndIdx: to, runEndIdx: to, trailerFrom: null, trailerTo: null },
+			seg: {
+				startIdx: from,
+				coreEndIdx: to,
+				runEndIdx: to,
+				trailerFrom: null,
+				trailerTo: null,
+				progEndIdx: to,
+				runLimit: layout.runLimit,
+			},
 			feat: {
 				coreSec: 0,
 				energyWh: 0,
@@ -697,6 +794,8 @@ export function labelCapture(c: Capture, keepAboveW: number, src: "live" | "hist
 				minRunW: 0,
 				trailerGapMaxSec: 0,
 				trailerGapMinSec: 0,
+				burstMaxW: 0,
+				endBlockMinW: 0,
 			},
 		};
 		return { label: "spike", run, endDelaySec: null, trusted: false };
@@ -716,6 +815,8 @@ export function labelCapture(c: Capture, keepAboveW: number, src: "live" | "hist
 			runEndIdx: r.runEnd,
 			trailerFrom: r.trailerFrom,
 			trailerTo: r.trailerTo,
+			progEndIdx: r.progEnd,
+			runLimit: layout.runLimit,
 		},
 		feat: featuresOf(sW, r, layout.runLimit),
 	};
@@ -748,13 +849,8 @@ export function labelCapture(c: Capture, keepAboveW: number, src: "live" | "hist
 export function envelopeOf(runs: readonly StoredRun[], spikes: readonly StoredRun[]): Envelope {
 	const env = emptyEnvelope();
 	for (const r of runs) {
-		env.maxPauseSec = Math.max(env.maxPauseSec, r.feat.maxPauseSec);
-		env.maxBurstSec = Math.max(env.maxBurstSec, r.feat.burstMaxSec);
-		env.maxTrailSec = Math.max(env.maxTrailSec, r.feat.trailerGapMaxSec ?? 0);
-		env.maxTrailerSec = Math.max(env.maxTrailerSec, r.feat.trailerSec);
-		env.minRunW = env.minRunW === 0 ? r.feat.minRunW : Math.min(env.minRunW, r.feat.minRunW);
-		env.minCoreSec = env.minCoreSec === 0 ? r.feat.coreSec : Math.min(env.minCoreSec, r.feat.coreSec);
-		env.n++;
+		addEnd(env, r);
+		addTrailer(env, r);
 	}
 	for (const s of spikes) {
 		env.maxBurstSec = Math.max(env.maxBurstSec, s.feat.burstMaxSec);
@@ -763,7 +859,32 @@ export function envelopeOf(runs: readonly StoredRun[], spikes: readonly StoredRu
 }
 
 /**
- * Merge two envelopes (the result never shrinks).
+ * Add the pause, power and duration of a run to an envelope (counts the run).
+ *
+ * @param env - Envelope
+ * @param r - Run
+ */
+function addEnd(env: Envelope, r: StoredRun): void {
+	env.maxPauseSec = Math.max(env.maxPauseSec, r.feat.maxPauseSec);
+	env.minRunW = env.minRunW === 0 ? r.feat.minRunW : Math.min(env.minRunW, r.feat.minRunW);
+	env.minCoreSec = env.minCoreSec === 0 ? r.feat.coreSec : Math.min(env.minCoreSec, r.feat.coreSec);
+	env.n++;
+}
+
+/**
+ * Add the trailer of a run to an envelope.
+ *
+ * @param env - Envelope
+ * @param r - Run
+ */
+function addTrailer(env: Envelope, r: StoredRun): void {
+	env.maxBurstSec = Math.max(env.maxBurstSec, r.feat.burstMaxSec);
+	env.maxTrailSec = Math.max(env.maxTrailSec, r.feat.trailerGapMaxSec ?? 0);
+	env.maxTrailerSec = Math.max(env.maxTrailerSec, r.feat.trailerSec);
+}
+
+/**
+ * Merge two envelopes (the result is never narrower than either).
  *
  * @param a - Known envelope
  * @param b - New extremes
@@ -784,21 +905,476 @@ export function mergeEnvelope(a: Envelope, b: Envelope): Envelope {
 const ENVELOPE_KEYS = ["maxPauseSec", "maxBurstSec", "maxTrailSec", "maxTrailerSec", "minRunW", "minCoreSec"] as const;
 
 /**
- * Store a labelled run or false start: families, envelope and the limits are kept.
+ * Decision of the user about a run: by its key, otherwise by a key of the same run (live ↔ history, ±5 min).
+ *
+ * @param store - Store
+ * @param key - Key of the run
+ */
+export function decisionOf(store: StoreFile, key: string): Decision | undefined {
+	const all = store.verdicts ?? {};
+	const exact = all[key];
+	if (exact || key === "") {
+		return exact;
+	}
+	const near = Object.keys(all).find(k => sameRun(k, key));
+	return near === undefined ? undefined : all[near];
+}
+
+/**
+ * Set or remove the decision of the user about a run.
+ *
+ * @param store - Store
+ * @param key - Key of the run
+ * @param user - Decision, or null to remove it
+ * @param reason - Reason (optional)
+ */
+export function setDecision(store: StoreFile, key: string, user: "include" | "exclude" | null, reason?: string): void {
+	store.verdicts ??= {};
+	if (user === null) {
+		delete store.verdicts[key];
+		return;
+	}
+	store.verdicts[key] = reason ? { user, reason } : { user };
+}
+
+/**
+ * Whether a stored run can be replayed: it has cells and the user did not exclude it.
+ *
+ * @param store - Store
+ * @param r - Run
+ */
+export function inUse(store: StoreFile, r: StoredRun): boolean {
+	return typeof r.data === "string" && decisionOf(store, r.key)?.user !== "exclude";
+}
+
+/** What a stored run counts for in the envelope and the tail. */
+interface RunUse {
+	/** Excluded by the user. */
+	excluded: boolean;
+	/** Pause, power and duration (and the end criterion). */
+	end: boolean;
+	/** Trailer extremes. */
+	trailer: boolean;
+	/** Burst of a false start. */
+	start: boolean;
+}
+
+/**
+ * What every stored run counts for: the decision of the user and, if known, the automatic verdict (`admitted`).
+ * Without a verdict only the decisions count. A merged run counts for none of the statistics (Spec B.2), a run
+ * converted to a finer grid not for the trailer.
+ *
+ * @param store - Store
+ * @param verdicts - Verdicts by key (`recompute`), or undefined
+ */
+function usesOfStore(store: StoreFile, verdicts?: ReadonlyMap<string, Verdict>): Map<StoredRun, RunUse> {
+	const out = new Map<StoredRun, RunUse>();
+	for (const r of [...store.runs, ...store.spikes]) {
+		const d = decisionOf(store, r.key);
+		const v = verdicts?.get(r.key);
+		const ok = (purpose: keyof Uses): boolean => (v ? admitted({ ...v, user: d?.user }, purpose) : true);
+		const excluded = d?.user === "exclude";
+		const merged = v?.reasons.some(x => x.code === "merged") === true;
+		const end = !excluded && !merged && ok("end");
+		out.set(r, {
+			excluded,
+			end,
+			trailer: end && r.gridFrom === undefined && ok("trailer"),
+			start: !excluded && ok("start"),
+		});
+	}
+	return out;
+}
+
+/**
+ * Envelope of the runs that count (without the frozen envelope of before V5).
+ *
+ * @param store - Store
+ * @param use - What the runs count for
+ * @param skip - Run to leave out
+ */
+function envelopeWith(store: StoreFile, use: ReadonlyMap<StoredRun, RunUse>, skip?: StoredRun): Envelope {
+	const env = emptyEnvelope();
+	for (const r of store.runs) {
+		const u = use.get(r);
+		if (r === skip || !u?.end) {
+			continue;
+		}
+		addEnd(env, r);
+		if (u.trailer) {
+			addTrailer(env, r);
+		}
+	}
+	for (const s of store.spikes) {
+		if (s !== skip && use.get(s)?.start) {
+			env.maxBurstSec = Math.max(env.maxBurstSec, s.feat.burstMaxSec);
+		}
+	}
+	return env;
+}
+
+/**
+ * Whether a run counts as boundary run: it alone sets an extreme of the envelope, or it stopped a candidate of the
+ * optimisation (`veto`).
+ *
+ * @param store - Store
+ * @param use - What the runs count for
+ * @param full - Envelope of all runs that count
+ * @param r - Run
+ */
+function isBoundary(store: StoreFile, use: ReadonlyMap<StoredRun, RunUse>, full: Envelope, r: StoredRun): boolean {
+	if (use.get(r)?.excluded) {
+		return false;
+	}
+	if (r.veto !== undefined) {
+		return true;
+	}
+	const rest = envelopeWith(store, use, r);
+	return ENVELOPE_KEYS.some(k => rest[k] !== full[k]);
+}
+
+/**
+ * Keys of the boundary runs (Spec D.2, P23): runs that alone set an extreme of the envelope of the admitted runs,
+ * and runs that stopped a candidate of the optimisation (`veto`).
+ *
+ * @param store - Store
+ * @param verdicts - Verdicts by key (`recompute`); without them only the decisions of the user count
+ */
+export function boundaryRuns(store: StoreFile, verdicts?: ReadonlyMap<string, Verdict>): Set<string> {
+	const use = usesOfStore(store, verdicts);
+	const full = envelopeWith(store, use);
+	const out = new Set<string>();
+	for (const r of [...store.runs, ...store.spikes]) {
+		if (isBoundary(store, use, full, r)) {
+			out.add(r.key);
+		}
+	}
+	return out;
+}
+
+/**
+ * Compute the envelope again from the admitted runs and the frozen envelope of before V5 (P10): never narrower than
+ * `legacyEnvelope`; excluding a run and using it again restores it exactly.
+ *
+ * @param store - Store
+ * @param verdicts - Verdicts by key (`recompute`); without them only the decisions of the user count
+ */
+export function recomputeEnvelope(store: StoreFile, verdicts?: ReadonlyMap<string, Verdict>): void {
+	const own = envelopeWith(store, usesOfStore(store, verdicts));
+	store.envelope = mergeEnvelope(store.legacyEnvelope ?? emptyEnvelope(), own);
+}
+
+/**
+ * Series of a stored run in W (null without cells).
+ *
+ * @param r - Run
+ */
+function seriesOf(r: StoredRun): { cells: TickCell[]; s: TickSeries } | null {
+	if (typeof r.data !== "string") {
+		return null;
+	}
+	const cells = decodeCells(r.data, r.q);
+	return { cells, s: fromCells(cells, r.ts, r.step, r.unitFactor) };
+}
+
+/**
+ * Compute the tail of the store again (Spec B.4 over the admitted runs) and with it the programme end and the end
+ * block of every stored run with cells.
+ *
+ * @param store - Store
+ * @param verdicts - Verdicts by key (`recompute`); without them only the decisions of the user count
+ */
+export function recomputeTail(store: StoreFile, verdicts?: ReadonlyMap<string, Verdict>): void {
+	const use = usesOfStore(store, verdicts);
+	const parts: { run: StoredRun; part: TailPart }[] = [];
+	for (const r of store.runs) {
+		const dec = r.label === "spike" ? null : seriesOf(r);
+		if (!dec) {
+			continue;
+		}
+		const g = r.seg;
+		parts.push({
+			run: r,
+			part: {
+				s: dec.s,
+				r: {
+					from: g.startIdx,
+					coreEnd: g.coreEndIdx,
+					runEnd: g.runEndIdx,
+					trailerFrom: g.trailerFrom,
+					burstMaxW: r.feat.burstMaxW ?? 0,
+					progEnd: g.progEndIdx,
+					endBlockFrom: g.coreEndIdx,
+					endBlockTo: g.coreEndIdx,
+					endBlockMinW: r.feat.endBlockMinW ?? 0,
+				},
+				runLimit: g.runLimit ?? 0,
+			},
+		});
+	}
+	const used = parts.filter(x => use.get(x.run)?.end);
+	if (used.length === 0) {
+		delete store.tail;
+		return;
+	}
+	const tail = tailRule(used.map(x => x.part));
+	for (const x of parts) {
+		applyTail(x.part, tail);
+		x.run.seg.progEndIdx = x.part.r.progEnd;
+		x.run.feat.endBlockMinW = x.part.r.endBlockMinW;
+	}
+	store.tail = {
+		ceil: tail.tailCeil,
+		separated: tail.tailSeparated,
+		burstMaxW: tail.burstMaxW,
+		runLimit: median(used.map(x => x.part.runLimit)),
+	};
+}
+
+/** A stored run as a sample of the run check. */
+export interface StoreSample {
+	/** Stored run. */
+	run: StoredRun;
+	/** Sample. */
+	sample: RunSample;
+	/** Verdict with the decision of the user applied. */
+	verdict: Verdict;
+	/** Series in W. */
+	series: TickSeries;
+}
+
+/**
+ * Stored values of a run in the unit of the state: the report times of a history run with the value of their tick,
+ * otherwise the changes on the poll grid.
+ *
+ * @param r - Run
+ * @param cells - Decoded cells
+ */
+function pointsOfStored(r: StoredRun, cells: readonly TickCell[]): { ts: number; val: number }[] {
+	const out: { ts: number; val: number }[] = [];
+	const rep = r.src === "history" ? fromDiffs(r.rep) : undefined;
+	if (rep && rep.length > 0) {
+		for (const t of rep) {
+			const c = cells[Math.max(0, Math.min(cells.length - 1, Math.ceil(t / r.step)))];
+			if (c?.valid) {
+				out.push({ ts: r.ts + t, val: c.last });
+			}
+		}
+		return out;
+	}
+	cells.forEach((c, i) => {
+		if (c.valid && (out.length === 0 || out[out.length - 1].val !== c.last)) {
+			out.push({ ts: r.ts + i * r.step, val: c.last });
+		}
+	});
+	return out;
+}
+
+/**
+ * Sample of the run check from a stored run: the layout of its capture with the segmentation and the tail of the
+ * store, its key, group, report log and events.
+ *
+ * @param store - Store
+ * @param r - Run with cells
+ */
+function sampleOfStored(store: StoreFile, r: StoredRun): { sample: RunSample; series: TickSeries } | null {
+	const dec = seriesOf(r);
+	if (!dec) {
+		return null;
+	}
+	const { cells, s } = dec;
+	const points = pointsOfStored(r, cells);
+	const g = r.seg;
+	const L0 = buildLayout(s, { recording: true, maxRuns: Number.POSITIVE_INFINITY });
+	let L: Layout;
+	if (r.label === "spike") {
+		L = { ...L0, runs: [], spikes: [{ from: g.startIdx, to: g.coreEndIdx }], incomplete: [] };
+	} else {
+		const best = [...L0.runs].sort((a, b) => Math.abs(a.from - g.startIdx) - Math.abs(b.from - g.startIdx))[0];
+		if (best) {
+			const info: RunInfo = {
+				...best,
+				from: g.startIdx,
+				coreEnd: g.coreEndIdx,
+				runEnd: g.runEndIdx,
+				progEnd: g.progEndIdx,
+				trailerFrom: g.trailerFrom,
+				trailerTo: g.trailerTo,
+				to: Math.max(best.to, g.trailerTo ?? g.runEndIdx),
+			};
+			L = {
+				...L0,
+				runs: [info],
+				spikes: [],
+				incomplete: [],
+				tailSeparated: store.tail?.separated ?? false,
+				burstMaxW: store.tail?.burstMaxW ?? L0.burstMaxW,
+				tailCeil: store.tail?.ceil ?? L0.tailCeil,
+			};
+		} else {
+			// the run cannot be laid out any more: it is used for nothing
+			L = { ...L0, runs: [], spikes: [], incomplete: [{ from: g.startIdx, to: g.runEndIdx }] };
+		}
+	}
+	const sample = samplesOf(store.deviceId, points, s, L, { src: r.src, unitFactor: r.unitFactor })[0];
+	if (!sample) {
+		return null;
+	}
+	sample.key = r.key;
+	sample.family = r.label === "spike" ? -1 : r.family;
+	if (sample.kind === "run") {
+		sample.facts.feat = r.feat;
+		sample.facts.coreSec = r.feat.coreSec;
+	}
+	const rep = r.src === "live" ? fromDiffs(r.rep) : undefined;
+	if (rep) {
+		sample.reports = rep.map(t => r.ts + t);
+	}
+	sample.starts = r.ev.filter(e => e[1] === "s").map(e => e[0]);
+	if (r.ev.some(e => e[1] === "a")) {
+		sample.aborted = true;
+	}
+	if (r.afterFinal) {
+		sample.afterFinal = r.afterFinal;
+	}
+	return { sample, series: s };
+}
+
+/**
+ * Samples and verdicts of all stored runs and false starts with cells (bridge store ↔ run check): every run is
+ * checked again (`stuck`, `sparse`, `gap` change with the comparison runs); the decisions of the user and the
+ * finer grid (`gridFrom`: no phases, no trailer) are applied. Runs without cells give no sample.
+ *
+ * @param store - Store
+ * @param ctx - Context of the run check
+ */
+export function storeSamples(store: StoreFile, ctx: QualityContext): StoreSample[] {
+	const built: { run: StoredRun; sample: RunSample; series: TickSeries }[] = [];
+	for (const r of [...store.runs, ...store.spikes].sort((a, b) => startOf(a) - startOf(b))) {
+		const x = sampleOfStored(store, r);
+		if (x) {
+			built.push({ run: r, ...x });
+		}
+	}
+	const verdicts = checkRuns(
+		built.map(b => b.sample),
+		ctx,
+	);
+	return built.map((b, k) => ({ ...b, verdict: withDecision(store, b.run, verdicts[k]) }));
+}
+
+/**
+ * A verdict with the decision of the user and the finer grid of the run applied.
+ *
+ * @param store - Store
+ * @param r - Run
+ * @param v - Automatic verdict
+ */
+function withDecision(store: StoreFile, r: StoredRun, v: Verdict): Verdict {
+	const out: Verdict = { ...v, uses: { ...v.uses } };
+	const d = decisionOf(store, r.key);
+	if (d?.user) {
+		out.user = d.user;
+	}
+	if (r.gridFrom !== undefined) {
+		out.uses.phases = false;
+		out.uses.trailer = false;
+	}
+	return out;
+}
+
+/**
+ * Base bands and hold time profile from the clean runs, in two passes (Spec B.1a): verdicts without the hold time
+ * profile, bands and profile from the runs admitted for phases (at least three), verdicts again. Fills the band
+ * features of the runs (`topBandSec`, `finalBandBlocks`).
+ *
+ * @param store - Store
+ * @param ctx - Context of the run check (its `bands` are replaced)
+ * @returns verdicts by key
+ */
+export function recomputeBands(store: StoreFile, ctx: QualityContext): Map<string, Verdict> {
+	const first = storeSamples(store, { ...ctx, bands: store.bands ? { ...store.bands, holds: [] } : null });
+	const clean = first.filter(x => x.sample.kind === "run" && admitted(x.verdict, "phases"));
+	const factor = store.unitFactor > 0 ? store.unitFactor : 1;
+	if (clean.length >= BANDS_MIN_RUNS) {
+		const runLimit = median(clean.map(x => (x.run.seg.runLimit ?? 0) / factor));
+		const bands = baseBandsOf(
+			clean.map(x => x.sample),
+			runLimit,
+		);
+		store.bands = bands;
+		for (const x of first) {
+			if (x.sample.kind === "run") {
+				const f = bandFeaturesOf(x.sample, bands, x.sample.facts.coreEnd);
+				if (f) {
+					x.run.feat.topBandSec = f.topBandSec;
+					x.run.feat.finalBandBlocks = f.finalBandBlocks;
+				}
+			}
+		}
+	} else {
+		delete store.bands;
+	}
+	const second = checkRuns(
+		first.map(x => x.sample),
+		{ ...ctx, bands: store.bands ?? null },
+	);
+	return new Map(first.map((x, k) => [x.run.key, withDecision(store, x.run, second[k])]));
+}
+
+/**
+ * Run check, base bands, tail and envelope of the store computed again.
+ *
+ * @param store - Store
+ * @param ctx - Context of the run check
+ * @returns verdicts by key
+ */
+export function recompute(store: StoreFile, ctx: QualityContext): Map<string, Verdict> {
+	const verdicts = recomputeBands(store, ctx);
+	recomputeTail(store, verdicts);
+	recomputeEnvelope(store, verdicts);
+	return verdicts;
+}
+
+/**
+ * Start time of a stored run (first active cell).
+ *
+ * @param r - Run
+ */
+function startOf(r: StoredRun): number {
+	return r.ts + r.seg.startIdx * r.step;
+}
+
+/** Options of `addRun`. */
+export interface AddRunOptions {
+	/** Context of the run check: run check, bands and tail are computed again (without: only the decisions count). */
+	ctx?: QualityContext;
+	/** Current time (default: end of the added capture). */
+	now?: number;
+	/** Many runs in a row (history): only the envelope; the caller calls `recompute` (or `recomputeTail`) after. */
+	deferred?: boolean;
+}
+
+/**
+ * Store a labelled run or false start: key, families, run check, tail, envelope and the limits are kept.
  *
  * @param store - Store
  * @param run - Stored run
+ * @param o - Options
  * @returns ids of the evicted runs
  */
-export function addRun(store: StoreFile, run: StoredRun): string[] {
-	const evicted: string[] = [];
+export function addRun(store: StoreFile, run: StoredRun, o: AddRunOptions = {}): string[] {
+	if (!run.key) {
+		run.key = verdictKey(store.deviceId, startOf(run));
+	}
+	run.rev ??= LAYOUT_REV;
 	if (run.label === "spike") {
 		store.spikes.push(run);
-		while (store.spikes.length > MAX_SPIKES) {
-			evicted.push((store.spikes.shift() as StoredRun).id);
-		}
 	} else {
 		store.runs.push(run);
+	}
+	const verdicts = o.ctx && !o.deferred ? recomputeBands(store, o.ctx) : undefined;
+	if (run.label !== "spike") {
 		const fam = assignFamilies(
 			store.runs.map(r => r.feat),
 			store.runs.map(r => r.family),
@@ -809,23 +1385,26 @@ export function addRun(store: StoreFile, run: StoredRun): string[] {
 		});
 		store.nextFamily = fam.nextId;
 	}
-	const prevN = store.envelope.n;
-	store.envelope = mergeEnvelope(store.envelope, envelopeOf(store.runs, store.spikes));
-	store.envelope.n = prevN + (run.label === "spike" ? 0 : 1);
-	evicted.push(...fitSize(store));
+	if (!o.deferred) {
+		recomputeTail(store, verdicts);
+	}
+	recomputeEnvelope(store, verdicts);
+	const now = o.now ?? run.ts + Math.max(0, (run.seg.runEndIdx + 1) * run.step);
+	const evicted = fitSize(store, now, verdicts);
 	refreshInfo(store);
 	return evicted;
 }
 
 /**
- * Evict runs and false starts until the store fits its limits (also after the capture of a run in
- * progress was set). The extremes of all runs stay.
+ * Drop the report times and then the capture of a run in progress if it is too large to persist, then evict runs
+ * and false starts (`evict`).
  *
  * @param store - Store
+ * @param now - Current time (default: start of the newest stored run)
+ * @param verdicts - Verdicts by key (`recompute`), or undefined
  * @returns ids of the evicted runs
  */
-export function fitSize(store: StoreFile): string[] {
-	const evicted: string[] = [];
+export function fitSize(store: StoreFile, now?: number, verdicts?: ReadonlyMap<string, Verdict>): string[] {
 	if (store.pending?.rep && JSON.stringify(encodePending(store.pending)).length > MAX_PENDING_BYTES) {
 		// the report times go first: the run itself is worth more than its report statistics
 		const lighter: Capture = { ...store.pending };
@@ -836,18 +1415,118 @@ export function fitSize(store: StoreFile): string[] {
 		// too large to persist: a restart before the capture closes loses this run
 		store.pending = null;
 	}
-	while (store.runs.length > MAX_RUNS || (sizeOf(store) > MAX_STORE_BYTES && store.runs.length > 2)) {
-		const victim = pickVictim(store);
-		if (victim < 0) {
+	const newest = Math.max(0, ...[...store.runs, ...store.spikes].map(startOf));
+	return evict(store, now ?? newest, verdicts);
+}
+
+/**
+ * Evict runs step by step (Spec D.2, P23); after every evicted run the boundary runs are determined again, so of two
+ * equally extreme runs one always stays. Boundary runs are never evicted, and every programme group keeps
+ * MIN_PER_FAMILY runs. Order: runs older than WINDOW_MS (history first); over MAX_STORE_BYTES or MAX_RUN_META the
+ * cells of excluded runs, history runs, then the oldest run of the largest group. Runs excluded by the user go
+ * first; their decision stays in `verdicts`.
+ *
+ * @param store - Store
+ * @param now - Current time
+ * @param verdicts - Verdicts by key (`recompute`); without them only the decisions of the user count
+ * @returns ids of the evicted runs
+ */
+export function evict(store: StoreFile, now: number, verdicts?: ReadonlyMap<string, Verdict>): string[] {
+	const evicted: string[] = [];
+	const use = usesOfStore(store, verdicts);
+	const remove = (r: StoredRun): void => {
+		const list = store.runs.includes(r) ? store.runs : store.spikes;
+		list.splice(list.indexOf(r), 1);
+		evicted.push(r.id);
+	};
+	const counts = (): Map<number, number> => {
+		const m = new Map<number, number>();
+		for (const r of store.runs) {
+			if (!use.get(r)?.excluded) {
+				m.set(r.family, (m.get(r.family) ?? 0) + 1);
+			}
+		}
+		return m;
+	};
+	// one run of the pool (in its order): excluded runs at once, otherwise the first that is no boundary run
+	const step = (pool: () => StoredRun[], perFamily: boolean): boolean => {
+		const full = envelopeWith(store, use);
+		const count = counts();
+		for (const r of pool()) {
+			if (use.get(r)?.excluded) {
+				remove(r);
+				return true;
+			}
+			if (perFamily && (count.get(r.family) ?? 0) <= MIN_PER_FAMILY) {
+				continue;
+			}
+			if (!isBoundary(store, use, full, r)) {
+				remove(r);
+				return true;
+			}
+		}
+		return false;
+	};
+	const old = (r: StoredRun): boolean => now - r.ts > WINDOW_MS;
+	const byTs = (a: StoredRun, b: StoredRun): number => a.ts - b.ts;
+	const historyFirst = (a: StoredRun, b: StoredRun): number =>
+		(a.src === "history" ? 0 : 1) - (b.src === "history" ? 0 : 1) || byTs(a, b);
+	const over = (): boolean => store.runs.length > MAX_RUN_META || sizeOf(store) > MAX_STORE_BYTES;
+
+	// 1. older than the window
+	while (step(() => store.runs.filter(old).sort(historyFirst), true)) {
+		// next
+	}
+	while (step(() => store.spikes.filter(old).sort(byTs), false)) {
+		// next
+	}
+	// 2. over the limits: the cells of excluded runs (the key with the decision stays), then excluded runs
+	if (sizeOf(store) > MAX_STORE_BYTES) {
+		for (const r of [...store.runs, ...store.spikes].filter(x => use.get(x)?.excluded && x.data).sort(byTs)) {
+			delete r.data;
+			if (sizeOf(store) <= MAX_STORE_BYTES) {
+				break;
+			}
+		}
+	}
+	while (store.runs.length > MAX_RUN_META) {
+		const ex = store.runs.filter(x => use.get(x)?.excluded).sort(byTs)[0];
+		if (!ex) {
 			break;
 		}
-		evicted.push(store.runs[victim].id);
-		store.runs.splice(victim, 1);
+		remove(ex);
 	}
-	while (sizeOf(store) > MAX_STORE_BYTES && store.spikes.length > 0) {
-		evicted.push((store.spikes.shift() as StoredRun).id);
+	// 3. history runs, then the oldest run of the largest group
+	while (over() && step(() => store.runs.filter(r => r.src === "history").sort(byTs), true)) {
+		// next
+	}
+	while (
+		over() &&
+		step(() => {
+			const count = counts();
+			return [...store.runs].sort(
+				(a, b) => (count.get(b.family) ?? 0) - (count.get(a.family) ?? 0) || byTs(a, b),
+			);
+		}, true)
+	) {
+		// next
+	}
+	// false starts: at most MAX_SPIKES, and while the file is too large
+	while (store.spikes.length > MAX_SPIKES || (sizeOf(store) > MAX_STORE_BYTES && store.spikes.length > 0)) {
+		if (!step(() => [...store.spikes].sort(byTs), false)) {
+			if (store.spikes.length <= MAX_SPIKES) {
+				break;
+			}
+			remove([...store.spikes].sort(byTs)[0]);
+		}
+	}
+	// last resort: the oldest run that is no boundary run, also below the minimum of its group
+	while (over() && step(() => [...store.runs].sort(byTs), false)) {
+		// next
 	}
 	if (evicted.length > 0) {
+		// the extremes stay (boundary runs are kept), the count follows
+		recomputeEnvelope(store, verdicts);
 		refreshInfo(store);
 	}
 	return evicted;
@@ -863,41 +1542,269 @@ export function sizeOf(store: StoreFile): number {
 }
 
 /**
- * Run to evict: history runs first, then the oldest run of the largest family that is not binding
- * (removing it changes none of the extremes); the last two runs of a family are kept.
+ * Bring a loaded store to the current version (Spec C.7, P10, P12): the envelope of before V5 is frozen once as
+ * `legacyEnvelope`; runs with an older layout revision are segmented again from their cells (the programme groups
+ * keep their ids, runs without cells stay as they are); every run gets its key, programme end, burst maximum and
+ * end block minimum; the tail and the envelope are computed again (only the decisions of the user count, the
+ * registry calls `recompute` with the run check after). A store of the current version stays as it is.
  *
  * @param store - Store
- * @returns index into `store.runs`, or -1
+ * @param keepAboveW - End threshold of the values in use in W (drying phases above it belong to the run)
+ * @returns messages for the log (English); empty if nothing had to change
  */
-function pickVictim(store: StoreFile): number {
-	const count = new Map<number, number>();
-	for (const r of store.runs) {
-		count.set(r.family, (count.get(r.family) ?? 0) + 1);
+export function upgradeStore(store: StoreFile, keepAboveW?: number): string[] {
+	const msgs: string[] = [];
+	let changed = store.layoutRev !== LAYOUT_REV;
+	if (typeof store.verdicts !== "object" || store.verdicts === null || Array.isArray(store.verdicts)) {
+		store.verdicts = {};
 	}
-	const full = envelopeOf(store.runs, []);
-	const binding = (i: number): boolean => {
-		const rest = envelopeOf(
-			store.runs.filter((_, k) => k !== i),
-			[],
-		);
-		return ENVELOPE_KEYS.some(k => rest[k] !== full[k]);
+	if (!store.legacyEnvelope) {
+		store.legacyEnvelope = { ...emptyEnvelope(), ...store.envelope };
+		changed = true;
+	}
+	let again = 0;
+	for (const r of [...store.runs, ...store.spikes]) {
+		if (((r.rev ?? 0) < LAYOUT_REV || r.seg.runLimit === undefined) && typeof r.data === "string") {
+			changed = true;
+			if (resegment(r, keepAboveW)) {
+				again++;
+			}
+		}
+		const g = r.seg;
+		if (!Number.isInteger(g.progEndIdx)) {
+			g.progEndIdx = g.runEndIdx;
+			changed = true;
+		}
+		if (!Number.isFinite(r.feat.burstMaxW)) {
+			r.feat.burstMaxW = 0;
+			changed = true;
+		}
+		if (!Number.isFinite(r.feat.endBlockMinW)) {
+			r.feat.endBlockMinW = r.label === "spike" ? 0 : r.feat.minRunW;
+			changed = true;
+		}
+		if (typeof r.key !== "string" || r.key === "") {
+			r.key = verdictKey(store.deviceId, startOf(r));
+			changed = true;
+		}
+	}
+	if (store.bands) {
+		// JSON writes the open upper limit of the highest band as null
+		for (const b of store.bands.bands) {
+			if (typeof b.max !== "number") {
+				b.max = Number.POSITIVE_INFINITY;
+			}
+		}
+	}
+	if (!changed) {
+		return msgs;
+	}
+	store.layoutRev = LAYOUT_REV;
+	recomputeTail(store);
+	recomputeEnvelope(store);
+	refreshInfo(store);
+	msgs.push(
+		again > 0
+			? `learning data brought to the current version, ${again} stored runs segmented again`
+			: "learning data brought to the current version",
+	);
+	return msgs;
+}
+
+/**
+ * Segment a stored run again from its cells with the current layout (the programme group stays).
+ *
+ * @param r - Run with cells
+ * @param keepAboveW - End threshold in W, or undefined
+ * @returns whether the segmentation was taken over
+ */
+function resegment(r: StoredRun, keepAboveW: number | undefined): boolean {
+	const dec = seriesOf(r);
+	if (!dec) {
+		return false;
+	}
+	const L = buildLayout(dec.s, {
+		recording: true,
+		maxRuns: Number.POSITIVE_INFINITY,
+		...(keepAboveW !== undefined ? { keepAbove: keepAboveW } : {}),
+	});
+	r.rev = LAYOUT_REV;
+	r.seg.runLimit = L.runLimit;
+	if (r.label === "spike") {
+		return false;
+	}
+	const g = r.seg;
+	const best = [...L.runs].sort((a, b) => Math.abs(a.from - g.startIdx) - Math.abs(b.from - g.startIdx))[0];
+	if (!best) {
+		return false;
+	}
+	const bands = { topBandSec: r.feat.topBandSec, finalBandBlocks: r.feat.finalBandBlocks };
+	r.seg = {
+		startIdx: best.from,
+		coreEndIdx: best.coreEnd,
+		runEndIdx: best.runEnd,
+		trailerFrom: best.trailerFrom,
+		trailerTo: best.trailerTo,
+		progEndIdx: best.progEnd,
+		runLimit: L.runLimit,
 	};
-	const candidates = store.runs
-		.map((r, i) => ({ r, i }))
-		.filter(({ r }) => (count.get(r.family) ?? 0) > 2)
-		.sort(
-			(a, b) =>
-				(a.r.src === "history" ? 0 : 1) - (b.r.src === "history" ? 0 : 1) ||
-				(count.get(b.r.family) ?? 0) - (count.get(a.r.family) ?? 0) ||
-				a.r.ts - b.r.ts,
-		);
-	const free = candidates.find(c => !binding(c.i));
-	if (free) {
-		return free.i;
+	const feat: StoredFeatures = featuresOf(dec.s, best, L.runLimit);
+	if (bands.topBandSec !== undefined && bands.finalBandBlocks !== undefined) {
+		feat.topBandSec = bands.topBandSec;
+		feat.finalBandBlocks = bands.finalBandBlocks;
 	}
-	if (candidates.length > 0) {
-		return candidates[0].i;
+	r.feat = feat;
+	return true;
+}
+
+/**
+ * Cells on another poll grid (Spec C.7, P27): coarser takes the held value at the grid point and the extremes of the
+ * time since the previous one (unknown if any value was); finer repeats the held value.
+ *
+ * @param cells - Cells
+ * @param from - Poll interval of the cells in ms
+ * @param to - New poll interval in ms
+ */
+function regrid(cells: readonly TickCell[], from: number, to: number): TickCell[] {
+	if (cells.length === 0 || from === to) {
+		return [...cells];
 	}
-	// every family has at most two runs: the oldest run overall
-	return store.runs.length > 0 ? 0 : -1;
+	const n = Math.floor(((cells.length - 1) * from) / to) + 1;
+	const out: TickCell[] = [];
+	for (let j = 0; j < n; j++) {
+		const t = j * to;
+		const hi = Math.min(cells.length - 1, Math.floor(t / from));
+		if (to > from) {
+			const lo = j === 0 ? 0 : Math.floor((t - to) / from) + 1;
+			let min = Number.POSITIVE_INFINITY;
+			let max = Number.NEGATIVE_INFINITY;
+			let valid = true;
+			for (let i = Math.max(0, lo); i <= hi; i++) {
+				const c = cells[i];
+				valid &&= c.valid;
+				if (c.valid) {
+					min = Math.min(min, c.min, c.last);
+					max = Math.max(max, c.max, c.last);
+				}
+			}
+			const last = cells[hi].last;
+			out.push({ min: Number.isFinite(min) ? min : last, max: Number.isFinite(max) ? max : last, last, valid });
+		} else {
+			const c = cells[hi];
+			out.push(t === hi * from ? { ...c } : { min: c.last, max: c.last, last: c.last, valid: c.valid });
+		}
+	}
+	return out;
+}
+
+/**
+ * Cells in another unit (`factor` = old unit factor / new unit factor).
+ *
+ * @param cells - Cells
+ * @param factor - Factor
+ */
+function rescale(cells: TickCell[], factor: number): TickCell[] {
+	return factor === 1
+		? cells
+		: cells.map(c => ({ min: c.min * factor, max: c.max * factor, last: c.last * factor, valid: c.valid }));
+}
+
+/**
+ * Convert one stored run to another poll interval and unit; the features, the envelope and the tail stay (W, s).
+ *
+ * @param r - Run
+ * @param step - New poll interval in ms
+ * @param unitFactor - New unit factor
+ */
+function convertRun(r: StoredRun, step: number, unitFactor: number): void {
+	const q = quantOf(unitFactor);
+	if (typeof r.data === "string") {
+		const cells = rescale(regrid(decodeCells(r.data, r.q), r.step, step), r.unitFactor / unitFactor);
+		r.data = encodeCells(cells, q);
+		const last = cells.length - 1;
+		const idx = (i: number): number => Math.max(0, Math.min(last, Math.round((i * r.step) / step)));
+		const g = r.seg;
+		r.seg = {
+			...g,
+			startIdx: idx(g.startIdx),
+			coreEndIdx: idx(g.coreEndIdx),
+			runEndIdx: idx(g.runEndIdx),
+			trailerFrom: g.trailerFrom === null ? null : idx(g.trailerFrom),
+			trailerTo: g.trailerTo === null ? null : idx(g.trailerTo),
+			progEndIdx: idx(g.progEndIdx),
+		};
+	}
+	if (step < r.step) {
+		r.gridFrom = Math.max(r.gridFrom ?? r.step, r.step);
+	} else if (r.gridFrom !== undefined && step >= r.gridFrom) {
+		delete r.gridFrom;
+	}
+	r.step = step;
+	r.unitFactor = unitFactor;
+	r.q = q;
+}
+
+/**
+ * Convert the stored runs, the false starts, the capture of a run in progress and the base bands to another poll
+ * interval or unit instead of discarding them (Spec C.7, P27). Envelope, frozen envelope and tail are kept in W and
+ * stay as they are; runs brought to a finer grid get `gridFrom` (no phases, no trailer).
+ *
+ * @param store - Store
+ * @param step - New poll interval in ms
+ * @param unitFactor - New unit factor
+ * @returns messages for the log (English)
+ */
+export function convertRuns(store: StoreFile, step: number, unitFactor: number): string[] {
+	if (store.step === step && store.unitFactor === unitFactor) {
+		return [];
+	}
+	const all = [...store.runs, ...store.spikes];
+	for (const r of all) {
+		convertRun(r, step, unitFactor);
+	}
+	if (store.pending) {
+		const c = store.pending;
+		store.pending = {
+			...c,
+			cells: rescale(regrid(c.cells, c.stepMs, step), c.unitFactor / unitFactor),
+			stepMs: step,
+			unitFactor,
+		};
+	}
+	if (store.bands && store.unitFactor !== unitFactor) {
+		const k = store.unitFactor / unitFactor;
+		store.bands = {
+			...store.bands,
+			runLimit: store.bands.runLimit * k,
+			bands: store.bands.bands.map(b => ({ ...b, min: b.min * k, max: b.max * k })),
+		};
+	}
+	const what = `poll interval ${store.step / 1000} s → ${step / 1000} s, unit factor ${store.unitFactor} → ${unitFactor}`;
+	store.step = step;
+	store.unitFactor = unitFactor;
+	return all.length > 0 ? [`${what}: ${all.length} stored runs converted`] : [];
+}
+
+/**
+ * Empty learning data of a device ("clear learning data", P26): runs, values, changes and the frozen envelope go;
+ * the decisions of the user stay unless `keepDecisions` is false.
+ *
+ * @param store - Store
+ * @param keepDecisions - Keep the decisions of the user
+ */
+export function clearLearningData(store: StoreFile, keepDecisions: boolean): StoreFile {
+	const out = emptyStore(store.deviceId, store.typeId, store.typeHash, store.step, store.unitFactor);
+	// the next save must win over both slots of the old data
+	out.seq = store.seq;
+	if (store.lastSeenTs !== undefined) {
+		out.lastSeenTs = store.lastSeenTs;
+	}
+	if (keepDecisions) {
+		for (const [key, d] of Object.entries(store.verdicts ?? {})) {
+			if (d.user) {
+				out.verdicts[key] = d.reason ? { user: d.user, reason: d.reason } : { user: d.user };
+			}
+		}
+	}
+	return out;
 }

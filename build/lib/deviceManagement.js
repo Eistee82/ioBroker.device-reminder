@@ -11,7 +11,7 @@ import { FINAL_KEYS } from "./detector/types.js";
 import { analyzeHistory } from "./historyLearning.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import { describeChange } from "./learn/autoOptimize.js";
-import { BASE_KEYS, detectionOf } from "./runStore.js";
+import { BASE_KEYS, decisionOf, detectionOf } from "./runStore.js";
 import { archiveTemplates, CUSTOM_TEMPLATE, findTemplate, scalePowers } from "./templates.js";
 import { detectFromHost } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
@@ -643,7 +643,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
         if (!(await ctx.showConfirmation(TEXT.deleteConfirm))) {
             return { refresh: "none" };
         }
-        await this.adapter.registry.deleteLearningData(id);
+        await this.adapter.registry.removeLearningData(id);
         this.adapter.registry.remove(id);
         await this.assignEnums(id, (await this.loadEnums()).members, [], []);
         await this.adapter.delObjectAsync(id, { recursive: true });
@@ -1056,7 +1056,9 @@ export function buildOptimizationView(store, check, type, effective, active) {
         return { name: key, type: a, effective: a === b ? b : `${b} *` };
     });
     items.runsHeader = { type: "header", text: I18n.getTranslatedObject("dm_optRuns"), size: 4, newLine: true, xs: 12 };
-    const all = [...store.runs, ...store.spikes].sort((x, y) => x.ts - y.ts);
+    const all = [...store.runs, ...store.spikes]
+        .filter(r => decisionOf(store, r.key)?.user !== "exclude")
+        .sort((x, y) => x.ts - y.ts);
     if (all.length === 0) {
         items.none = { type: "staticText", text: I18n.getTranslatedObject("dm_optNone"), newLine: true, xs: 12 };
     }
@@ -1077,8 +1079,7 @@ export function buildOptimizationView(store, check, type, effective, active) {
             ],
         };
         data.runs = all.map(r => {
-            const k = store.runs.indexOf(r);
-            const res = k >= 0 ? check?.perRun[k] : undefined;
+            const res = check?.perRun.find(x => x.id === r.id);
             const spike = r.label === "spike";
             const minutes = ((r.seg.runEndIdx - r.seg.startIdx + 1) * r.step) / 60_000;
             let gateText = "";

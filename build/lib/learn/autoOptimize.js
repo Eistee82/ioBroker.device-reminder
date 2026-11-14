@@ -1,6 +1,6 @@
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import { FINAL_KEYS } from "../detector/types.js";
-import { BASE_KEYS, DETECTION_KEYS, detectionOf, pushChange, refreshInfo } from "../runStore.js";
+import { BASE_KEYS, DETECTION_KEYS, detectionOf, inUse, pushChange, refreshInfo } from "../runStore.js";
 import { analyzeTicks } from "./analyze.js";
 import { margin, minEndSec } from "./optimize.js";
 import { endOkFull, simulate } from "./replay.js";
@@ -80,10 +80,16 @@ class Data {
         this.start = ctx.clock();
         this.lastYield = this.start;
     }
+    get runs() {
+        return this.store.runs.filter(r => inUse(this.store, r));
+    }
+    get spikes() {
+        return this.store.spikes.filter(r => inUse(this.store, r));
+    }
     cellsOf(r) {
         let c = this.cells.get(r);
         if (!c) {
-            c = decodeCells(r.data, r.q);
+            c = typeof r.data === "string" ? decodeCells(r.data, r.q) : [];
             this.cells.set(r, c);
         }
         return c;
@@ -123,7 +129,7 @@ class Data {
         }
     }
     combined(keep) {
-        const items = [...this.store.runs.filter(keep), ...this.store.spikes].sort((a, b) => a.ts - b.ts);
+        const items = [...this.runs.filter(keep), ...this.spikes].sort((a, b) => a.ts - b.ts);
         const all = [];
         const sep = Math.ceil(SEPARATOR_MS / this.store.step);
         for (const r of items) {
@@ -140,12 +146,12 @@ class Data {
     }
 }
 async function gateOn(data, p, perturb, only) {
-    const { store, ctx } = data;
+    const { ctx } = data;
     const opts = { abort: ctx.abort, abortFixed: ctx.abortFixed, pollSec: ctx.pollSec };
     const shift = perturb === "shift1" ? 1 : 0;
     const perRun = [];
     let ok = true;
-    for (const r of store.runs) {
+    for (const r of data.runs) {
         if (only && !only(r)) {
             continue;
         }
@@ -162,12 +168,12 @@ async function gateOn(data, p, perturb, only) {
         const delaySec = good && res.finished.length > 0
             ? (res.finished[0] - (s.t0 + win.runEndIdx * s.stepMs)) / 1000
             : Number.NaN;
-        perRun.push({ ok: good, delaySec });
+        perRun.push({ id: r.id, ok: good, delaySec });
         ok &&= good;
         await data.tick();
     }
     let falseStarts = 0;
-    for (const r of only ? [] : store.spikes) {
+    for (const r of only ? [] : data.spikes) {
         const s = data.seriesOf(r, perturb);
         const win = {
             fromIdx: 0,
@@ -210,7 +216,7 @@ function finalOf(p) {
 }
 async function analyzeStored(data, p0, keep) {
     const { store, ctx } = data;
-    if (!store.runs.some(keep)) {
+    if (!data.runs.some(keep)) {
         return null;
     }
     const res = await analyzeTicks(data.combined(keep), ctx.pollSec, {
@@ -293,13 +299,13 @@ async function repairCandidates(data, p0) {
         startCount: Math.max(base.startCount, startK),
         startDurationSec: Math.max(base.startDurationSec, Math.ceil(burst)),
     };
-    const trailer = trailerFromStore(store.runs, poll);
+    const trailer = trailerFromStore(data.runs, poll);
     const variants = [base, startRaised];
     if (trailer && !(base.trailerBurstSec ?? 0)) {
         variants.push({ ...base, ...trailer }, { ...startRaised, ...trailer });
     }
     if (trailer) {
-        for (const v of filterVariants(store.runs, store, poll).slice(1)) {
+        for (const v of filterVariants(data.runs, store, poll).slice(1)) {
             variants.push({ ...base, ...v }, { ...startRaised, ...v });
         }
     }
@@ -442,11 +448,11 @@ export async function optimize(store, ctx) {
     if (info.status === "drift") {
         return done("drift");
     }
-    if (store.runs.length === 0 && store.spikes.length === 0) {
+    const data = new Data(store, ctx);
+    if (data.runs.length === 0 && data.spikes.length === 0) {
         info.status = "collecting";
         return done("none");
     }
-    const data = new Data(store, ctx);
     const p0 = effectiveOf(ctx.type, store.override);
     try {
         const r0 = await gateOn(data, p0, "none");
@@ -564,7 +570,7 @@ async function tighten(data, p0, r0, done) {
     const { store, ctx } = data;
     const poll = ctx.pollSec;
     const isTrusted = (r) => r.label === "run" && !r.postTruncated;
-    const trusted = store.runs.filter(isTrusted);
+    const trusted = data.runs.filter(isTrusted);
     const locked = store.lockRuns > 0 || ctx.now < store.lockUntilTs;
     if (locked) {
         store.info.status = "locked";
@@ -663,7 +669,7 @@ async function crossCheck(data, p0, recipe, families, sg, isTrusted, build) {
     }
     for (const fam of families) {
         const keep = (r) => isTrusted(r) && r.family !== fam;
-        const rest = store.runs.filter(keep);
+        const rest = data.runs.filter(keep);
         const sgF = recipe.base === "analysis" ? await analyzeStored(data, p0, keep) : null;
         if (recipe.base === "analysis" && !sgF) {
             continue;

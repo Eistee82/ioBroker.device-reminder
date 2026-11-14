@@ -43,7 +43,7 @@ import type { LearningSuggestion } from "./learning.js";
 import type { DeviceTypeConfig } from "./legacyTypes.js";
 import type { Notifier } from "./notifier.js";
 import type { DetectionKey, StoreFile } from "./runStore.js";
-import { BASE_KEYS, detectionOf } from "./runStore.js";
+import { BASE_KEYS, decisionOf, detectionOf } from "./runStore.js";
 import { archiveTemplates, CUSTOM_TEMPLATE, findTemplate, scalePowers } from "./templates.js";
 import { detectFromHost } from "./typeDetection.js";
 import type { DetectionResult } from "./typeDetection.js";
@@ -883,7 +883,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		if (!(await ctx.showConfirmation(TEXT.deleteConfirm))) {
 			return { refresh: "none" };
 		}
-		await this.adapter.registry.deleteLearningData(id);
+		await this.adapter.registry.removeLearningData(id);
 		this.adapter.registry.remove(id);
 		await this.assignEnums(id, (await this.loadEnums()).members, [], []);
 		await this.adapter.delObjectAsync(id, { recursive: true });
@@ -1383,7 +1383,7 @@ function changeText(c: StoreFile["changes"][number]): string {
  */
 export function buildOptimizationView(
 	store: StoreFile,
-	check: { perRun: { ok: boolean; delaySec: number }[]; spikesOk: boolean } | null,
+	check: { perRun: { id: string; ok: boolean; delaySec: number }[]; spikesOk: boolean } | null,
 	type: DetectionSettings,
 	effective: DetectionSettings,
 	active: boolean,
@@ -1436,7 +1436,10 @@ export function buildOptimizationView(
 	});
 
 	items.runsHeader = { type: "header", text: I18n.getTranslatedObject("dm_optRuns"), size: 4, newLine: true, xs: 12 };
-	const all = [...store.runs, ...store.spikes].sort((x, y) => x.ts - y.ts);
+	// runs the user excluded ("discard") are not shown; their decision stays in the learning data
+	const all = [...store.runs, ...store.spikes]
+		.filter(r => decisionOf(store, r.key)?.user !== "exclude")
+		.sort((x, y) => x.ts - y.ts);
 	if (all.length === 0) {
 		items.none = { type: "staticText", text: I18n.getTranslatedObject("dm_optNone"), newLine: true, xs: 12 };
 	} else {
@@ -1456,8 +1459,7 @@ export function buildOptimizationView(
 			],
 		};
 		data.runs = all.map(r => {
-			const k = store.runs.indexOf(r);
-			const res = k >= 0 ? check?.perRun[k] : undefined;
+			const res = check?.perRun.find(x => x.id === r.id);
 			const spike = r.label === "spike";
 			const minutes = ((r.seg.runEndIdx - r.seg.startIdx + 1) * r.step) / 60_000;
 			let gateText = "";

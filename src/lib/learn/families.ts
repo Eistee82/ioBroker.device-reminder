@@ -36,6 +36,10 @@ export interface StoredFeatures extends RunFeatures {
 	trailerGapMaxSec: number;
 	/** Shortest quiet time before a burst of the trailer in s. */
 	trailerGapMinSec: number;
+	/** Highest value of the trailer bursts in W (0 without trailer; not a duration like `burstMaxSec`). */
+	burstMaxW: number;
+	/** Lowest held value in the end block in W. */
+	endBlockMinW: number;
 }
 
 /** Runs closer than this (RMS of the z-normalised features) belong to one programme group. */
@@ -175,5 +179,7 @@ export function featuresOf(s: TickSeries, r: RunInfo, runLimit: number): StoredF
 		minRunW: median(active),
 		trailerGapMaxSec: trailGap,
 		trailerGapMinSec: r.gapMinMs / 1000,
+		burstMaxW: r.burstMaxW,
+		endBlockMinW: r.endBlockMinW,
 	};
 }

@@ -1377,7 +1377,13 @@ describe("optimisation in the device manager", function () {
 		action = await openDialog(ctx, { operation: "discard", discardRun: id });
 		assert.ok(action.messages[0].en.includes("discarded"));
 		const left = ctx.registry.learningData("trockner");
-		assert.strictEqual(left.runs.length + left.spikes.length, count - 1);
+		const shown = [...left.runs, ...left.spikes].filter(r => left.verdicts[r.key]?.user !== "exclude");
+		assert.strictEqual(shown.length, count - 1);
+		const view = await openDialog(ctx, { operation: "" });
+		assert.ok(
+			!(view.forms[0].schema.items.discardRun?.options ?? []).some(o => o.value === id),
+			"no longer listed",
+		);
 
 		action = await openDialog(ctx, { operation: "clear" }, false);
 		assert.strictEqual(action.messages.length, 0, "cancelled");
