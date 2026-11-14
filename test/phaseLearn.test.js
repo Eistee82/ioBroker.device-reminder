@@ -9,6 +9,7 @@ import { BOILER_PHASES, WM_PHASES } from "./helpers/phases.js";
 
 const W = loadSeries("washer30d");
 const B = loadSeries("boiler4d");
+const D = loadSeries("dryer");
 const DAY = 86_400_000;
 const OK = {
 	stage: "ok",
@@ -62,6 +63,29 @@ describe("learn phases (Spec B.5)", function () {
 			r.model.phases.every(p => p.stats.runs >= 3 && p.show === true && p.notify === undefined),
 			"a class needs ≥ 3 runs, otherwise it is merged",
 		);
+	});
+	it("dryer: read over raw values, all 7 runs pass the cross-check, the unusable recording is not used", () => {
+		const { units, runLimit } = phaseInput(D);
+		assert.ok(
+			units.some(u => u.verdict.stage === "unusable"),
+			"the recording at the data end is unusable",
+		);
+		const r = learnPhases(units, { runLimitW: runLimit, unitFactor: 1, pollSec: 10, now: 0 });
+		assert.strictEqual(r.model.scope, "run");
+		assert.strictEqual(r.model.quality.runsUsed, 7);
+		assert.ok(r.looAgreement >= 0.99, String(r.looAgreement));
+		assert.ok(
+			r.model.bands.every(b => b.smoothing !== "level" && b.windowSec === 0),
+			"no rhythm: the bands are read over the raw values",
+		);
+		const heat = r.model.bands.at(-1);
+		assert.ok(heat.min > 200 && heat.max === Infinity, String(heat.min));
+		assert.ok(r.model.phases.some(p => p.band === heat.id && p.stats.runs === 7));
+		assert.ok(
+			r.model.phases.every(p => p.stats.runs >= 3 && p.decided === "live" && p.show === true),
+			"a class needs ≥ 3 runs; every class passes live",
+		);
+		assert.deepStrictEqual(r.retroOnly, []);
 	});
 	it("boiler: scope continuous from runs per day or rest, peak band kept, ≥ 3 days without help (P2, P3)", () => {
 		assert.strictEqual(scopeOf(19, 12), "continuous");
