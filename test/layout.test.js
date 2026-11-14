@@ -48,6 +48,24 @@ describe("layout: programme end and tail", () => {
 		assert.strictEqual(layoutOf(pts, 10_000, { maxRuns: Infinity }).L.runs.length, 25);
 		assert.strictEqual(layoutOf(pts).L.runs.length, 20);
 	});
+	it("a run without a block above 1.25 × burst maximum: end block above the run level, progEnd = runEnd", () => {
+		// three washer runs keep the tail separated; the fourth holds 60–62 W for 40 min only
+		const ws = ["w01", "w02", "w03"].map(id => runWindow("washer30d", id));
+		const base = ws[0][0].ts;
+		const low = [];
+		for (let t = 0; t <= 250 * 60_000; t += 10_000) {
+			const on = t >= 30 * 60_000 && t < 70 * 60_000;
+			low.push({ ts: base + t, val: on ? 60 + ((t / 10_000) % 3) : 1 });
+		}
+		const { L } = layoutOf(timelineOf([...ws, low], 86_400_000));
+		assert.strictEqual(L.tailSeparated, true);
+		assert.strictEqual(L.runs.length, 4);
+		const r = L.runs[3];
+		assert.strictEqual(r.endBlockFrom, r.from);
+		assert.strictEqual(r.endBlockTo, r.coreEnd);
+		assert.strictEqual(r.endBlockMinW, 60);
+		assert.strictEqual(r.progEnd, r.runEnd);
+	});
 	it("the run at the data end (w13) is listed as incomplete", () => {
 		const { L, s } = layoutOf(W);
 		const w13 = runIndex("washer30d").find(r => r.id === "w13").ts;
