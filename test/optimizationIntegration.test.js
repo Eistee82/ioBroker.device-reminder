@@ -1,7 +1,18 @@
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { checkSet, replayPick, targetSet, TIGHTEN_MIN_RUNS } from "../build/lib/learn/autoOptimize.js";
 import { DeviceSync } from "../build/lib/deviceSync.js";
 import { fill, TEXT } from "../build/lib/dmTexts.js";
-import { emptyStore, MAX_CHANGES, pushChange, saveStore, typeHash } from "../build/lib/runStore.js";
+import {
+	boundaryRuns,
+	emptyStore,
+	MAX_CHANGES,
+	pushChange,
+	saveStore,
+	setDecision,
+	typeHash,
+	upgradeStore,
+} from "../build/lib/runStore.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { memoryFiles } from "./helpers/files.js";
 import { washingMachine } from "./helpers/curves.js";
@@ -13,41 +24,21 @@ import {
 	DRYER,
 	feed,
 	feedPoints,
+	historyEnv,
 	instanceConfig,
 	P,
 	pauseRun,
 	registrySetup,
 	WASHER,
+	windowsFeed,
 } from "./helpers/devices.js";
 import { syntheticRun, WM_FINAL } from "./helpers/final.js";
-import { layoutOf, loadSeries, restartScenarios } from "./helpers/fixtures.js";
-import { historyOf } from "./helpers/history.js";
+import { layoutOf, loadSeries, restartScenarios, sparse } from "./helpers/fixtures.js";
+import { historyOf, runStarts } from "./helpers/history.js";
 import { runOf } from "./helpers/programmes.js";
 
 const STEP = 10_000;
 const DAY = 86_400_000;
-
-/**
- * Fake installation with a history instance holding `points` for the power state.
- *
- * @param {{ ts: number, val: number }[]} points stored values
- * @returns {object} history access
- */
-function historyEnv(points) {
-	const objects = {
-		[P]: { common: { unit: "W", role: "value.power", custom: { "history.0": { enabled: true } } } },
-		"system.adapter.history.0": { common: { getHistory: true } },
-	};
-	return {
-		queries: 0,
-		object: async id => objects[id] ?? null,
-		alive: async instance => instance === "history.0",
-		async getHistory(_id, options) {
-			this.queries++;
-			return { result: points.filter(p => p.ts >= options.start && p.ts <= options.end) };
-		},
-	};
-}
 
 /**
  * Registry with one device.
@@ -640,5 +631,333 @@ describe("texts of the automatic optimisation", () => {
 
 	it("formatDate is local and sortable", () => {
 		assert.strictEqual(formatDate(new Date(2026, 0, 5, 7, 3).getTime()), "2026-01-05 07:03");
+	});
+});
+
+const waitSec = d => (d.mode === "timed" ? d.endDurationSec : d.endCount * 10);
+const nextDay = ctx => ctx.host.tickClock(25 * 3_600_000);
+
+describe("optimisation over 30 days (Spec D.1–D.4)", function () {
+	this.timeout(600_000);
+	it("minimum runs: collecting with 7 admitted runs, tightening possible from the 8th (Spec D.3 point 4)", async () => {
+		assert.strictEqual(TIGHTEN_MIN_RUNS, 8);
+		const ctx = await registrySetup({ detection: { ...WASHER, endCount: 120 } });
+		for (let k = 1; k <= 7; k++) {
+			await feed(ctx, runOf({ device: "washer", programme: "cotton60", shape: "T3", seed: k }).values);
+			nextDay(ctx);
+		}
+		const st = ctx.reg.learningData("dev");
+		assert.strictEqual(st.info.status, "collecting");
+		assert.ok(!st.changes.some(c => c.kind === "tighten"));
+		await feed(ctx, runOf({ device: "washer", programme: "cotton60", shape: "T3", seed: 8 }).values);
+		assert.notStrictEqual(ctx.reg.learningData("dev").info.status, "collecting");
+	});
+	it("repair first: a pause one poll longer than the end wait raises the wait right after the run, despite lock and minimum count (decision 8)", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, endCount: 20 } });
+		for (let k = 1; k <= 3; k++) {
+			await feed(ctx, runOf({ device: "washer", programme: "cotton60", seed: k }).values);
+			nextDay(ctx);
+		}
+		const st = ctx.reg.learningData("dev");
+		st.lockRuns = 5;
+		st.lockUntilTs = ctx.host.now() + 10 * DAY;
+		await feed(ctx, pauseRun(4, 21));
+		assert.strictEqual(st.changes.at(-1).kind, "repair");
+		assert.ok(waitSec(ctx.reg.get("dev").effective) > 210, JSON.stringify(ctx.reg.get("dev").effective));
+		assert.strictEqual((await ctx.reg.checkStoredRuns("dev")).ok, true, "every stored run is detected again");
+		const trigger = st.changes.at(-1).trigger;
+		assert.ok(
+			st.runs.some(r => r.key === trigger && r.veto !== undefined),
+			"the run that triggered it is a boundary run",
+		);
+		assert.ok(boundaryRuns(st).has(trigger));
+	});
+	it("repair ignores the step limit: a pause of twice the wait at least doubles it", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, endCount: 20 } });
+		await feed(ctx, pauseRun(4, 40));
+		assert.ok(waitSec(ctx.reg.get("dev").effective) > 400);
+		assert.strictEqual((await ctx.reg.checkStoredRuns("dev")).ok, true);
+	});
+	for (const [name, detection, values] of [
+		// missed start: the recorder opens a capture on activity without a start (Task 9)
+		[
+			"missed start",
+			{ ...WASHER, startVal: 3000 },
+			runOf({ device: "washer", programme: "cotton60", seed: 5 }).values,
+		],
+		["split run", { ...WASHER, endCount: 20 }, pauseRun(5, 25)],
+		// phantom start: a single spike AFTER the reported end (at +31 ticks it is still inside the run)
+		[
+			"phantom start",
+			{ ...WASHER, startCount: 1, startVal: 30 },
+			[
+				...runOf({ device: "washer", programme: "cotton60", seed: 5, after: 360 }).values,
+				400,
+				0.8,
+				...new Array(400).fill(0.8),
+			],
+		],
+	]) {
+		it(`repair first: ${name} triggers an immediate repair`, async () => {
+			const ctx = await registrySetup({ detection });
+			await feed(ctx, values);
+			if (name === "phantom start") {
+				// a single short activity is a manual test (form quarantine, Spec B.2 `test` (1)): the false start
+				// counts from the second one (Spec B.2 `spike`), then the repair follows at once
+				assert.ok(!ctx.reg.learningData("dev").changes.some(c => c.kind === "repair"));
+				nextDay(ctx);
+				await feed(ctx, values);
+			}
+			assert.ok(
+				ctx.reg.learningData("dev").changes.some(c => c.kind === "repair"),
+				`${name}: ${JSON.stringify(ctx.reg.learningData("dev").info)}`,
+			);
+			assert.strictEqual((await ctx.reg.checkStoredRuns("dev")).ok, true, name);
+		});
+	}
+	it("merged runs trigger no repair and the end of the combined run is detected (decision 9)", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, endCount: 100 } });
+		const a = runOf({ device: "washer", programme: "quick30", seed: 5, after: 60 }).values;
+		const b = runOf({ device: "washer", programme: "quick30", seed: 6 }).values;
+		const warnBefore = ctx.host.logs.warn.length;
+		await feed(ctx, [...a, ...b, ...new Array(400).fill(0.5)]);
+		const st = ctx.reg.learningData("dev");
+		assert.strictEqual(
+			ctx.host.ownWrites.filter(w => w.id === "dev.finished" && w.val === true).length,
+			1,
+			"one end for both runs",
+		);
+		assert.ok(!st.changes.some(c => c.kind === "repair"), "merging is no detection error");
+		assert.strictEqual(st.override, null, "the end wait is not shortened because of it");
+		assert.deepStrictEqual(st.info.review ?? [], [], "no hint");
+		assert.strictEqual(ctx.host.logs.warn.length, warnBefore, "no warning");
+		const g = await ctx.reg.checkStoredRuns("dev");
+		assert.strictEqual(g.ok, true, "the end of the combined run is detected (endOk of the whole run)");
+	});
+	it("an end that is never reported is repaired at once (end not detected)", async () => {
+		// idle at 0.5 W stays above endVal 0.3: with the current values the run never ends
+		const ctx = await registrySetup({ detection: { ...WASHER, endVal: 0.3, standby: 0.2 } });
+		await feed(ctx, [
+			...runOf({ device: "washer", programme: "cotton60", seed: 3 }).values,
+			// the capture closes at the latest after 12 h (CAPTURE_MAX_MS)
+			...new Array(4400).fill(0.5),
+		]);
+		const st = ctx.reg.learningData("dev");
+		assert.ok(
+			st.changes.some(c => c.kind === "repair") || st.info.status === "cannotCover",
+			JSON.stringify(st.info),
+		);
+	});
+	it("w02 as a live capture: an end 10 s before the core end needs no repair (store.tail, endOk)", async () => {
+		const ctx = await registrySetup({ detection: WASHER });
+		await windowsFeed(ctx, ["w01", "w03", "w05", "w02"]);
+		const st = ctx.reg.learningData("dev");
+		assert.ok(st.tail.separated);
+		assert.ok(!st.changes.some(c => c.kind === "repair"), JSON.stringify(st.changes));
+	});
+	it("drift does not stop a repair (decision 8)", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, endCount: 20 } });
+		await feed(ctx, runOf({ device: "washer", programme: "cotton60", seed: 1 }).values);
+		ctx.reg.learningData("dev").info.status = "drift";
+		await feed(ctx, pauseRun(2, 25));
+		assert.strictEqual(ctx.reg.learningData("dev").changes.at(-1).kind, "repair");
+	});
+	it("the replay pick holds at most 60 runs: the newest of each group plus every boundary run", () => {
+		const st = JSON.parse(readFileSync(new URL("./fixtures/v4store.json", import.meta.url), "utf8"));
+		upgradeStore(st);
+		while (st.runs.length < 120) {
+			st.runs.push({
+				...structuredClone(st.runs[st.runs.length % 10]),
+				key: `k${st.runs.length}`,
+				ts: st.runs.at(-1).ts + 3_600_000,
+			});
+		}
+		const pick = replayPick(st, st.runs.at(-1).ts);
+		assert.ok(pick.length <= 60);
+		for (const k of boundaryRuns(st)) {
+			assert.ok(
+				pick.some(r => r.key === k),
+				k,
+			);
+		}
+		assert.ok(pick.includes(st.runs.at(-1)), "the newest run of its group");
+	});
+	it("an old V4 store without lastSeenTs is no 30-day outage; imported runs are not doubled", async () => {
+		const host = createFakeHost({ objects: { [P]: "number" } });
+		const points = historyOf([washingMachine, washingMachine], host.now() - 2 * DAY);
+		const ctx = await registrySetup({ host, history: historyEnv(points) });
+		await drain(ctx);
+		const st = ctx.reg.learningData("dev");
+		const n = st.runs.length;
+		assert.ok(n >= 2);
+		delete st.lastSeenTs;
+		await saveStore(ctx.files, st);
+		ctx.reg.disposeAll();
+		host.tickClock(2 * 3_600_000);
+		const queries = [];
+		const h = historyEnv(points);
+		const getHistory = h.getHistory.bind(h);
+		h.getHistory = async (id, o) => {
+			queries.push(o);
+			return getHistory(id, o);
+		};
+		const again = await registrySetup({ host, files: ctx.files, history: h });
+		await drain(again);
+		assert.strictEqual(again.reg.learningData("dev").runs.length, n, "no run imported twice");
+		// only the time since the store was last in use is read, not 30 days
+		assert.ok(
+			queries.every(q => q.start >= host.now() - 3 * 3_600_000),
+			JSON.stringify(queries.map(q => q.start)),
+		);
+	});
+	it("a full read of the same history doubles nothing: the runs are recognised by their keys", async () => {
+		const host = createFakeHost({ objects: { [P]: "number" } });
+		const points = historyOf([washingMachine, washingMachine], host.now() - 2 * DAY);
+		const ctx = await registrySetup({ host, history: historyEnv(points) });
+		await drain(ctx);
+		const st = ctx.reg.learningData("dev");
+		const n = st.runs.length;
+		// the store was last in use before the runs (outage over the whole history)
+		await saveStore(ctx.files, { ...st, lastSeenTs: host.now() - 3 * DAY });
+		ctx.reg.disposeAll();
+		const again = await registrySetup({ host, files: ctx.files, history: historyEnv(points) });
+		await drain(again);
+		assert.strictEqual(again.reg.learningData("dev").runs.length, n);
+	});
+	it("the same miss on a quarantined history run (sparse) triggers no repair and no 'use' hint (P22)", async () => {
+		const host = createFakeHost({ objects: { [P]: "number" } });
+		// one history: three normal runs, then the run with the pause stored only every 12th value (in a history of
+		// its own the run would touch the data end and be incomplete)
+		const runs = [washingMachine, washingMachine, washingMachine, pauseRun(9, 21)];
+		const all = historyOf(runs, host.now() - 5 * DAY);
+		const from = runStarts(runs, host.now() - 5 * DAY)[3];
+		const to = from + runs[3].length * STEP;
+		const broken = all.filter(p => p.ts < from || p.ts > to);
+		broken.push(
+			...sparse(
+				all.filter(p => p.ts >= from && p.ts <= to),
+				12,
+			),
+		);
+		broken.sort((a, b) => a.ts - b.ts);
+		const ctx = await registrySetup({
+			host,
+			history: historyEnv(broken),
+			detection: { ...WASHER, endCount: 20 },
+		});
+		await drain(ctx);
+		const st = ctx.reg.learningData("dev");
+		assert.ok(!st.changes.some(c => c.kind === "repair"), JSON.stringify(st.changes));
+		assert.deepStrictEqual(st.info.review ?? [], []);
+		assert.ok(
+			ctx.host.logs.warn.some(m => m.includes("recording disturbed, run not used")),
+			ctx.host.logs.warn.join(" | "),
+		);
+	});
+	it("no candidate covers every admitted run → values unchanged, cannotCover, warning", async () => {
+		// the same recording stored as a run and twice as a false start: no values can start on it and not start on it
+		const ctx = await registrySetup({ detection: { ...WASHER, endCount: 20 } });
+		await feed(ctx, runOf({ device: "washer", programme: "quick30", seed: 2 }).values);
+		const st = ctx.reg.learningData("dev");
+		const run = st.runs[0];
+		for (const k of [1, 2]) {
+			st.spikes.push({ ...structuredClone(run), id: `x${k}`, key: `dev@${k}`, label: "spike" });
+		}
+		const before = structuredClone(st.override);
+		nextDay(ctx);
+		await feed(ctx, runOf({ device: "washer", programme: "quick30", seed: 3 }).values);
+		assert.strictEqual(st.info.status, "cannotCover", JSON.stringify(st.info));
+		assert.deepStrictEqual(st.override, before);
+		assert.ok(ctx.host.logs.warn.some(m => m.includes("no values detect every admitted run")));
+	});
+	it("an old boundary run beyond 30 days stays in the check set and keeps its floor; target set is 30 days", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, endCount: 20 } });
+		await feed(ctx, pauseRun(1, 60));
+		const st = ctx.reg.learningData("dev");
+		const old = st.runs[0];
+		ctx.host.tickClock(40 * DAY);
+		for (let k = 2; k <= 10; k++) {
+			await feed(ctx, runOf({ device: "washer", programme: "cotton60", seed: k }).values);
+			nextDay(ctx);
+		}
+		const now = ctx.host.now();
+		assert.ok(st.runs.includes(old), "a boundary run is not evicted");
+		assert.ok(!targetSet(st, now).includes(old) && checkSet(st, now).includes(old));
+		assert.ok(waitSec(ctx.reg.get("dev").effective) > 600, "no tightening below the old pause");
+	});
+	it("hint exactly once; as a message only with optimizeNotify (G14)", async () => {
+		for (const notify of [false, true]) {
+			const host = createFakeHost({ objects: { [P]: "number" } });
+			// a manual test with a pause: one band only (form quarantine `test`), and the pause ends it too early; the
+			// load varies a little, so every value is stored (a constant one would be a sparse recording)
+			const load = Array.from({ length: 18 }, (_, i) => 2000 + (i % 2) * 10);
+			const test = historyOf([[...load, ...new Array(60).fill(0.5), ...load]], host.now() - DAY);
+			const ctx = await registrySetup({
+				host,
+				notify,
+				history: historyEnv([
+					...historyOf([washingMachine, washingMachine, washingMachine], host.now() - 5 * DAY),
+					...test,
+				]),
+			});
+			await drain(ctx);
+			await feed(ctx, runOf({ device: "washer", programme: "cotton60", seed: 3 }).values);
+			const st = ctx.reg.learningData("dev");
+			assert.strictEqual(
+				(st.info.review ?? []).length,
+				1,
+				`the hand test was mis-detected and is in form quarantine: ${JSON.stringify(st.info)}`,
+			);
+			const sent = ctx.host.sent.filter(
+				x => x.instance === "telegram.0" && JSON.stringify(x.message).includes("verwenden"),
+			);
+			assert.strictEqual(sent.length, notify ? 1 : 0);
+			assert.strictEqual(ctx.host.logs.warn.filter(m => m.includes("was not detected correctly")).length, 1);
+		}
+	});
+	it("decisions survive clear → restart → bootstrap from history (P26)", async () => {
+		const host = createFakeHost({ objects: { [P]: "number" } });
+		const points = historyOf(
+			[washingMachine, washingMachine, washingMachine, washingMachine],
+			host.now() - 3 * DAY,
+		);
+		const ctx = await registrySetup({ host, history: historyEnv(points) });
+		await drain(ctx);
+		const st = ctx.reg.learningData("dev");
+		const key = st.runs[1].key;
+		setDecision(st, key, "exclude");
+		await ctx.reg.deleteLearningData("dev");
+		ctx.reg.disposeAll();
+		const again = await registrySetup({ host, files: ctx.files, history: historyEnv(points) });
+		await drain(again);
+		const st2 = again.reg.learningData("dev");
+		assert.ok(st2.runs.length >= 3, "read again from the history");
+		assert.strictEqual(st2.verdicts[key].user, "exclude");
+		assert.ok(!targetSet(st2, host.now()).some(r => r.key === key));
+	});
+	it("history is read after an outage > 1 h, only for the outage", async () => {
+		const host = createFakeHost({ objects: { [P]: "number" } });
+		const ctx = await registrySetup({
+			host,
+			history: historyEnv(historyOf([washingMachine, washingMachine], host.now() - 3 * DAY)),
+		});
+		await drain(ctx);
+		const lastSeen = host.now();
+		await saveStore(ctx.files, { ...ctx.reg.learningData("dev"), lastSeenTs: lastSeen });
+		ctx.reg.disposeAll();
+		host.tickClock(2 * 3_600_000);
+		const h = historyEnv(historyOf([washingMachine], host.now() - 3_000_000));
+		const queries = [];
+		const getHistory = h.getHistory.bind(h);
+		h.getHistory = async (id, o) => {
+			queries.push(o);
+			return getHistory(id, o);
+		};
+		const again = await registrySetup({ host, files: ctx.files, history: h });
+		await drain(again);
+		assert.ok(
+			queries.length > 0 && queries.every(q => q.start >= lastSeen - 1),
+			JSON.stringify(queries.map(q => q.start - lastSeen)),
+		);
 	});
 });

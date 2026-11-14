@@ -39,6 +39,8 @@ export interface AnalyzeOptions {
 	keepCurrentLevel?: boolean;
 	/** Minimum number of runs (default 2). */
 	minRuns?: number;
+	/** Typical peak of the chosen template in W: the run check finds a state in kW without unit text (Spec B.2 `unit`). */
+	templatePeakW?: number;
 	/** Recording of one run instead of a history. */
 	recording?: boolean;
 	/** Called regularly so that other work can run. */

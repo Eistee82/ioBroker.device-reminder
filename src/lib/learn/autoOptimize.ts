@@ -2,19 +2,34 @@ import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import { FINAL_KEYS } from "../detector/types.js";
 import type { DetectionSettings } from "../detector/types.js";
 import type { BaseKey, Change, OptimizeInfo, StoredRun, StoreFile } from "../runStore.js";
-import { BASE_KEYS, DETECTION_KEYS, detectionOf, inUse, pushChange, refreshInfo } from "../runStore.js";
+import {
+	BASE_KEYS,
+	boundaryRuns,
+	decisionOf,
+	DETECTION_KEYS,
+	detectionOf,
+	inUse,
+	pushChange,
+	refreshInfo,
+	REPLAY_PICK_MAX,
+	WINDOW_MS,
+} from "../runStore.js";
 import type { HistorySuggestion } from "./analyze.js";
 import { analyzeTicks } from "./analyze.js";
 import { margin, minEndSec } from "./optimize.js";
+import type { Verdict } from "./quality.js";
+import { admitted, primaryOf, sameRun } from "./quality.js";
 import { endOkFull, simulate } from "./replay.js";
 import type { SimResult } from "./replay.js";
 import type { Window } from "./runs.js";
-import { MAX_PAUSE_MS } from "./runs.js";
+import { DENSE_MIN_MS, MAX_PAUSE_MS } from "./runs.js";
 import type { TickCell, TickSeries } from "./ticks.js";
 import { decodeCells, fromCells, scaled } from "./ticks.js";
 
-/** Tightening needs this many trusted runs. */
-export const TIGHTEN_MIN_RUNS = 4;
+/**
+ * Tightening needs this many admitted runs in the 30-day window (Spec D.3 point 4, decision 4; a repair needs none).
+ */
+export const TIGHTEN_MIN_RUNS = 8;
 /** Tightening needs this many new trusted runs since the last change. */
 export const TIGHTEN_NEW_RUNS = 2;
 /** Minimum time between two tightenings. */
@@ -37,6 +52,10 @@ const FILTER_RUNS = 2;
 const SEPARATOR_MS = MAX_PAUSE_MS + 10 * 60_000;
 /** Yield at least this often. */
 const YIELD_MS = 20;
+/** Most keys of runs that got a hint and are remembered (`StoreFile.hinted`). */
+const HINTED_MAX = 50;
+/** Findings of a data error (Spec B.3): the hint says the recording is disturbed, without asking to use the run. */
+const DATA_ERRORS = new Set(["gap", "stuck", "sparse", "incomplete", "unit", "counter"]);
 
 /** Changes of the input data used to check a candidate for robustness. */
 export type Perturbation = "none" | "scale09" | "scale11" | "shift1" | "stale5";
@@ -59,6 +78,23 @@ export interface OptimizeContext {
 	budgetMs: number;
 	/** Clock for the budget. */
 	clock: () => number;
+	/**
+	 * Verdicts of the run check by key (`recompute`). Without them every stored run counts as admitted (only the
+	 * decisions of the user count).
+	 */
+	verdicts?: ReadonlyMap<string, Verdict>;
+	/** The final phase is suspended: runs are replayed with `finalMinVal = 0` (the values in use at runtime). */
+	finalSuspended?: boolean;
+}
+
+/** A run in quarantine that the values in use do not detect correctly (Spec B.3 hint). */
+export interface Hint {
+	/** Key of the run. */
+	key: string;
+	/** `use`: a reason that can be a real programme (choose "use" in the dialog); `broken`: a data error. */
+	kind: "use" | "broken";
+	/** Start of the run in ms. */
+	ts: number;
 }
 
 /** Result of the gate for one set of values. */
@@ -66,14 +102,16 @@ export interface GateResult {
 	/** Every run and every false start is handled correctly. */
 	ok: boolean;
 	/**
-	 * Per replayed run (stored runs with cells that the user did not exclude, in their order): id, detected
+	 * Per replayed run (the admitted runs of the replay pick with cells, in their order): id, key, detected
 	 * correctly, delay from the programme end in s (NaN if not).
 	 */
-	perRun: { id: string; ok: boolean; delaySec: number }[];
+	perRun: { id: string; key: string; ok: boolean; delaySec: number }[];
 	/** No false start starts a run. */
 	spikesOk: boolean;
 	/** Starts in the false start windows. */
 	falseStarts: number;
+	/** Keys of the false starts that start a run. */
+	spikeKeys: string[];
 }
 
 /** Result of an optimisation job. */
@@ -86,6 +124,14 @@ export interface OptimizeOutcome {
 	change: Change | null;
 	/** Status after the job. */
 	info: OptimizeInfo;
+	/** Keys of the admitted runs the values in use did not detect correctly (`needsRepair`). */
+	failing: string[];
+	/** Keys of the runs that stopped a candidate or caused the repair: they become boundary runs (`veto`). */
+	vetoes: string[];
+	/** Keys of the runs whose older veto the new values pass: the veto ends. */
+	vetoClear: string[];
+	/** New hints about runs in quarantine (each run once). */
+	hints: Hint[];
 }
 
 class BudgetExceeded extends Error {}
@@ -171,12 +217,147 @@ export function clampBounds(p: DetectionSettings, pollSec: number): DetectionSet
 	return d as unknown as DetectionSettings;
 }
 
+/** How a stored run takes part in the optimisation. */
+type Role = "gate" | "quarantine" | "none";
+
+/**
+ * Verdict of a stored run with the current decision of the user, or undefined without verdicts.
+ *
+ * @param store - Store
+ * @param r - Run
+ * @param verdicts - Verdicts by key
+ */
+function verdictOf(store: StoreFile, r: StoredRun, verdicts?: ReadonlyMap<string, Verdict>): Verdict | undefined {
+	const v = verdicts?.get(r.key);
+	if (!v) {
+		return undefined;
+	}
+	const user = decisionOf(store, r.key)?.user;
+	const out: Verdict = { ...v };
+	if (user) {
+		out.user = user;
+	} else {
+		delete out.user;
+	}
+	return out;
+}
+
+/**
+ * Role of a stored run (Spec B.3, D.3): `gate` for a run admitted for the end (a false start: for the start),
+ * `quarantine` for a run in quarantine (only "no regression"), `none` for excluded and unusable runs. Without a
+ * verdict a run is admitted unless the user excluded it.
+ *
+ * @param store - Store
+ * @param r - Run
+ * @param verdicts - Verdicts by key
+ */
+function roleOf(store: StoreFile, r: StoredRun, verdicts?: ReadonlyMap<string, Verdict>): Role {
+	if (decisionOf(store, r.key)?.user === "exclude") {
+		return "none";
+	}
+	const v = verdictOf(store, r, verdicts);
+	if (!v) {
+		return "gate";
+	}
+	if (admitted(v, r.label === "spike" ? "start" : "end")) {
+		return "gate";
+	}
+	return v.stage === "quarantine" ? "quarantine" : "none";
+}
+
+/**
+ * Target set (Spec D.2): the admitted runs of the last 30 days (gain, ideal values, minimum counts).
+ *
+ * @param store - Store
+ * @param now - Current time
+ * @param verdicts - Verdicts by key (without: only the decisions of the user count)
+ */
+export function targetSet(store: StoreFile, now: number, verdicts?: ReadonlyMap<string, Verdict>): StoredRun[] {
+	return store.runs.filter(r => roleOf(store, r, verdicts) === "gate" && now - r.ts <= WINDOW_MS);
+}
+
+/**
+ * Check set (Spec D.2): the target set and every admitted boundary run of any age (gate and floors; no target of a
+ * tightening).
+ *
+ * @param store - Store
+ * @param now - Current time
+ * @param verdicts - Verdicts by key (without: only the decisions of the user count)
+ */
+export function checkSet(store: StoreFile, now: number, verdicts?: ReadonlyMap<string, Verdict>): StoredRun[] {
+	const boundary = boundaryRuns(store, verdicts);
+	return store.runs.filter(
+		r => roleOf(store, r, verdicts) === "gate" && (now - r.ts <= WINDOW_MS || boundary.has(r.key)),
+	);
+}
+
+/**
+ * Balanced pick of the check set for the replay (Spec B.4 point 3): every boundary run, then per programme group
+ * the newest runs in turn, at most REPLAY_PICK_MAX runs with cells; the admitted false starts (at most MAX_SPIKES)
+ * come on top. Used by the gate, `needsRepair` and the tightening; statistics and the run check use every run.
+ *
+ * @param store - Store
+ * @param now - Current time
+ * @param verdicts - Verdicts by key (without: only the decisions of the user count)
+ * @returns runs and false starts in the order of the store
+ */
+export function replayPick(store: StoreFile, now: number, verdicts?: ReadonlyMap<string, Verdict>): StoredRun[] {
+	const boundary = boundaryRuns(store, verdicts);
+	const set = checkSet(store, now, verdicts).filter(r => typeof r.data === "string");
+	const picked = new Set(set.filter(r => boundary.has(r.key)));
+	const groups = new Map<number, StoredRun[]>();
+	for (const r of [...set].sort((a, b) => b.ts - a.ts)) {
+		if (!picked.has(r)) {
+			groups.set(r.family, [...(groups.get(r.family) ?? []), r]);
+		}
+	}
+	let added = true;
+	while (added && picked.size < REPLAY_PICK_MAX) {
+		added = false;
+		for (const list of groups.values()) {
+			const r = list.shift();
+			if (r && picked.size < REPLAY_PICK_MAX) {
+				picked.add(r);
+				added = true;
+			}
+		}
+	}
+	const spikes = store.spikes.filter(
+		r =>
+			typeof r.data === "string" &&
+			roleOf(store, r, verdicts) === "gate" &&
+			(now - r.ts <= WINDOW_MS || boundary.has(r.key)),
+	);
+	return [...set.filter(r => picked.has(r)), ...spikes];
+}
+
+/**
+ * Whether a candidate is never worse than the current values on the runs in quarantine (Spec D.3: "kein
+ * Rückschritt"): every run the current values detect correctly is detected correctly by the candidate too.
+ *
+ * @param c - Result per key of the candidate
+ * @param p0 - Result per key of the current values
+ */
+export function noRegression(c: ReadonlyMap<string, boolean>, p0: ReadonlyMap<string, boolean>): boolean {
+	return [...p0].every(([key, ok]) => !ok || c.get(key) === true);
+}
+
 /** Decoded series of the stored runs of one job. */
 class Data {
 	private readonly cells = new WeakMap<StoredRun, TickCell[]>();
 	private readonly series = new WeakMap<StoredRun, Map<Perturbation, TickSeries>>();
 	private lastYield: number;
 	private readonly start: number;
+	/** Admitted runs of the replay pick with cells (gate). */
+	public readonly runs: StoredRun[];
+	/** Admitted false starts with cells. */
+	public readonly spikes: StoredRun[];
+	/** Runs and false starts in quarantine with cells (only "no regression"). */
+	public readonly quarantined: StoredRun[];
+	/** Target set (admitted runs of the last 30 days, also without cells). */
+	public readonly target: StoredRun[];
+	/** Keys of the runs grown together from two runs (only the end of the whole run is checked). */
+	public readonly merged: Set<string>;
 
 	public constructor(
 		public readonly store: StoreFile,
@@ -184,16 +365,48 @@ class Data {
 	) {
 		this.start = ctx.clock();
 		this.lastYield = this.start;
+		const pick = replayPick(store, ctx.now, ctx.verdicts).filter(r => inUse(store, r));
+		this.runs = pick.filter(r => r.label !== "spike");
+		this.spikes = pick.filter(r => r.label === "spike");
+		this.quarantined = [...store.runs, ...store.spikes].filter(
+			r => inUse(store, r) && roleOf(store, r, ctx.verdicts) === "quarantine",
+		);
+		this.target = targetSet(store, ctx.now, ctx.verdicts);
+		this.merged = new Set(
+			store.runs
+				.filter(r => ctx.verdicts?.get(r.key)?.reasons.some(x => x.code === "merged") === true)
+				.map(r => r.key),
+		);
 	}
 
-	/** Stored runs that are replayed (with cells, not excluded by the user). */
-	public get runs(): StoredRun[] {
-		return this.store.runs.filter(r => inUse(this.store, r));
+	/**
+	 * Values as the detector is built at runtime: with a suspended final phase `finalMinVal = 0`.
+	 *
+	 * @param p - Values
+	 */
+	public replayValues(p: DetectionSettings): DetectionSettings {
+		return this.ctx.finalSuspended ? { ...p, finalMinVal: 0 } : p;
 	}
 
-	/** Stored false starts that are replayed. */
-	public get spikes(): StoredRun[] {
-		return this.store.spikes.filter(r => inUse(this.store, r));
+	/**
+	 * Verdict of a stored run with the current decision of the user.
+	 *
+	 * @param r - Run
+	 */
+	public verdictOf(r: StoredRun): Verdict | undefined {
+		return verdictOf(this.store, r, this.ctx.verdicts);
+	}
+
+	/**
+	 * Whether the next stored run starts where this one ends (two runs shortly one after the other, stored as parts of
+	 * one capture): values that join both report the end of this one only with the next one, which is no error
+	 * (decision 9).
+	 *
+	 * @param r - Run
+	 */
+	public continued(r: StoredRun): boolean {
+		const end = r.ts + this.cellsOf(r).length * r.step;
+		return this.store.runs.some(n => n !== r && n.ts > r.ts && n.ts <= end + r.step);
 	}
 
 	public cellsOf(r: StoredRun): TickCell[] {
@@ -270,7 +483,56 @@ class Data {
 }
 
 /**
- * Replay the values over every stored run and false start.
+ * Window of a stored run (cell indices), shifted for the perturbation `shift1`.
+ *
+ * @param s - Series
+ * @param r - Run
+ * @param shift - Ticks to shift
+ */
+function windowOf(s: TickSeries, r: StoredRun, shift: number): Window {
+	return {
+		fromIdx: 0,
+		toIdx: s.length - 1,
+		runStartIdx: r.seg.startIdx + shift,
+		runEndIdx: r.label === "spike" ? null : r.seg.runEndIdx + shift,
+		run: r.label === "spike" ? null : 0,
+	};
+}
+
+/**
+ * Whether a stored run is detected correctly (Spec B.4 `endOk` with the programme end under the tail of the store;
+ * a merged run only by the end of the whole run, decision 9).
+ *
+ * @param data - Decoded data
+ * @param r - Run
+ * @param s - Series
+ * @param win - Window
+ * @param res - Replay
+ * @param shift - Ticks of the perturbation `shift1`
+ */
+function runGood(data: Data, r: StoredRun, s: TickSeries, win: Window, res: SimResult, shift: number): boolean {
+	const progEnd =
+		data.store.tail?.separated === true && typeof r.seg.progEndIdx === "number" ? r.seg.progEndIdx + shift : null;
+	if (r.postTruncated) {
+		return truncatedOk(s, win, res);
+	}
+	if (data.merged.has(r.key) ? mergedOk(s, win, res, progEnd) : endOkFull(s, win, res, progEnd)) {
+		return true;
+	}
+	// followed by the next run right away: its end may come with the end of the next run (both as one, decision 9),
+	// but never too early
+	const runEnd = s.t0 + (win.runEndIdx ?? 0) * s.stepMs;
+	return (
+		data.continued(r) &&
+		res.started === 1 &&
+		res.aborted === 0 &&
+		res.finished.every(f => f >= runEnd) &&
+		res.startedAt.every(t => res.finished.every(f => t <= f))
+	);
+}
+
+/**
+ * Replay the values over the admitted runs of the replay pick and the admitted false starts (gate).
  *
  * @param data - Decoded data
  * @param p - Values (unit of the state)
@@ -286,6 +548,7 @@ async function gateOn(
 	const { ctx } = data;
 	const opts = { abort: ctx.abort, abortFixed: ctx.abortFixed, pollSec: ctx.pollSec };
 	const shift = perturb === "shift1" ? 1 : 0;
+	const values = data.replayValues(p);
 	const perRun: GateResult["perRun"] = [];
 	let ok = true;
 	for (const r of data.runs) {
@@ -293,38 +556,95 @@ async function gateOn(
 			continue;
 		}
 		const s = data.seriesOf(r, perturb);
-		const win: Window = {
-			fromIdx: 0,
-			toIdx: s.length - 1,
-			runStartIdx: r.seg.startIdx + shift,
-			runEndIdx: r.seg.runEndIdx + shift,
-			run: 0,
-		};
-		const res = simulate(s, win, p, opts);
-		// a stored run carries no programme end yet: the end has to come at or after the end of the run
-		const good = r.postTruncated ? truncatedOk(s, win, res) : endOkFull(s, win, res, null);
+		const win = windowOf(s, r, shift);
+		const res = simulate(s, win, values, opts);
+		const good = runGood(data, r, s, win, res, shift);
+		// a merged run: from the end of the whole run
+		const fin = data.merged.has(r.key) ? res.finished.at(-1) : res.finished[0];
 		const delaySec =
-			good && res.finished.length > 0
-				? (res.finished[0] - (s.t0 + (win.runEndIdx as number) * s.stepMs)) / 1000
-				: Number.NaN;
-		perRun.push({ id: r.id, ok: good, delaySec });
+			good && fin !== undefined ? (fin - (s.t0 + (win.runEndIdx as number) * s.stepMs)) / 1000 : Number.NaN;
+		perRun.push({ id: r.id, key: r.key, ok: good, delaySec });
 		ok &&= good;
 		await data.tick();
 	}
 	let falseStarts = 0;
+	const spikeKeys: string[] = [];
 	for (const r of only ? [] : data.spikes) {
 		const s = data.seriesOf(r, perturb);
-		const win: Window = {
-			fromIdx: 0,
-			toIdx: s.length - 1,
-			runStartIdx: r.seg.startIdx,
-			runEndIdx: null,
-			run: null,
-		};
-		falseStarts += simulate(s, win, p, opts).started;
+		const started = simulate(s, windowOf(s, r, 0), values, opts).started;
+		falseStarts += started;
+		if (started > 0) {
+			spikeKeys.push(r.key);
+		}
 		await data.tick();
 	}
-	return { ok: ok && falseStarts === 0, perRun, spikesOk: falseStarts === 0, falseStarts };
+	return { ok: ok && falseStarts === 0, perRun, spikesOk: falseStarts === 0, falseStarts, spikeKeys };
+}
+
+/**
+ * Replay the values over the runs and false starts in quarantine: detected correctly per key.
+ *
+ * @param data - Decoded data
+ * @param p - Values (unit of the state)
+ */
+async function quarantineOn(data: Data, p: DetectionSettings): Promise<Map<string, boolean>> {
+	const { ctx } = data;
+	const opts = { abort: ctx.abort, abortFixed: ctx.abortFixed, pollSec: ctx.pollSec };
+	const values = data.replayValues(p);
+	const out = new Map<string, boolean>();
+	for (const r of data.quarantined) {
+		const s = data.seriesOf(r, "none");
+		const win = windowOf(s, r, 0);
+		const res = simulate(s, win, values, opts);
+		out.set(r.key, r.label === "spike" ? res.started === 0 : runGood(data, r, s, win, res, 0));
+		await data.tick();
+	}
+	return out;
+}
+
+/**
+ * Keys of the runs and false starts a gate result does not detect correctly.
+ *
+ * @param g - Gate result
+ */
+function failingOf(g: GateResult): string[] {
+	return [...g.perRun.filter(r => !r.ok).map(r => r.key), ...g.spikeKeys];
+}
+
+/**
+ * Two real runs grown together (decision 9): only the end of the whole run counts. At least one start, no abort,
+ * the last end not too early (`endOk` against the end of the whole run) and no start after it; an end and a start at
+ * the rest inside are no split and no early end.
+ *
+ * @param s - Series
+ * @param win - Window
+ * @param r - Result
+ * @param progEnd - Programme end (tick), or null
+ */
+function mergedOk(s: TickSeries, win: Window, r: SimResult, progEnd: number | null): boolean {
+	const last = r.finished.at(-1);
+	if (r.started === 0 || r.aborted !== 0 || last === undefined) {
+		return false;
+	}
+	const runEnd = s.t0 + (win.runEndIdx ?? 0) * s.stepMs;
+	const endGood =
+		last >= runEnd || (progEnd !== null && last > s.t0 + progEnd * s.stepMs && runEnd - last <= DENSE_MIN_MS);
+	return endGood && r.startedAt.every(t => t <= last);
+}
+
+/**
+ * Keys of the admitted runs (`uses.end`) and false starts that the values in use do not detect correctly (Spec D.3
+ * point 3, decision 8): start missed, end too early (`endOk` with the programme end and the tail of the store), run
+ * split (two starts in a run that did not grow together), end not detected, a start after the end. Runs in
+ * quarantine and unusable runs are never in the list; two real runs grown together are no error as long as the end
+ * of the whole run is detected (decision 9).
+ *
+ * @param store - Store
+ * @param ctx - Context (verdicts, suspended final phase)
+ */
+export async function needsRepair(store: StoreFile, ctx: OptimizeContext): Promise<string[]> {
+	const data = new Data(store, ctx);
+	return failingOf(await gateOn(data, effectiveOf(ctx.type, store.override), "none"));
 }
 
 /**
@@ -698,10 +1018,60 @@ function nextPossible(store: StoreFile): number {
 }
 
 /**
- * Check the current values against every stored run and false start and improve them: a repair
- * (looser values) as soon as a run is not detected correctly, a tightening (end reported earlier)
- * only after enough runs, with step limits, a cross-check, perturbed input and envelope floors.
- * Nothing changes if no candidate passes the gate. The store is updated in place.
+ * Hints about runs in quarantine that the values in use do not detect correctly (Spec B.3), each run once: a reason
+ * that can be a real programme (`foreign`, `test`) asks to use the run, a data error says the recording is disturbed.
+ *
+ * @param data - Decoded data
+ * @param q0 - Result per key of the values in use on the runs in quarantine
+ */
+function hintsOf(data: Data, q0: ReadonlyMap<string, boolean>): Hint[] {
+	const known = data.store.hinted ?? [];
+	const out: Hint[] = [];
+	for (const r of data.quarantined) {
+		if (q0.get(r.key) !== false || known.some(k => k === r.key || sameRun(k, r.key))) {
+			continue;
+		}
+		const code = primaryOf(data.verdictOf(r)?.reasons ?? []);
+		out.push({
+			key: r.key,
+			kind: code !== null && DATA_ERRORS.has(code) ? "broken" : "use",
+			ts: r.ts + r.seg.startIdx * r.step,
+		});
+	}
+	return out;
+}
+
+/**
+ * Keep the open hints of runs that are still stored in quarantine and add the new ones.
+ *
+ * @param data - Decoded data
+ * @param hints - New hints
+ */
+function updateReview(data: Data, hints: readonly Hint[]): void {
+	const { store } = data;
+	const open = new Set(data.quarantined.map(r => r.key));
+	const review = [
+		...(store.info.review ?? []).filter(k => open.has(k)),
+		...hints.filter(h => h.kind === "use").map(h => h.key),
+	];
+	if (review.length > 0) {
+		store.info.review = [...new Set(review)];
+	} else {
+		delete store.info.review;
+	}
+	if (hints.length > 0) {
+		store.hinted = [...(store.hinted ?? []), ...hints.map(h => h.key)].slice(-HINTED_MAX);
+	}
+}
+
+/**
+ * Check the values in use against the admitted runs (Spec D.3) and improve them. Repair first (decision 8): as soon
+ * as an admitted run is not detected correctly, the safest close candidate that detects every admitted run of the
+ * check set is taken at once, whatever the minimum count, the spacing, the lock, the drift and the step limits say;
+ * runs in quarantine trigger nothing and only must not get worse. A tightening (end reported earlier) needs
+ * TIGHTEN_MIN_RUNS admitted runs in the window, step limits, a cross-check, perturbed input and the envelope floors,
+ * and never runs during a drift. Nothing changes if no candidate passes the gate. The store is updated in place
+ * (only top-level fields, `info` and `changes`; vetoes and hints come back in the outcome).
  *
  * @param store - Store
  * @param ctx - Context
@@ -710,7 +1080,9 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 	const info = store.info;
 	info.lastCheckTs = ctx.now;
 	refreshInfo(store);
-	const done = (kind: OptimizeOutcome["kind"], change: Change | null = null): OptimizeOutcome => {
+	const data = new Data(store, ctx);
+	let hints: Hint[] = [];
+	const done: Done = (kind, change = null, extra = {}) => {
 		info.nextPossibleTs = nextPossible(store);
 		const eff = effectiveOf(ctx.type, store.override);
 		if ((eff.trailerBurstSec ?? 0) > 0) {
@@ -718,25 +1090,45 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 		} else if (info.trailer === "used") {
 			info.trailer = "none";
 		}
-		return { kind, override: store.override, change, info };
+		updateReview(data, hints);
+		if ((info.review?.length ?? 0) > 0 && (info.status === "ok" || info.status === "collecting")) {
+			info.status = "review";
+		}
+		return {
+			kind,
+			override: store.override,
+			change,
+			info,
+			failing: [],
+			vetoes: [],
+			vetoClear: [],
+			hints,
+			...extra,
+		};
 	};
-	if (info.status === "drift") {
-		return done("drift");
-	}
-	const data = new Data(store, ctx);
-	if (data.runs.length === 0 && data.spikes.length === 0) {
+	if (data.runs.length === 0 && data.spikes.length === 0 && data.quarantined.length === 0) {
+		if (info.status === "drift") {
+			return done("drift");
+		}
 		info.status = "collecting";
 		return done("none");
 	}
 	const p0 = effectiveOf(ctx.type, store.override);
 	try {
 		const r0 = await gateOn(data, p0, "none");
-		if (!r0.ok) {
-			return await repair(data, p0, r0, done);
+		const q0 = await quarantineOn(data, p0);
+		hints = hintsOf(data, q0);
+		const failing = failingOf(r0);
+		if (failing.length > 0) {
+			// repair first, also during a drift and a lock
+			return await repair(data, p0, r0, q0, failing, done);
 		}
 		store.failStreak = 0;
-		const outcome = await tighten(data, p0, r0, done);
-		return outcome;
+		if (info.status === "drift") {
+			// a drift stops only the tightening
+			return done("drift");
+		}
+		return await tighten(data, p0, r0, q0, done);
 	} catch (err) {
 		if (err instanceof BudgetExceeded) {
 			info.status = "budget";
@@ -746,21 +1138,37 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 	}
 }
 
-type Done = (kind: OptimizeOutcome["kind"], change?: Change | null) => OptimizeOutcome;
+type Done = (
+	kind: OptimizeOutcome["kind"],
+	change?: Change | null,
+	extra?: Partial<OptimizeOutcome>,
+) => OptimizeOutcome;
 
 /**
- * The repair candidate closest to the current values that passes the gate.
+ * Keys of the runs with a veto from an earlier job: values that are taken over pass every admitted run, so the veto
+ * of these runs ends.
+ *
+ * @param data - Decoded data
+ */
+function oldVetoes(data: Data): string[] {
+	return data.runs.filter(r => r.veto !== undefined && r.veto < data.ctx.now).map(r => r.key);
+}
+
+/**
+ * The repair candidate closest to the current values that passes the gate and is no worse on the runs in quarantine.
  *
  * @param data - Decoded data
  * @param p0 - Current values
  * @param candidates - Candidates
  * @param seen - Candidates already checked (shared between calls)
+ * @param q0 - Result per key of the current values on the runs in quarantine
  */
 async function bestRepair(
 	data: Data,
 	p0: DetectionSettings,
 	candidates: readonly DetectionSettings[],
 	seen: Set<string>,
+	q0: ReadonlyMap<string, boolean>,
 ): Promise<{ p: DetectionSettings; d: number; g: GateResult } | null> {
 	let best: { p: DetectionSettings; d: number; g: GateResult } | null = null;
 	for (const c of candidates) {
@@ -776,14 +1184,34 @@ async function bestRepair(
 		}
 		const g = await gateOn(data, c, "none");
 		const score = d + mean(g.perRun.map(r => r.delaySec)) / REPAIR_DELAY_WEIGHT_SEC;
-		if (g.ok && (!best || score < best.d)) {
+		if (g.ok && (!best || score < best.d) && noRegression(await quarantineOn(data, c), q0)) {
 			best = { p: c, d: score, g };
 		}
 	}
 	return best;
 }
 
-async function repair(data: Data, p0: DetectionSettings, r0: GateResult, done: Done): Promise<OptimizeOutcome> {
+/**
+ * Repair (Spec D.3 point 3, decision 8): the safe candidate closest to the values in use that detects every admitted
+ * run of the check set, without minimum count, spacing, lock, drift or step limits (only the hard bounds and the
+ * envelope floors); the runs that triggered it become boundary runs. Without a candidate the values stay
+ * (`cannotCover`, after DRIFT_RUNS in a row `drift`).
+ *
+ * @param data - Decoded data
+ * @param p0 - Values in use
+ * @param r0 - Gate result of the values in use
+ * @param q0 - Result per key of the values in use on the runs in quarantine
+ * @param failing - Keys of the runs and false starts not detected correctly
+ * @param done - Result
+ */
+async function repair(
+	data: Data,
+	p0: DetectionSettings,
+	r0: GateResult,
+	q0: ReadonlyMap<string, boolean>,
+	failing: string[],
+	done: Done,
+): Promise<OptimizeOutcome> {
 	const { store, ctx } = data;
 	const raw = await repairCandidates(data, p0);
 	// first with the envelope floors (start not shorter than the longest burst seen, end not shorter
@@ -792,13 +1220,16 @@ async function repair(data: Data, p0: DetectionSettings, r0: GateResult, done: D
 		.map(c => clampBounds(applyFloors(c, store, ctx.pollSec), ctx.pollSec))
 		.filter(c => withinBounds(c, ctx.pollSec));
 	const seen = new Set<string>();
-	let best = await bestRepair(data, p0, floored, seen);
-	best ??= await bestRepair(data, p0, raw, seen);
+	let best = await bestRepair(data, p0, floored, seen, q0);
+	best ??= await bestRepair(data, p0, raw, seen, q0);
 	if (!best) {
 		store.failStreak++;
 		store.info.status = store.failStreak >= DRIFT_RUNS ? "drift" : "cannotCover";
-		return done(store.failStreak >= DRIFT_RUNS ? "drift" : "cannotCover");
+		return done(store.failStreak >= DRIFT_RUNS ? "drift" : "cannotCover", null, { failing });
 	}
+	// the newest run that triggered the repair
+	const byKey = new Map([...data.runs, ...data.spikes].map(r => [r.key, r]));
+	const trigger = [...failing].sort((a, b) => (byKey.get(b)?.ts ?? 0) - (byKey.get(a)?.ts ?? 0))[0];
 	const before = store.override;
 	store.override = diffOf(best.p, ctx.type);
 	const change: Change = {
@@ -809,6 +1240,7 @@ async function repair(data: Data, p0: DetectionSettings, r0: GateResult, done: D
 		reason: describeChange(p0, best.p),
 		runs: store.runs.length + store.spikes.length,
 		gainSec: Math.round(mean(r0.perRun.map(r => r.delaySec)) - mean(best.g.perRun.map(r => r.delaySec))),
+		trigger,
 	};
 	pushChange(store, change);
 	store.lockRuns = LOCK_RUNS;
@@ -817,7 +1249,7 @@ async function repair(data: Data, p0: DetectionSettings, r0: GateResult, done: D
 	store.newSinceChange = 0;
 	store.failStreak = 0;
 	store.info.status = "locked";
-	return done("repair", change);
+	return done("repair", change, { failing, vetoes: failing, vetoClear: oldVetoes(data) });
 }
 
 /**
@@ -908,19 +1340,40 @@ interface Recipe {
 	filter: number;
 }
 
-async function tighten(data: Data, p0: DetectionSettings, r0: GateResult, done: Done): Promise<OptimizeOutcome> {
+/**
+ * Tightening (Spec D.3 point 4): only with TIGHTEN_MIN_RUNS admitted runs in the 30-day window, TIGHTEN_NEW_RUNS new
+ * ones and TIGHTEN_SPACING_MS since the last change, outside the lock; targets are the admitted runs of the window
+ * (no run grown together), the gate covers the check set and the runs in quarantine must not get worse. A run that
+ * alone stops a candidate gets a veto.
+ *
+ * @param data - Decoded data
+ * @param p0 - Values in use
+ * @param r0 - Gate result of the values in use
+ * @param q0 - Result per key of the values in use on the runs in quarantine
+ * @param done - Result
+ */
+async function tighten(
+	data: Data,
+	p0: DetectionSettings,
+	r0: GateResult,
+	q0: ReadonlyMap<string, boolean>,
+	done: Done,
+): Promise<OptimizeOutcome> {
 	const { store, ctx } = data;
 	const poll = ctx.pollSec;
-	const isTrusted = (r: StoredRun): boolean => r.label === "run" && !r.postTruncated;
+	const target = new Set(data.target);
+	const isTrusted = (r: StoredRun): boolean =>
+		r.label === "run" && !r.postTruncated && !data.merged.has(r.key) && target.has(r);
+	const admittedRuns = data.target.filter(isTrusted).length;
 	const trusted = data.runs.filter(isTrusted);
 	const locked = store.lockRuns > 0 || ctx.now < store.lockUntilTs;
 	if (locked) {
 		store.info.status = "locked";
 		return done("none");
 	}
-	store.info.status = trusted.length >= TIGHTEN_MIN_RUNS ? "ok" : "collecting";
+	store.info.status = admittedRuns >= TIGHTEN_MIN_RUNS ? "ok" : "collecting";
 	if (
-		trusted.length < TIGHTEN_MIN_RUNS ||
+		admittedRuns < TIGHTEN_MIN_RUNS ||
 		store.newSinceChange < TIGHTEN_NEW_RUNS ||
 		(store.lastChangeTs > 0 && ctx.now - store.lastChangeTs < TIGHTEN_SPACING_MS)
 	) {
@@ -933,7 +1386,7 @@ async function tighten(data: Data, p0: DetectionSettings, r0: GateResult, done: 
 	store.info.trailer = sg.trailer === "notSeparable" ? "notSeparable" : store.info.trailer;
 	const withTrailer = trusted.filter(r => r.feat.trailer).length;
 	const shape = (c: DetectionSettings): DetectionSettings =>
-		clampBounds(applyFloors(stepLimit(c, p0, trusted.length, withTrailer, poll), store, poll), poll);
+		clampBounds(applyFloors(stepLimit(c, p0, admittedRuns, withTrailer, poll), store, poll), poll);
 	const build = (
 		recipe: Recipe,
 		analysis: DetectionSettings,
@@ -952,6 +1405,7 @@ async function tighten(data: Data, p0: DetectionSettings, r0: GateResult, done: 
 	// candidates that pass the gate and are never worse on any run, fastest first
 	const passing: { recipe: Recipe; c: DetectionSettings; g: GateResult; delay: number }[] = [];
 	const seen = new Set<string>();
+	const vetoes = new Set<string>();
 	for (const recipe of recipes) {
 		const c = build(recipe, analysis, variants);
 		const key = JSON.stringify(c);
@@ -961,13 +1415,22 @@ async function tighten(data: Data, p0: DetectionSettings, r0: GateResult, done: 
 		seen.add(key);
 		const g = await gateOn(data, c, "none");
 		if (!g.ok || g.falseStarts > r0.falseStarts) {
+			// a candidate that passes every other run of the check set: the one run that stops it is a boundary run
+			const bad = failingOf(g);
+			if (bad.length === 1) {
+				vetoes.add(bad[0]);
+			}
 			continue;
 		}
 		if (g.perRun.some((r, i) => r.delaySec > r0.perRun[i].delaySec + poll)) {
 			continue;
 		}
+		if (!noRegression(await quarantineOn(data, c), q0)) {
+			continue;
+		}
 		passing.push({ recipe, c, g, delay: mean(g.perRun.map(r => r.delaySec)) });
 	}
+	const extra = (): Partial<OptimizeOutcome> => ({ vetoes: [...vetoes] });
 	passing.sort((a, b) => a.delay - b.delay);
 	const families = [...new Set(trusted.map(r => r.family))];
 	const d0 = mean(r0.perRun.map(r => r.delaySec));
@@ -992,7 +1455,7 @@ async function tighten(data: Data, p0: DetectionSettings, r0: GateResult, done: 
 		}
 		const next = diffOf(cand.c, ctx.type);
 		if (JSON.stringify(next) === JSON.stringify(store.override)) {
-			return done("none");
+			return done("none", null, extra());
 		}
 		const before = store.override;
 		store.override = next;
@@ -1009,9 +1472,9 @@ async function tighten(data: Data, p0: DetectionSettings, r0: GateResult, done: 
 		store.lastChangeTs = ctx.now;
 		store.newSinceChange = 0;
 		store.info.status = "ok";
-		return done("tighten", change);
+		return done("tighten", change, { ...extra(), vetoClear: oldVetoes(data) });
 	}
-	return done("none");
+	return done("none", null, extra());
 }
 
 /**
@@ -1057,4 +1520,29 @@ async function crossCheck(
 		}
 	}
 	return true;
+}
+
+/**
+ * Apply the vetoes of an optimisation result to the stored runs (Spec D.2): the runs that stopped a candidate or
+ * caused a repair get the time as veto (boundary runs), the older vetoes of runs the new values pass end.
+ *
+ * @param store - Store
+ * @param outcome - Result of `optimize`
+ * @param now - Time of the job
+ */
+export function applyVetoes(
+	store: StoreFile,
+	outcome: Pick<OptimizeOutcome, "vetoes" | "vetoClear">,
+	now: number,
+): void {
+	const set = new Set(outcome.vetoes);
+	const clear = new Set(outcome.vetoClear);
+	for (const r of [...store.runs, ...store.spikes]) {
+		if (clear.has(r.key)) {
+			delete r.veto;
+		}
+		if (set.has(r.key)) {
+			r.veto = now;
+		}
+	}
 }

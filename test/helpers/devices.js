@@ -7,6 +7,7 @@ import { detectionOf } from "../../build/lib/runStore.js";
 import { TEMPLATES, templateDetection } from "../../build/lib/templates.js";
 import { createFakeHost } from "./fakeHost.js";
 import { memoryFiles } from "./files.js";
+import { resample, runWindow, timelineOf } from "./fixtures.js";
 import { runOf } from "./programmes.js";
 
 /** Power state of the test device. */
@@ -275,4 +276,51 @@ export function pauseRun(seed, ticks, level = 3) {
 	const r = runOf({ device: "washer", programme: "cotton60", seed });
 	const at = r.start + 200;
 	return [...r.values.slice(0, at), ...new Array(ticks).fill(level), ...r.values.slice(at)];
+}
+
+/**
+ * Fake installation with a history instance holding `points` for the power state.
+ *
+ * @param {{ ts: number, val: number }[]} points stored values
+ * @param {string} [unit] unit of the power state
+ * @returns {object} history access (`queries` counts the reads)
+ */
+export function historyEnv(points, unit = "W") {
+	const objects = {
+		[P]: { common: { unit, role: "value.power", custom: { "history.0": { enabled: true } } } },
+		"system.adapter.history.0": { common: { getHistory: true } },
+	};
+	return {
+		queries: 0,
+		object: async id => objects[id] ?? null,
+		alive: async instance => instance === "history.0",
+		async getHistory(_id, options) {
+			this.queries++;
+			return { result: points.filter(p => p.ts >= options.start && p.ts <= options.end) };
+		},
+	};
+}
+
+/**
+ * Feed fixture windows one after the other through the registry (`runWindow(name, id)`, one day apart, times from
+ * the clock of the host on) as a plug reports them (every poll), then wait for the optimisation.
+ *
+ * @param {object} ctx registry context
+ * @param {string[]} ids run ids
+ * @param {number} [copies] how often the whole list is fed
+ * @param {string} [name] fixture
+ */
+export async function windowsFeed(ctx, ids, copies = 1, name = "washer30d") {
+	const windows = [];
+	for (let c = 0; c < copies; c++) {
+		windows.push(...ids.map(id => runWindow(name, id)));
+	}
+	const line = timelineOf(windows, 86_400_000);
+	// a plug reports every poll, also an unchanged value (the history stores changes only)
+	const live = resample(line, line[0].ts, line.at(-1).ts + STEP, STEP);
+	const shift = ctx.host.now() + STEP - live[0].ts;
+	await feedPoints(
+		ctx,
+		live.map(p => ({ ts: p.ts + shift, val: p.val })),
+	);
 }

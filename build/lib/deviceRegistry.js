@@ -3,8 +3,8 @@ import { finalOn, finalValuesOf } from "./detector/index.js";
 import { DeviceRuntime } from "./deviceRuntime.js";
 import { fill, TEXT } from "./dmTexts.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
-import { admitted, sameRun } from "./learn/quality.js";
-import { effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
+import { admitted, sameRun, verdictKey } from "./learn/quality.js";
+import { applyVetoes, effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
 import { checkFinalSplit } from "./learn/finalLearn.js";
 import { simulate } from "./learn/replay.js";
 import { buildLayout } from "./learn/runs.js";
@@ -12,9 +12,10 @@ import { scaled } from "./learn/ticks.js";
 import { LearningRecorder, suggestType } from "./learning.js";
 import { ReminderScheduler } from "./reminder.js";
 import { RunRecorder } from "./runRecorder.js";
-import { addRun, clearLearningData, convertRuns, decisionOf, detectionOf, emptyStore, finalSplitPairs, fitSize, labelCapture, loadStore, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, splitCapture, storeSamples, typeHash, upgradeStore, } from "./runStore.js";
+import { addRun, clearLearningData, convertRuns, decisionOf, detectionOf, emptyStore, finalSplitPairs, fitSize, labelCapture, loadStore, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, splitCapture, storeSamples, typeHash, upgradeStore, WINDOW_MS, } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 const OPTIMIZE_BUDGET_MS = 30_000;
+const OUTAGE_MS = 60 * 60_000;
 const CHECKED_MAX = 20;
 function isTrue(val) {
     return val === true || val === 1 || val === "true" || val === "1";
@@ -373,7 +374,7 @@ export class DeviceRegistry {
             return false;
         }
         setDecision(store, run.key, "exclude");
-        recompute(store, this.qualityContext(store));
+        entry.opt.verdicts = recompute(store, this.qualityContext(store));
         refreshInfo(store);
         await this.saveOpt(entry);
         await this.writeOptStates(deviceId, entry);
@@ -397,9 +398,13 @@ export class DeviceRegistry {
             cleared.typeId = cfg.template ?? "";
             cleared.typeHash = typeHash(entry.runtime.baseDetection);
             entry.opt.store = cleared;
+            entry.opt.verdicts = new Map();
             kept = cleared;
             this.driftReported.delete(entry);
             await this.writeOptStates(deviceId, entry);
+            if (this.opts.history) {
+                this.enqueue(deviceId, () => this.bootstrapFromHistory(deviceId));
+            }
         }
         else if (keepDecisions && this.files) {
             const read = await this.readLearningData(deviceId);
@@ -564,15 +569,17 @@ export class DeviceRegistry {
             this.host.log.info(`${cfg.name}: ${msg}`);
         }
         refreshInfo(store);
-        if (upgraded.length > 0 || converted) {
-            recompute(store, this.qualityContext(store));
-        }
+        const verdicts = upgraded.length > 0 || converted || store.runs.length + store.spikes.length > 0
+            ? recompute(store, this.qualityContext(store))
+            : new Map();
         const wantHistory = store.historyReadTs === undefined && store.runs.length + store.spikes.length === 0;
+        const lastSeen = store.lastSeenTs ?? lastSeenOf(store);
+        const outageFrom = !wantHistory && lastSeen > 0 && now - lastSeen > OUTAGE_MS ? Math.max(lastSeen, now - WINDOW_MS) : null;
         if (base === "baseChanged" && hadOverride) {
             await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
         }
         const recorder = new RunRecorder(step, unitFactor);
-        entry.opt = { store, recorder };
+        entry.opt = { store, recorder, verdicts };
         entry.holdOverride = false;
         entry.runtime.attachRecorder(recorder);
         if (!full) {
@@ -601,8 +608,11 @@ export class DeviceRegistry {
         if (wantHistory && this.opts.history) {
             this.enqueue(deviceId, () => this.bootstrapFromHistory(deviceId));
         }
+        else if (outageFrom !== null && this.opts.history) {
+            this.enqueue(deviceId, () => this.bootstrapFromHistory(deviceId, outageFrom));
+        }
     }
-    async bootstrapFromHistory(deviceId) {
+    async bootstrapFromHistory(deviceId, from) {
         const entry = this.devices.get(deviceId);
         const opt = entry?.opt;
         const env = this.opts.history;
@@ -623,7 +633,7 @@ export class DeviceRegistry {
         const poll = this.getConfig().pollIntervalSec;
         let loadedHistory;
         try {
-            loadedHistory = await loadHistorySeries(env, instance, cfg.powerId, this.host.now(), poll);
+            loadedHistory = await loadHistorySeries(env, instance, cfg.powerId, this.host.now(), poll, undefined, from);
         }
         catch (err) {
             this.host.log.warn(`${cfg.name}: reading the history from ${instance} failed: ${errorMessage(err)}`);
@@ -645,7 +655,16 @@ export class DeviceRegistry {
         const sim = factor === 1 ? series : scaled(series, 1 / factor);
         let runs = 0;
         let spikes = 0;
+        const known = [...store.runs, ...store.spikes].map(r => r.key);
+        const open = opt.recorder.snapshot();
+        const recording = open ? { from: open.t0, to: open.t0 + open.cells.length * open.stepMs } : null;
         for (const w of [...layout.windows].sort((a, b) => a.fromIdx - b.fromIdx)) {
+            const startMs = series.t0 + w.runStartIdx * series.stepMs;
+            const key = verdictKey(store.deviceId, startMs);
+            if (known.some(k => k === key || sameRun(k, key)) ||
+                (recording !== null && startMs >= recording.from && startMs <= recording.to)) {
+                continue;
+            }
             const cells = [];
             const rep = [];
             for (let i = w.fromIdx; i <= w.toIdx; i++) {
@@ -684,12 +703,14 @@ export class DeviceRegistry {
         if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
             return;
         }
-        store.historyReadTs = now;
+        store.historyReadTs ??= now;
+        store.lastSeenTs = Math.max(store.lastSeenTs ?? 0, now);
         if (runs + spikes === 0) {
             await this.saveOpt(entry);
             return;
         }
-        fitSize(store, now, recompute(store, this.qualityContext(store)));
+        opt.verdicts = recompute(store, this.qualityContext(store));
+        fitSize(store, now, opt.verdicts);
         refreshInfo(store);
         this.host.log.info(`${cfg.name}: ${runs} runs and ${spikes} false starts taken over from the history (${instance})`);
         await this.saveOpt(entry);
@@ -722,8 +743,10 @@ export class DeviceRegistry {
                 this.host.setTimeout(resolve, 0);
             }),
             now: this.host.now(),
-            budgetMs: OPTIMIZE_BUDGET_MS,
+            budgetMs: this.opts.budgetMs ?? OPTIMIZE_BUDGET_MS,
             clock: () => this.host.now(),
+            ...(entry.opt?.verdicts ? { verdicts: entry.opt.verdicts } : {}),
+            finalSuspended: entry.opt?.store.final?.state === "suspended",
         };
     }
     persistPending(entry) {
@@ -767,6 +790,7 @@ export class DeviceRegistry {
                     ctx: this.qualityContext(store),
                     now: this.host.now(),
                     onVerdicts: v => {
+                        opt.verdicts = v;
                         if (run.label === "split" && v.get(run.key)?.reasons.some(x => x.code === "merged")) {
                             run.label = "run";
                         }
@@ -942,6 +966,7 @@ export class DeviceRegistry {
             return;
         }
         const trailerBefore = store.info.trailer;
+        opt.verdicts ??= recompute(store, this.qualityContext(store));
         const ctx = this.optimizeContext(entry);
         const baseHash = typeHash(ctx.type);
         const fork = forkStore(store);
@@ -955,10 +980,12 @@ export class DeviceRegistry {
             return;
         }
         mergeFork(store, fork);
+        applyVetoes(store, outcome, ctx.now);
         entry.holdOverride = false;
         entry.runtime.setOverride(store.override);
         await this.saveOpt(entry);
         await this.writeOptStates(deviceId, entry);
+        await this.reportHints(entry, outcome.hints);
         await this.reportOutcome(entry, outcome);
         if (store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
             await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
@@ -985,7 +1012,8 @@ export class DeviceRegistry {
                 break;
             }
             case "cannotCover":
-                await this.notifyOptimization(entry, TEXT.optCannotCover, {}, "warn");
+                this.host.log.warn(`${entry.runtime.config.name}: no values detect every admitted run, keeping the current values`);
+                await this.sendOptimization(entry, TEXT.optCannotCover, {});
                 break;
             case "drift":
                 if (!this.driftReported.has(entry)) {
@@ -998,6 +1026,11 @@ export class DeviceRegistry {
                 break;
             default:
                 break;
+        }
+    }
+    async reportHints(entry, hints) {
+        for (const h of hints) {
+            await this.notifyOptimization(entry, h.kind === "use" ? TEXT.reviewUse : TEXT.reviewBroken, { date: formatDate(h.ts) }, "warn");
         }
     }
     async notifyOptimization(entry, text, vars, level = "info") {
@@ -1077,6 +1110,11 @@ function mergeFork(store, fork) {
         store.changes = work.changes;
     }
     refreshInfo(store);
+}
+function lastSeenOf(store) {
+    const endOf = (r) => r.ts + ((r.seg.trailerTo ?? r.seg.runEndIdx) + 1) * r.step;
+    const pending = store.pending ? store.pending.t0 + store.pending.cells.length * store.pending.stepMs : 0;
+    return Math.max(0, ...[...store.runs, ...store.spikes].map(endOf), pending, store.info.lastCheckTs ?? 0, store.changes.at(-1)?.ts ?? 0);
 }
 function formatMinutes(sec) {
     return `${Math.round(sec / 6) / 10} min`;

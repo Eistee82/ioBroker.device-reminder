@@ -327,6 +327,9 @@ export class ReminderDeviceManagement extends DeviceManagement {
         else if (this.adapter.registry.learningData(id)?.final?.state === "suspended") {
             warning = TEXT.finalSuspendedCard;
         }
+        else if ((this.adapter.registry.learningData(id)?.info.review?.length ?? 0) > 0) {
+            warning = TEXT.reviewCard;
+        }
         const learning = (await this.adapter.getStateAsync(`${id}.learning.active`))?.val === true;
         const dnd = runtime?.doNotDisturb ?? false;
         const optimize = cfg.autoOptimize === true || (await this.adapter.registry.readLearningData(id)) !== null;

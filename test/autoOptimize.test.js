@@ -122,7 +122,7 @@ describe("automatic optimisation", function () {
 		assert.strictEqual(off.reg.learningData("dev"), null);
 	});
 
-	it("washing machine (default type): the anti-crease filter comes after 4 runs, then every programme ends early", async () => {
+	it("washing machine (default type): the anti-crease filter comes after 8 admitted runs (TIGHTEN_MIN_RUNS), then every programme ends early", async () => {
 		const ctx = await setup();
 		let changedAt = -1;
 		for (let k = 0; k < 10; k++) {
@@ -147,7 +147,7 @@ describe("automatic optimisation", function () {
 			}
 			ctx.host.tickClock(DAY);
 		}
-		assert.ok(changedAt >= 0 && changedAt <= 3, `first change after run ${changedAt}`);
+		assert.ok(changedAt >= 0 && changedAt <= 7, `first change after run ${changedAt}`);
 		assert.strictEqual(ctx.host.own("dev.learning.optimized"), true);
 		const params = JSON.parse(ctx.host.own("dev.learning.parameters"));
 		assert.ok(params.effective.trailerBurstSec > 0 && params.base.trailerBurstSec === 0);
@@ -471,6 +471,9 @@ describe("automatic optimisation engine", function () {
 			["spinOnly", "T4"],
 			["quick30", "T5"],
 			["cotton60", "T2"],
+			["quick30", "T1"],
+			["spinOnly", "T5"],
+			["cotton60", "T4"],
 		];
 		let filterOn = false;
 		for (const [k, [programme, shape]] of seenRuns.entries()) {

@@ -1,12 +1,13 @@
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import { FINAL_KEYS } from "../detector/types.js";
-import { BASE_KEYS, DETECTION_KEYS, detectionOf, inUse, pushChange, refreshInfo } from "../runStore.js";
+import { BASE_KEYS, boundaryRuns, decisionOf, DETECTION_KEYS, detectionOf, inUse, pushChange, refreshInfo, REPLAY_PICK_MAX, WINDOW_MS, } from "../runStore.js";
 import { analyzeTicks } from "./analyze.js";
 import { margin, minEndSec } from "./optimize.js";
+import { admitted, primaryOf, sameRun } from "./quality.js";
 import { endOkFull, simulate } from "./replay.js";
-import { MAX_PAUSE_MS } from "./runs.js";
+import { DENSE_MIN_MS, MAX_PAUSE_MS } from "./runs.js";
 import { decodeCells, fromCells, scaled } from "./ticks.js";
-export const TIGHTEN_MIN_RUNS = 4;
+export const TIGHTEN_MIN_RUNS = 8;
 export const TIGHTEN_NEW_RUNS = 2;
 export const TIGHTEN_SPACING_MS = 24 * 60 * 60_000;
 export const LOCK_RUNS = 5;
@@ -18,6 +19,8 @@ const MODE_CHANGE_RUNS = 6;
 const FILTER_RUNS = 2;
 const SEPARATOR_MS = MAX_PAUSE_MS + 10 * 60_000;
 const YIELD_MS = 20;
+const HINTED_MAX = 50;
+const DATA_ERRORS = new Set(["gap", "stuck", "sparse", "incomplete", "unit", "counter"]);
 class BudgetExceeded extends Error {
 }
 export function boundsOf(pollSec) {
@@ -67,6 +70,70 @@ export function clampBounds(p, pollSec) {
     }
     return d;
 }
+function verdictOf(store, r, verdicts) {
+    const v = verdicts?.get(r.key);
+    if (!v) {
+        return undefined;
+    }
+    const user = decisionOf(store, r.key)?.user;
+    const out = { ...v };
+    if (user) {
+        out.user = user;
+    }
+    else {
+        delete out.user;
+    }
+    return out;
+}
+function roleOf(store, r, verdicts) {
+    if (decisionOf(store, r.key)?.user === "exclude") {
+        return "none";
+    }
+    const v = verdictOf(store, r, verdicts);
+    if (!v) {
+        return "gate";
+    }
+    if (admitted(v, r.label === "spike" ? "start" : "end")) {
+        return "gate";
+    }
+    return v.stage === "quarantine" ? "quarantine" : "none";
+}
+export function targetSet(store, now, verdicts) {
+    return store.runs.filter(r => roleOf(store, r, verdicts) === "gate" && now - r.ts <= WINDOW_MS);
+}
+export function checkSet(store, now, verdicts) {
+    const boundary = boundaryRuns(store, verdicts);
+    return store.runs.filter(r => roleOf(store, r, verdicts) === "gate" && (now - r.ts <= WINDOW_MS || boundary.has(r.key)));
+}
+export function replayPick(store, now, verdicts) {
+    const boundary = boundaryRuns(store, verdicts);
+    const set = checkSet(store, now, verdicts).filter(r => typeof r.data === "string");
+    const picked = new Set(set.filter(r => boundary.has(r.key)));
+    const groups = new Map();
+    for (const r of [...set].sort((a, b) => b.ts - a.ts)) {
+        if (!picked.has(r)) {
+            groups.set(r.family, [...(groups.get(r.family) ?? []), r]);
+        }
+    }
+    let added = true;
+    while (added && picked.size < REPLAY_PICK_MAX) {
+        added = false;
+        for (const list of groups.values()) {
+            const r = list.shift();
+            if (r && picked.size < REPLAY_PICK_MAX) {
+                picked.add(r);
+                added = true;
+            }
+        }
+    }
+    const spikes = store.spikes.filter(r => typeof r.data === "string" &&
+        roleOf(store, r, verdicts) === "gate" &&
+        (now - r.ts <= WINDOW_MS || boundary.has(r.key)));
+    return [...set.filter(r => picked.has(r)), ...spikes];
+}
+export function noRegression(c, p0) {
+    return [...p0].every(([key, ok]) => !ok || c.get(key) === true);
+}
 class Data {
     store;
     ctx;
@@ -74,17 +141,34 @@ class Data {
     series = new WeakMap();
     lastYield;
     start;
+    runs;
+    spikes;
+    quarantined;
+    target;
+    merged;
     constructor(store, ctx) {
         this.store = store;
         this.ctx = ctx;
         this.start = ctx.clock();
         this.lastYield = this.start;
+        const pick = replayPick(store, ctx.now, ctx.verdicts).filter(r => inUse(store, r));
+        this.runs = pick.filter(r => r.label !== "spike");
+        this.spikes = pick.filter(r => r.label === "spike");
+        this.quarantined = [...store.runs, ...store.spikes].filter(r => inUse(store, r) && roleOf(store, r, ctx.verdicts) === "quarantine");
+        this.target = targetSet(store, ctx.now, ctx.verdicts);
+        this.merged = new Set(store.runs
+            .filter(r => ctx.verdicts?.get(r.key)?.reasons.some(x => x.code === "merged") === true)
+            .map(r => r.key));
     }
-    get runs() {
-        return this.store.runs.filter(r => inUse(this.store, r));
+    replayValues(p) {
+        return this.ctx.finalSuspended ? { ...p, finalMinVal: 0 } : p;
     }
-    get spikes() {
-        return this.store.spikes.filter(r => inUse(this.store, r));
+    verdictOf(r) {
+        return verdictOf(this.store, r, this.ctx.verdicts);
+    }
+    continued(r) {
+        const end = r.ts + this.cellsOf(r).length * r.step;
+        return this.store.runs.some(n => n !== r && n.ts > r.ts && n.ts <= end + r.step);
     }
     cellsOf(r) {
         let c = this.cells.get(r);
@@ -145,10 +229,35 @@ class Data {
         return fromCells(all, 0, this.store.step, this.store.unitFactor);
     }
 }
+function windowOf(s, r, shift) {
+    return {
+        fromIdx: 0,
+        toIdx: s.length - 1,
+        runStartIdx: r.seg.startIdx + shift,
+        runEndIdx: r.label === "spike" ? null : r.seg.runEndIdx + shift,
+        run: r.label === "spike" ? null : 0,
+    };
+}
+function runGood(data, r, s, win, res, shift) {
+    const progEnd = data.store.tail?.separated === true && typeof r.seg.progEndIdx === "number" ? r.seg.progEndIdx + shift : null;
+    if (r.postTruncated) {
+        return truncatedOk(s, win, res);
+    }
+    if (data.merged.has(r.key) ? mergedOk(s, win, res, progEnd) : endOkFull(s, win, res, progEnd)) {
+        return true;
+    }
+    const runEnd = s.t0 + (win.runEndIdx ?? 0) * s.stepMs;
+    return (data.continued(r) &&
+        res.started === 1 &&
+        res.aborted === 0 &&
+        res.finished.every(f => f >= runEnd) &&
+        res.startedAt.every(t => res.finished.every(f => t <= f)));
+}
 async function gateOn(data, p, perturb, only) {
     const { ctx } = data;
     const opts = { abort: ctx.abort, abortFixed: ctx.abortFixed, pollSec: ctx.pollSec };
     const shift = perturb === "shift1" ? 1 : 0;
+    const values = data.replayValues(p);
     const perRun = [];
     let ok = true;
     for (const r of data.runs) {
@@ -156,36 +265,57 @@ async function gateOn(data, p, perturb, only) {
             continue;
         }
         const s = data.seriesOf(r, perturb);
-        const win = {
-            fromIdx: 0,
-            toIdx: s.length - 1,
-            runStartIdx: r.seg.startIdx + shift,
-            runEndIdx: r.seg.runEndIdx + shift,
-            run: 0,
-        };
-        const res = simulate(s, win, p, opts);
-        const good = r.postTruncated ? truncatedOk(s, win, res) : endOkFull(s, win, res, null);
-        const delaySec = good && res.finished.length > 0
-            ? (res.finished[0] - (s.t0 + win.runEndIdx * s.stepMs)) / 1000
-            : Number.NaN;
-        perRun.push({ id: r.id, ok: good, delaySec });
+        const win = windowOf(s, r, shift);
+        const res = simulate(s, win, values, opts);
+        const good = runGood(data, r, s, win, res, shift);
+        const fin = data.merged.has(r.key) ? res.finished.at(-1) : res.finished[0];
+        const delaySec = good && fin !== undefined ? (fin - (s.t0 + win.runEndIdx * s.stepMs)) / 1000 : Number.NaN;
+        perRun.push({ id: r.id, key: r.key, ok: good, delaySec });
         ok &&= good;
         await data.tick();
     }
     let falseStarts = 0;
+    const spikeKeys = [];
     for (const r of only ? [] : data.spikes) {
         const s = data.seriesOf(r, perturb);
-        const win = {
-            fromIdx: 0,
-            toIdx: s.length - 1,
-            runStartIdx: r.seg.startIdx,
-            runEndIdx: null,
-            run: null,
-        };
-        falseStarts += simulate(s, win, p, opts).started;
+        const started = simulate(s, windowOf(s, r, 0), values, opts).started;
+        falseStarts += started;
+        if (started > 0) {
+            spikeKeys.push(r.key);
+        }
         await data.tick();
     }
-    return { ok: ok && falseStarts === 0, perRun, spikesOk: falseStarts === 0, falseStarts };
+    return { ok: ok && falseStarts === 0, perRun, spikesOk: falseStarts === 0, falseStarts, spikeKeys };
+}
+async function quarantineOn(data, p) {
+    const { ctx } = data;
+    const opts = { abort: ctx.abort, abortFixed: ctx.abortFixed, pollSec: ctx.pollSec };
+    const values = data.replayValues(p);
+    const out = new Map();
+    for (const r of data.quarantined) {
+        const s = data.seriesOf(r, "none");
+        const win = windowOf(s, r, 0);
+        const res = simulate(s, win, values, opts);
+        out.set(r.key, r.label === "spike" ? res.started === 0 : runGood(data, r, s, win, res, 0));
+        await data.tick();
+    }
+    return out;
+}
+function failingOf(g) {
+    return [...g.perRun.filter(r => !r.ok).map(r => r.key), ...g.spikeKeys];
+}
+function mergedOk(s, win, r, progEnd) {
+    const last = r.finished.at(-1);
+    if (r.started === 0 || r.aborted !== 0 || last === undefined) {
+        return false;
+    }
+    const runEnd = s.t0 + (win.runEndIdx ?? 0) * s.stepMs;
+    const endGood = last >= runEnd || (progEnd !== null && last > s.t0 + progEnd * s.stepMs && runEnd - last <= DENSE_MIN_MS);
+    return endGood && r.startedAt.every(t => t <= last);
+}
+export async function needsRepair(store, ctx) {
+    const data = new Data(store, ctx);
+    return failingOf(await gateOn(data, effectiveOf(ctx.type, store.override), "none"));
 }
 function truncatedOk(s, win, r) {
     const end = s.t0 + (win.runEndIdx ?? 0) * s.stepMs;
@@ -430,11 +560,46 @@ export function describeChange(from, to) {
 function nextPossible(store) {
     return Math.max(store.lockUntilTs, store.lastChangeTs > 0 ? store.lastChangeTs + TIGHTEN_SPACING_MS : 0);
 }
+function hintsOf(data, q0) {
+    const known = data.store.hinted ?? [];
+    const out = [];
+    for (const r of data.quarantined) {
+        if (q0.get(r.key) !== false || known.some(k => k === r.key || sameRun(k, r.key))) {
+            continue;
+        }
+        const code = primaryOf(data.verdictOf(r)?.reasons ?? []);
+        out.push({
+            key: r.key,
+            kind: code !== null && DATA_ERRORS.has(code) ? "broken" : "use",
+            ts: r.ts + r.seg.startIdx * r.step,
+        });
+    }
+    return out;
+}
+function updateReview(data, hints) {
+    const { store } = data;
+    const open = new Set(data.quarantined.map(r => r.key));
+    const review = [
+        ...(store.info.review ?? []).filter(k => open.has(k)),
+        ...hints.filter(h => h.kind === "use").map(h => h.key),
+    ];
+    if (review.length > 0) {
+        store.info.review = [...new Set(review)];
+    }
+    else {
+        delete store.info.review;
+    }
+    if (hints.length > 0) {
+        store.hinted = [...(store.hinted ?? []), ...hints.map(h => h.key)].slice(-HINTED_MAX);
+    }
+}
 export async function optimize(store, ctx) {
     const info = store.info;
     info.lastCheckTs = ctx.now;
     refreshInfo(store);
-    const done = (kind, change = null) => {
+    const data = new Data(store, ctx);
+    let hints = [];
+    const done = (kind, change = null, extra = {}) => {
         info.nextPossibleTs = nextPossible(store);
         const eff = effectiveOf(ctx.type, store.override);
         if ((eff.trailerBurstSec ?? 0) > 0) {
@@ -443,25 +608,43 @@ export async function optimize(store, ctx) {
         else if (info.trailer === "used") {
             info.trailer = "none";
         }
-        return { kind, override: store.override, change, info };
+        updateReview(data, hints);
+        if ((info.review?.length ?? 0) > 0 && (info.status === "ok" || info.status === "collecting")) {
+            info.status = "review";
+        }
+        return {
+            kind,
+            override: store.override,
+            change,
+            info,
+            failing: [],
+            vetoes: [],
+            vetoClear: [],
+            hints,
+            ...extra,
+        };
     };
-    if (info.status === "drift") {
-        return done("drift");
-    }
-    const data = new Data(store, ctx);
-    if (data.runs.length === 0 && data.spikes.length === 0) {
+    if (data.runs.length === 0 && data.spikes.length === 0 && data.quarantined.length === 0) {
+        if (info.status === "drift") {
+            return done("drift");
+        }
         info.status = "collecting";
         return done("none");
     }
     const p0 = effectiveOf(ctx.type, store.override);
     try {
         const r0 = await gateOn(data, p0, "none");
-        if (!r0.ok) {
-            return await repair(data, p0, r0, done);
+        const q0 = await quarantineOn(data, p0);
+        hints = hintsOf(data, q0);
+        const failing = failingOf(r0);
+        if (failing.length > 0) {
+            return await repair(data, p0, r0, q0, failing, done);
         }
         store.failStreak = 0;
-        const outcome = await tighten(data, p0, r0, done);
-        return outcome;
+        if (info.status === "drift") {
+            return done("drift");
+        }
+        return await tighten(data, p0, r0, q0, done);
     }
     catch (err) {
         if (err instanceof BudgetExceeded) {
@@ -471,7 +654,10 @@ export async function optimize(store, ctx) {
         throw err;
     }
 }
-async function bestRepair(data, p0, candidates, seen) {
+function oldVetoes(data) {
+    return data.runs.filter(r => r.veto !== undefined && r.veto < data.ctx.now).map(r => r.key);
+}
+async function bestRepair(data, p0, candidates, seen, q0) {
     let best = null;
     for (const c of candidates) {
         const key = JSON.stringify(detectionOf(c));
@@ -485,26 +671,28 @@ async function bestRepair(data, p0, candidates, seen) {
         }
         const g = await gateOn(data, c, "none");
         const score = d + mean(g.perRun.map(r => r.delaySec)) / REPAIR_DELAY_WEIGHT_SEC;
-        if (g.ok && (!best || score < best.d)) {
+        if (g.ok && (!best || score < best.d) && noRegression(await quarantineOn(data, c), q0)) {
             best = { p: c, d: score, g };
         }
     }
     return best;
 }
-async function repair(data, p0, r0, done) {
+async function repair(data, p0, r0, q0, failing, done) {
     const { store, ctx } = data;
     const raw = await repairCandidates(data, p0);
     const floored = raw
         .map(c => clampBounds(applyFloors(c, store, ctx.pollSec), ctx.pollSec))
         .filter(c => withinBounds(c, ctx.pollSec));
     const seen = new Set();
-    let best = await bestRepair(data, p0, floored, seen);
-    best ??= await bestRepair(data, p0, raw, seen);
+    let best = await bestRepair(data, p0, floored, seen, q0);
+    best ??= await bestRepair(data, p0, raw, seen, q0);
     if (!best) {
         store.failStreak++;
         store.info.status = store.failStreak >= DRIFT_RUNS ? "drift" : "cannotCover";
-        return done(store.failStreak >= DRIFT_RUNS ? "drift" : "cannotCover");
+        return done(store.failStreak >= DRIFT_RUNS ? "drift" : "cannotCover", null, { failing });
     }
+    const byKey = new Map([...data.runs, ...data.spikes].map(r => [r.key, r]));
+    const trigger = [...failing].sort((a, b) => (byKey.get(b)?.ts ?? 0) - (byKey.get(a)?.ts ?? 0))[0];
     const before = store.override;
     store.override = diffOf(best.p, ctx.type);
     const change = {
@@ -515,6 +703,7 @@ async function repair(data, p0, r0, done) {
         reason: describeChange(p0, best.p),
         runs: store.runs.length + store.spikes.length,
         gainSec: Math.round(mean(r0.perRun.map(r => r.delaySec)) - mean(best.g.perRun.map(r => r.delaySec))),
+        trigger,
     };
     pushChange(store, change);
     store.lockRuns = LOCK_RUNS;
@@ -523,7 +712,7 @@ async function repair(data, p0, r0, done) {
     store.newSinceChange = 0;
     store.failStreak = 0;
     store.info.status = "locked";
-    return done("repair", change);
+    return done("repair", change, { failing, vetoes: failing, vetoClear: oldVetoes(data) });
 }
 function filterVariants(runs, store, pollSec) {
     const t = trailerFromStore(runs, pollSec);
@@ -566,18 +755,20 @@ function filterOptions(runs, store, p0, withTrailer, pollSec) {
 function unguardedFilterOn(c, p0) {
     return (p0.trailerBurstSec ?? 0) <= 0 && (c.trailerBurstSec ?? 0) > 0 && (c.trailerBlockVal ?? 0) <= 0;
 }
-async function tighten(data, p0, r0, done) {
+async function tighten(data, p0, r0, q0, done) {
     const { store, ctx } = data;
     const poll = ctx.pollSec;
-    const isTrusted = (r) => r.label === "run" && !r.postTruncated;
+    const target = new Set(data.target);
+    const isTrusted = (r) => r.label === "run" && !r.postTruncated && !data.merged.has(r.key) && target.has(r);
+    const admittedRuns = data.target.filter(isTrusted).length;
     const trusted = data.runs.filter(isTrusted);
     const locked = store.lockRuns > 0 || ctx.now < store.lockUntilTs;
     if (locked) {
         store.info.status = "locked";
         return done("none");
     }
-    store.info.status = trusted.length >= TIGHTEN_MIN_RUNS ? "ok" : "collecting";
-    if (trusted.length < TIGHTEN_MIN_RUNS ||
+    store.info.status = admittedRuns >= TIGHTEN_MIN_RUNS ? "ok" : "collecting";
+    if (admittedRuns < TIGHTEN_MIN_RUNS ||
         store.newSinceChange < TIGHTEN_NEW_RUNS ||
         (store.lastChangeTs > 0 && ctx.now - store.lastChangeTs < TIGHTEN_SPACING_MS)) {
         return done("none");
@@ -588,7 +779,7 @@ async function tighten(data, p0, r0, done) {
     }
     store.info.trailer = sg.trailer === "notSeparable" ? "notSeparable" : store.info.trailer;
     const withTrailer = trusted.filter(r => r.feat.trailer).length;
-    const shape = (c) => clampBounds(applyFloors(stepLimit(c, p0, trusted.length, withTrailer, poll), store, poll), poll);
+    const shape = (c) => clampBounds(applyFloors(stepLimit(c, p0, admittedRuns, withTrailer, poll), store, poll), poll);
     const build = (recipe, analysis, variants) => {
         const base = recipe.base === "current" ? detectionOf(p0) : analysis;
         return shape(recipe.filter >= 0 && variants[recipe.filter] ? { ...base, ...variants[recipe.filter] } : base);
@@ -601,6 +792,7 @@ async function tighten(data, p0, r0, done) {
     });
     const passing = [];
     const seen = new Set();
+    const vetoes = new Set();
     for (const recipe of recipes) {
         const c = build(recipe, analysis, variants);
         const key = JSON.stringify(c);
@@ -610,13 +802,21 @@ async function tighten(data, p0, r0, done) {
         seen.add(key);
         const g = await gateOn(data, c, "none");
         if (!g.ok || g.falseStarts > r0.falseStarts) {
+            const bad = failingOf(g);
+            if (bad.length === 1) {
+                vetoes.add(bad[0]);
+            }
             continue;
         }
         if (g.perRun.some((r, i) => r.delaySec > r0.perRun[i].delaySec + poll)) {
             continue;
         }
+        if (!noRegression(await quarantineOn(data, c), q0)) {
+            continue;
+        }
         passing.push({ recipe, c, g, delay: mean(g.perRun.map(r => r.delaySec)) });
     }
+    const extra = () => ({ vetoes: [...vetoes] });
     passing.sort((a, b) => a.delay - b.delay);
     const families = [...new Set(trusted.map(r => r.family))];
     const d0 = mean(r0.perRun.map(r => r.delaySec));
@@ -641,7 +841,7 @@ async function tighten(data, p0, r0, done) {
         }
         const next = diffOf(cand.c, ctx.type);
         if (JSON.stringify(next) === JSON.stringify(store.override)) {
-            return done("none");
+            return done("none", null, extra());
         }
         const before = store.override;
         store.override = next;
@@ -658,9 +858,9 @@ async function tighten(data, p0, r0, done) {
         store.lastChangeTs = ctx.now;
         store.newSinceChange = 0;
         store.info.status = "ok";
-        return done("tighten", change);
+        return done("tighten", change, { ...extra(), vetoClear: oldVetoes(data) });
     }
-    return done("none");
+    return done("none", null, extra());
 }
 async function crossCheck(data, p0, recipe, families, sg, isTrusted, build) {
     const { store, ctx } = data;
@@ -684,5 +884,17 @@ async function crossCheck(data, p0, recipe, families, sg, isTrusted, build) {
         }
     }
     return true;
+}
+export function applyVetoes(store, outcome, now) {
+    const set = new Set(outcome.vetoes);
+    const clear = new Set(outcome.vetoClear);
+    for (const r of [...store.runs, ...store.spikes]) {
+        if (clear.has(r.key)) {
+            delete r.veto;
+        }
+        if (set.has(r.key)) {
+            r.veto = now;
+        }
+    }
 }
 //# sourceMappingURL=autoOptimize.js.map

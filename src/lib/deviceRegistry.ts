@@ -7,10 +7,10 @@ import { fill, TEXT } from "./dmTexts.js";
 import type { HistoryEnv } from "./historySource.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import type { FileIO, MessageSink, NotifierHost, RuntimeEvent, RuntimeListener } from "./host.js";
-import type { GateResult, OptimizeContext, OptimizeOutcome } from "./learn/autoOptimize.js";
-import type { QualityContext } from "./learn/quality.js";
-import { admitted, sameRun } from "./learn/quality.js";
-import { effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
+import type { GateResult, Hint, OptimizeContext, OptimizeOutcome } from "./learn/autoOptimize.js";
+import type { QualityContext, Verdict } from "./learn/quality.js";
+import { admitted, sameRun, verdictKey } from "./learn/quality.js";
+import { applyVetoes, effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
 import { checkFinalSplit } from "./learn/finalLearn.js";
 import { simulate } from "./learn/replay.js";
 import { buildLayout } from "./learn/runs.js";
@@ -21,7 +21,7 @@ import type { Notifier } from "./notifier.js";
 import { ReminderScheduler } from "./reminder.js";
 import type { Capture } from "./runRecorder.js";
 import { RunRecorder } from "./runRecorder.js";
-import type { FinalState, FinalSplitPair, StoreFile } from "./runStore.js";
+import type { FinalState, FinalSplitPair, StoredRun, StoreFile } from "./runStore.js";
 import {
 	addRun,
 	clearLearningData,
@@ -45,6 +45,7 @@ import {
 	storeSamples,
 	typeHash,
 	upgradeStore,
+	WINDOW_MS,
 } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 
@@ -63,10 +64,14 @@ interface Entry {
 interface OptEntry {
 	store: StoreFile;
 	recorder: RunRecorder;
+	/** Verdicts of the run check of the stored runs by key (computed again whenever the runs change). */
+	verdicts?: ReadonlyMap<string, Verdict>;
 }
 
 /** Time budget of one optimisation job. */
 const OPTIMIZE_BUDGET_MS = 30_000;
+/** A device not seen for longer than this reads the history of the outage (Spec D.2). */
+const OUTAGE_MS = 60 * 60_000;
 /** Most keys of runs judged afterwards that are remembered (`FinalState.checked`). */
 const CHECKED_MAX = 20;
 
@@ -93,6 +98,8 @@ export interface RegistryOptions {
 	 * meanwhile (without it nothing differs).
 	 */
 	beforeOptimizeWrite?: (deviceId: string) => Promise<void>;
+	/** Time budget of one optimisation job in ms (default 30 000; for tests). */
+	budgetMs?: number;
 }
 
 function isTrue(val: unknown): boolean {
@@ -589,7 +596,7 @@ export class DeviceRegistry implements RuntimeListener {
 			return false;
 		}
 		setDecision(store, run.key, "exclude");
-		recompute(store, this.qualityContext(store));
+		entry.opt!.verdicts = recompute(store, this.qualityContext(store));
 		refreshInfo(store);
 		await this.saveOpt(entry);
 		await this.writeOptStates(deviceId, entry);
@@ -630,9 +637,14 @@ export class DeviceRegistry implements RuntimeListener {
 			cleared.typeId = cfg.template ?? "";
 			cleared.typeHash = typeHash(entry.runtime.baseDetection);
 			entry.opt.store = cleared;
+			entry.opt.verdicts = new Map();
 			kept = cleared;
 			this.driftReported.delete(entry);
 			await this.writeOptStates(deviceId, entry);
+			if (this.opts.history) {
+				// an empty store reads the history again (Spec D.2); the decisions kept apply over the keys
+				this.enqueue(deviceId, () => this.bootstrapFromHistory(deviceId));
+			}
 		} else if (keepDecisions && this.files) {
 			const read = await this.readLearningData(deviceId);
 			kept = read ? clearLearningData(read, true) : null;
@@ -869,16 +881,23 @@ export class DeviceRegistry implements RuntimeListener {
 			this.host.log.info(`${cfg.name}: ${msg}`);
 		}
 		refreshInfo(store);
-		if (upgraded.length > 0 || converted) {
-			recompute(store, this.qualityContext(store));
-		}
+		// the run check of the stored runs (also for learning data of the current version: the stages are computed
+		// again at every evaluation)
+		const verdicts =
+			upgraded.length > 0 || converted || store.runs.length + store.spikes.length > 0
+				? recompute(store, this.qualityContext(store))
+				: new Map<string, Verdict>();
 		// the history is read once (also when it held no runs); older learning data with runs is not read again
 		const wantHistory = store.historyReadTs === undefined && store.runs.length + store.spikes.length === 0;
+		// after an outage of more than an hour: the history of the outage (at most 30 days)
+		const lastSeen = store.lastSeenTs ?? lastSeenOf(store);
+		const outageFrom =
+			!wantHistory && lastSeen > 0 && now - lastSeen > OUTAGE_MS ? Math.max(lastSeen, now - WINDOW_MS) : null;
 		if (base === "baseChanged" && hadOverride) {
 			await this.notifyOptimization(entry, TEXT.optBaseChanged, {});
 		}
 		const recorder = new RunRecorder(step, unitFactor);
-		entry.opt = { store, recorder };
+		entry.opt = { store, recorder, verdicts };
 		entry.holdOverride = false;
 		entry.runtime.attachRecorder(recorder);
 		if (!full) {
@@ -904,17 +923,22 @@ export class DeviceRegistry implements RuntimeListener {
 		await this.writeOptStates(deviceId, entry);
 		if (wantHistory && this.opts.history) {
 			this.enqueue(deviceId, () => this.bootstrapFromHistory(deviceId));
+		} else if (outageFrom !== null && this.opts.history) {
+			this.enqueue(deviceId, () => this.bootstrapFromHistory(deviceId, outageFrom));
 		}
 	}
 
 	/**
-	 * Take over the runs of the history when the automatic optimisation starts without learning data:
-	 * every run and false start of the history is replayed with the current values to get the events
-	 * the runtime would have seen, then labelled and stored like a recorded run.
+	 * Take over the runs of the history (Spec D.2): when the automatic optimisation starts without learning data (also
+	 * after "clear learning data"), and after an outage of more than an hour only for the outage. Every run and false
+	 * start of the history is replayed with the current values to get the events the runtime would have seen, then
+	 * labelled and stored like a recorded run; runs already stored (live or history, within 5 min) or being recorded
+	 * are not taken twice, and the decisions of the user apply over the keys.
 	 *
 	 * @param deviceId - Device id
+	 * @param from - Only from this time on (outage); default: the whole history
 	 */
-	private async bootstrapFromHistory(deviceId: string): Promise<void> {
+	private async bootstrapFromHistory(deviceId: string, from?: number): Promise<void> {
 		const entry = this.devices.get(deviceId);
 		const opt = entry?.opt;
 		const env = this.opts.history;
@@ -934,7 +958,7 @@ export class DeviceRegistry implements RuntimeListener {
 		const poll = this.getConfig().pollIntervalSec;
 		let loadedHistory: Awaited<ReturnType<typeof loadHistorySeries>>;
 		try {
-			loadedHistory = await loadHistorySeries(env, instance, cfg.powerId, this.host.now(), poll);
+			loadedHistory = await loadHistorySeries(env, instance, cfg.powerId, this.host.now(), poll, undefined, from);
 		} catch (err) {
 			this.host.log.warn(`${cfg.name}: reading the history from ${instance} failed: ${errorMessage(err)}`);
 			return;
@@ -957,7 +981,18 @@ export class DeviceRegistry implements RuntimeListener {
 		const sim = factor === 1 ? series : scaled(series, 1 / factor);
 		let runs = 0;
 		let spikes = 0;
+		const known = [...store.runs, ...store.spikes].map(r => r.key);
+		const open = opt.recorder.snapshot();
+		const recording = open ? { from: open.t0, to: open.t0 + open.cells.length * open.stepMs } : null;
 		for (const w of [...layout.windows].sort((a, b) => a.fromIdx - b.fromIdx)) {
+			const startMs = series.t0 + w.runStartIdx * series.stepMs;
+			const key = verdictKey(store.deviceId, startMs);
+			if (
+				known.some(k => k === key || sameRun(k, key)) ||
+				(recording !== null && startMs >= recording.from && startMs <= recording.to)
+			) {
+				continue;
+			}
 			const cells = [];
 			// ticks with a stored value: the report times of a history run
 			const rep: number[] = [];
@@ -996,13 +1031,15 @@ export class DeviceRegistry implements RuntimeListener {
 		if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
 			return;
 		}
-		store.historyReadTs = now;
+		store.historyReadTs ??= now;
+		store.lastSeenTs = Math.max(store.lastSeenTs ?? 0, now);
 		if (runs + spikes === 0) {
 			// the file marks the history as read, so it is not loaded again at every start
 			await this.saveOpt(entry);
 			return;
 		}
-		fitSize(store, now, recompute(store, this.qualityContext(store)));
+		opt.verdicts = recompute(store, this.qualityContext(store));
+		fitSize(store, now, opt.verdicts);
 		refreshInfo(store);
 		this.host.log.info(
 			`${cfg.name}: ${runs} runs and ${spikes} false starts taken over from the history (${instance})`,
@@ -1052,8 +1089,10 @@ export class DeviceRegistry implements RuntimeListener {
 					this.host.setTimeout(resolve, 0);
 				}),
 			now: this.host.now(),
-			budgetMs: OPTIMIZE_BUDGET_MS,
+			budgetMs: this.opts.budgetMs ?? OPTIMIZE_BUDGET_MS,
 			clock: () => this.host.now(),
+			...(entry.opt?.verdicts ? { verdicts: entry.opt.verdicts } : {}),
+			finalSuspended: entry.opt?.store.final?.state === "suspended",
 		};
 	}
 
@@ -1116,6 +1155,7 @@ export class DeviceRegistry implements RuntimeListener {
 					ctx: this.qualityContext(store),
 					now: this.host.now(),
 					onVerdicts: v => {
+						opt.verdicts = v;
 						// a merged run (two runs grown together) is no detection error (decision 9)
 						if (run.label === "split" && v.get(run.key)?.reasons.some(x => x.code === "merged")) {
 							run.label = "run";
@@ -1379,6 +1419,7 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		const trailerBefore = store.info.trailer;
+		opt.verdicts ??= recompute(store, this.qualityContext(store));
 		const ctx = this.optimizeContext(entry);
 		const baseHash = typeHash(ctx.type);
 		// the job works on a copy, so that a result computed from old base values is never written (G13)
@@ -1395,10 +1436,12 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		mergeFork(store, fork);
+		applyVetoes(store, outcome, ctx.now);
 		entry.holdOverride = false;
 		entry.runtime.setOverride(store.override);
 		await this.saveOpt(entry);
 		await this.writeOptStates(deviceId, entry);
+		await this.reportHints(entry, outcome.hints);
 		await this.reportOutcome(entry, outcome);
 		if (store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
 			await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
@@ -1432,7 +1475,10 @@ export class DeviceRegistry implements RuntimeListener {
 				break;
 			}
 			case "cannotCover":
-				await this.notifyOptimization(entry, TEXT.optCannotCover, {}, "warn");
+				this.host.log.warn(
+					`${entry.runtime.config.name}: no values detect every admitted run, keeping the current values`,
+				);
+				await this.sendOptimization(entry, TEXT.optCannotCover, {});
 				break;
 			case "drift":
 				if (!this.driftReported.has(entry)) {
@@ -1445,6 +1491,25 @@ export class DeviceRegistry implements RuntimeListener {
 				break;
 			default:
 				break;
+		}
+	}
+
+	/**
+	 * Hints about runs in quarantine that the values in use do not detect correctly (Spec B.3), each run once: always
+	 * a log warning (for a reason that can be a real programme also `optimizeInfo.review` and the card), a message to
+	 * the recipients only with `optimizeNotify`.
+	 *
+	 * @param entry - Entry
+	 * @param hints - New hints
+	 */
+	private async reportHints(entry: Entry, hints: readonly Hint[]): Promise<void> {
+		for (const h of hints) {
+			await this.notifyOptimization(
+				entry,
+				h.kind === "use" ? TEXT.reviewUse : TEXT.reviewBroken,
+				{ date: formatDate(h.ts) },
+				"warn",
+			);
 		}
 	}
 
@@ -1590,6 +1655,24 @@ function mergeFork(store: StoreFile, fork: StoreFork): void {
 		store.changes = work.changes;
 	}
 	refreshInfo(store);
+}
+
+/**
+ * Time a store was last in use, for learning data without `lastSeenTs` (V4): the end of the newest run, of the
+ * capture of a run in progress, the last check and the last change; 0 for an empty store.
+ *
+ * @param store - Store
+ */
+function lastSeenOf(store: StoreFile): number {
+	const endOf = (r: StoredRun): number => r.ts + ((r.seg.trailerTo ?? r.seg.runEndIdx) + 1) * r.step;
+	const pending = store.pending ? store.pending.t0 + store.pending.cells.length * store.pending.stepMs : 0;
+	return Math.max(
+		0,
+		...[...store.runs, ...store.spikes].map(endOf),
+		pending,
+		store.info.lastCheckTs ?? 0,
+		store.changes.at(-1)?.ts ?? 0,
+	);
 }
 
 /**

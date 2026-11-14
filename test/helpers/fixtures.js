@@ -354,7 +354,8 @@ export function withForeign(points, atMs, minutes, addW) {
 }
 
 /**
- * Insert single-value spikes at random times.
+ * Insert single-value spikes at random times: one report of the spike, then the value held before (the logger
+ * stores the next report as a change one poll later).
  *
  * @param {{ ts: number, val: number }[]} points stored values
  * @param {number} n number of spikes
@@ -366,8 +367,17 @@ export function withSpikes(points, n, valW, seed) {
 	const r = rng(seed);
 	const from = points[0].ts;
 	const span = points.at(-1).ts - from;
-	const spikes = Array.from({ length: n }, () => ({ ts: from + Math.floor(r() * span), val: valW }));
-	return [...points, ...spikes].sort((a, b) => a.ts - b.ts);
+	const out = [...points];
+	for (let k = 0; k < n; k++) {
+		const ts = from + Math.floor(r() * span);
+		// one report: the logger stores the next value (the one held before) one poll later
+		const held = points.findLast(p => p.ts <= ts)?.val ?? 0;
+		out.push({ ts, val: valW });
+		if (!points.some(p => p.ts > ts && p.ts <= ts + 10_000)) {
+			out.push({ ts: ts + 10_000, val: held });
+		}
+	}
+	return out.sort((a, b) => a.ts - b.ts);
 }
 
 /**

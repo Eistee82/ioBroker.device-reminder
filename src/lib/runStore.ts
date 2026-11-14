@@ -298,6 +298,8 @@ export interface StoreFile {
 	lastSeenTs?: number;
 	/** Time the history was read when the optimisation started (also without runs). */
 	historyReadTs?: number;
+	/** Keys of the runs in quarantine that got their hint already (Spec B.3: each run once). */
+	hinted?: string[];
 }
 
 /** Base detection fields (thresholds, mode, pause protection, anti-crease filter). */
