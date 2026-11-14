@@ -53,6 +53,7 @@ export function cleanPoints(input) {
     }
     return {
         points: kept,
+        invalid,
         invalidShare: input.length > 0 ? invalid / input.length : 0,
         timeJumps,
         unknown: merged,

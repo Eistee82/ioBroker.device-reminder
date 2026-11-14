@@ -84,7 +84,7 @@ class SeriesBuilder {
         }
         const c = cleanPoints(raw);
         this.total += raw.length;
-        this.invalid += Math.round(c.invalidShare * raw.length);
+        this.invalid += c.invalid;
         this.timeJumps.push(...c.timeJumps);
         this.unknown.push(...c.unknown);
         const points = [];

@@ -50,6 +50,7 @@ describe("raw data", () => {
 			{ ts: 2, val: 0 },
 			{ ts: 3, val: 5 },
 		]);
+		assert.strictEqual(r.invalid, 3);
 		assert.strictEqual(r.invalidShare, 0.6);
 	});
 	it("a jump back of more than a minute is unknown time; 30 s is only reordered", () => {

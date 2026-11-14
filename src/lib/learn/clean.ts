@@ -21,6 +21,8 @@ export interface TimeJump {
 export interface CleanResult {
 	/** Valid values, sorted by time, exact duplicates removed, negative values as 0. */
 	points: { ts: number; val: number }[];
+	/** Number of input values that were missing, not a number or negative. */
+	invalid: number;
 	/** Share of the input that was missing, not a number or negative (0..1). */
 	invalidShare: number;
 	/** Jumps back of more than TIME_JUMP_MS. */
@@ -92,6 +94,7 @@ export function cleanPoints(input: readonly RawPoint[]): CleanResult {
 	}
 	return {
 		points: kept,
+		invalid,
 		invalidShare: input.length > 0 ? invalid / input.length : 0,
 		timeJumps,
 		unknown: merged,
