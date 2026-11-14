@@ -530,6 +530,10 @@ export class PhaseTracker {
                 return { id: m[0].id, name: m[0].name, phase: m[0] };
             }
         }
+        if (d.kind === "trigger" && d.phase.decided === "end") {
+            const b = this.bands[d.band];
+            return { id: b.id, name: b.name, phase: null };
+        }
         return this.bandName(d);
     }
     finalOf(d, dur) {

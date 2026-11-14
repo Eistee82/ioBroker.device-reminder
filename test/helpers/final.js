@@ -132,6 +132,19 @@ export function learnInput(points, o = {}) {
 }
 
 /**
+ * Input of `learnPhases` from stored values (scope run): every sample with its verdict of the run check
+ * (`runSamples` + `baseBandsOf` + `checkRuns`, like `learnInput`).
+ *
+ * @param {{ ts: number, val: number }[]} points stored values in the unit of the state
+ * @param {object} [o] options of `learnInput`
+ * @returns {{ units: { sample: object, verdict: object }[], runLimit: number }} samples and run level in W
+ */
+export function phaseInput(points, o = {}) {
+	const { runs, layout } = learnInput(points, o);
+	return { units: runs.map(({ sample, verdict }) => ({ sample, verdict })), runLimit: layout.runLimit };
+}
+
+/**
  * Soaking programme (Spec 8.2): before the final spin of run k a copy of that spin block, then 45 min of
  * 3 W; everything from the final spin on comes later by that time.
  *

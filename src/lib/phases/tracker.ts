@@ -797,6 +797,11 @@ export class PhaseTracker {
 				return { id: m[0].id, name: m[0].name, phase: m[0] };
 			}
 		}
+		if (d.kind === "trigger" && d.phase!.decided === "end") {
+			// event phase that did not pass the cross-check (Spec B.5 step 7): timeline only, live the band
+			const b = this.bands[d.band];
+			return { id: b.id, name: b.name, phase: null };
+		}
 		return this.bandName(d);
 	}
 
