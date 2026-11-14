@@ -99,6 +99,8 @@ Bekannte Eigenheiten von 3.1.2 (wichtig für die Paritätsfrage, siehe §14):
 ### 4.4 Gerätetypen
 Default (read-only Namen, Werte editierbar): washing-machine (30/15/1/2/50), dryer (120/15/1/2/20), dishwasher (15/0.25/0.5/2/120) — Reihenfolge startVal/endVal/standby/startCount/endCount. Dazu 10 Custom-Typen `custom1`…`custom10` (30/5/1/1/20), Namen frei änderbar. Status-Texte global konfigurierbar (Default `in action` / `standby` / `switched off` laut io-package; die Admin-UI schlägt für „Aus“ `device off` vor — Migration übernimmt den gespeicherten Wert).
 
+**Hinweis V4:** Diese Typtabellen gibt es in V4 nicht mehr als eigene Konfiguration. Die Migration kopiert die Werte des Typs, den ein Gerät in 3.1.2 verwendet hat, als Erkennungswerte in jedes Gerät (kein gemeinsamer Typ mehr); Zuordnung und Sonderfälle (umbenannte Zeilen, unbekannter Typ, Kommentar) stehen in der Phasen-Spec C.5, die alten Tabellen bleiben nur als Archiv-Vorlagen (C.2).
+
 ### 4.5 States 3.1.2 (pro Gerät, `<name>` = Gerätename wie eingegeben)
 `<name>.Status`, `.live consumption`, `.runtime`, `.runtime in ms`, `.lastRuntime`, `.messageDP`, `.average consumption`, `.alert runtime`, `.last operations` (JSON), `.config.do not disturb` (rw), `.config.runtime max` (rw, min).
 
@@ -126,19 +128,29 @@ Kernprinzip: Die Erkennungslogik ist eine **reine Zustandsmaschine** (`feed(valu
 
 Aufteilung (Design-Entscheidung):
 - **Geräte** werden im **Device Manager** verwaltet (Admin-Tab „Konfig-Manager“, früher „Devicemanager“, plus eingebettet in die Instanz-Einstellungen über die jsonConfig-Komponente `deviceManager`). Die Gerätekonfiguration liegt in `native` des jeweiligen `device`-Objekts `<deviceId>`, **nicht** in der Instanz-native. Änderungen wirken live ohne Adapter-Neustart (Adapter subscribed seine eigenen Geräte-Objekte), damit laufende Erkennungen nicht abgebrochen werden.
-- **Gerätetypen, Empfänger, Status-Texte, Allgemeines** bleiben in der Instanz-native (`configVersion: 4`, jsonConfig).
+- **Empfänger, Status-Texte, Allgemeines** bleiben in der Instanz-native (jsonConfig). Gerätetypen gibt es nicht mehr: Die Erkennungswerte stehen im Gerät (`DeviceConfig.detection`), `native.types` bleibt nur als lesbares Archiv (Phasen-Spec C.1, C.2).
 
 ### 6.1 Device Manager
-- **Instanz-Aktion „Gerät hinzufügen“** → `showForm`-Assistent: Schritt 1 Quelle wählen (Steckdose/Gerät/Alias per `objectId` → Type-Detector, oder „manuell“); Schritt 2 vorbefülltes Formular: aktiv, Name, Typ, Leistungs-State, Schalt-State (optional), Starttext, Endtext, Abbrucherkennung, autoOff + Minuten, Empfänger (Multi-Select), eingeklappt die optionalen Erweiterungen (Erinnerung, Aktionen).
-- **Gerätekarte:** Name, Typ-Icon, Status-Text, aktuelle Leistung, Laufzeit; Indikatoren „läuft“, „fertig/unquittiert“, Warnung bei `alertRuntime` oder fehlendem Leistungs-State.
-- **Geräte-Aktionen:** Bearbeiten (gleiches Formular), Löschen (mit `showConfirmation`; löscht Objekte), `enable`/`disable` (reserviert), Quittieren, „Nicht stören“ umschalten, Anlernen starten/stoppen (mit Fortschritt/Ergebnisdialog, Übernahme als Custom-Typ nach Bestätigung), Testnachricht.
-- **Details (aufklappbar):** letzte Läufe (`lastOperations`) als Tabelle, aktuelle Schwellen des Typs.
+- **Instanz-Aktion „Gerät hinzufügen“** → `showForm`-Assistent: Schritt 1 Quelle wählen (Steckdose/Gerät/Alias per `objectId` → Type-Detector, oder „manuell“); Schritt 2 vorbefülltes Formular: aktiv, Name, **Quelle der Erkennungswerte** (eingebaute Vorlage, Archiv-Vorlage oder Werte eines anderen Geräts), Leistungs-State, Schalt-State (optional), Starttext, Endtext, Abbrucherkennung, autoOff + Minuten, Empfänger (Multi-Select), Abschnitt „Erkennung“ (Modus, Schwellen, Dauern), eingeklappt „Expertenwerte“ (Pausenschutz, Knitterschutz, Schlussphase) und die optionalen Erweiterungen (Erinnerung, Aktionen). Ein Pflichtfeld „Typ“ gibt es nicht (Phasen-Spec C.4).
+- **Gerätekarte:** Name, Icon, Status-Text, aktuelle Leistung, Laufzeit; Indikatoren „läuft“, „fertig/unquittiert“, Warnung bei `alertRuntime` oder fehlendem Leistungs-State.
+- **Geräte-Aktionen:** Bearbeiten (gleiches Formular), Löschen (mit `showConfirmation`; löscht Objekte), `enable`/`disable` (reserviert), Quittieren, „Nicht stören“ umschalten, Anlernen starten/stoppen (mit Fortschritt/Ergebnisdialog, Übernahme der angelernten Werte ins Gerät nach Bestätigung), Testnachricht.
+- **Details (aufklappbar):** letzte Läufe (`lastOperations`) als Tabelle, aktuelle Erkennungswerte des Geräts (Grundwert und, falls die Auto-Optimierung abweicht, der wirksame Wert).
 
 ### 6.2 Instanz-Einstellungen (jsonConfig), Tabs
 1. **Geräte** — eingebetteter Device Manager (`deviceManager`-Komponente) + Hinweis.
-2. **Gerätetypen** — inkl. Erkennungsmodus pro Typ (§9.3); Default-Typen (Name gesperrt) und Custom-Typen (beliebig viele statt fix 10; migrierte custom1–10 bleiben erhalten).
+2. **Gerätetypen** — entfällt. An seiner Stelle steht ein Hinweistext, dass die Erkennungswerte (inkl. Erkennungsmodus, §9.3) im Gerät stehen; migrierte 3.1.2-Typen bleiben als Archiv-Vorlagen auswählbar.
 3. **Empfänger** — Tabelle/Accordion: aktiv (#113), Name, Messenger-Typ, Instanz (Select der vorhandenen Instanzen), messenger-spezifische Felder (Abschnitt 4.3 + neue Messenger), optionales Zeitfenster, Test-Button (sendTo).
 4. **Allgemein** — Status-Texte, Abtastintervall (Default 10 s, #386), Default-Zeitfenster.
+
+#### 6.3 Schlussphase, Phasen, Laufprüfung
+
+Diese drei Erweiterungen gehören zum Gerät, sind im Standard aus (Verhalten 3.1.2) und stehen im Geräteformular bzw. in den Dialogen des Device Managers.
+
+**Schlussphase** (Phasen-Spec A.3, B.6). Opt-in je Gerät (`final*`-Werte, 0 = aus). Sie meldet „fertig“ früh, wenn ein gelerntes Muster (Hochlast, dann Ruhe) erkannt ist, und hält danach eine Sperrphase, in der die weitere Leistung beobachtet wird. Endet die Sperrphase durch Ruhe oder Höchstdauer, bleibt es beim Ende; zeigt die Leistung einen neuen Lauf, wird dieser als gewöhnlicher neuer Lauf gemeldet. Es gibt keine Wiederaufnahme und keine Korrektur-Nachricht; falsche frühe Enden werden im Nachhinein erkannt und die Schlussphase wird ausgesetzt. Die Werte entstehen nur durch Lernen am eigenen Gerät, nie aus einer Vorlage.
+
+**Phasen** (Phasen-Spec A.4–A.6, B.5). Optionale Anzeige der aktuellen Phase eines Laufs (z. B. „Schleudern“) mit States `phase`, `phaseId`, `phaseSince`, `phases`, Ereignissen und Aktionen sowie optionalen Meldungen je Phase. Der Phasen-Tracker beobachtet nur und kann weder Start noch Ende noch eine Meldung der Erkennung ändern. Das Phasenmodell wird aus der History gelernt; Bänder und Klassen sind gerätespezifisch gelernt, nie vorgegeben.
+
+**Laufprüfung** (Phasen-Spec B.2, B.3). Jeder aufgezeichnete Lauf wird vor dem Lernen geprüft (`ok`, `limited`, `quarantine`, `unusable`, z. B. Datenlücke, Fremdlast, Testlauf, Einheitenfehler). Unverwertbare Aufzeichnungen verfälschen weder Anlernen noch Optimierung; der User sieht die Begründung und kann Läufe verwenden oder ausschließen. Zwei echte Läufe, die zu einem Lauf verschmelzen, sind kein Erkennungsfehler, solange das echte Ende des Gesamtlaufs erkannt wird.
 
 Alle Labels/Hilfetexte in `admin/i18n/<lang>.json` (11 Sprachen), Hilfetexte klar formuliert. Eingabeprüfung über jsonConfig-Mittel (`validator`, `min`, Pflichtfelder) statt der alten `ctrlInput`-Logik; zusätzliche Plausibilitätsprüfung beim Adapterstart mit verständlicher Log-Meldung pro Gerät.
 
@@ -154,7 +166,7 @@ Alle Labels/Hilfetexte in `admin/i18n/<lang>.json` (11 Sprachen), Hilfetexte kla
 
 1. In `onReady`: native ohne `configVersion` aber mit `linkedDevice`/`status`/`default` → Migration.
 2. Keine Sicherung der alten Konfiguration (vom User entschieden: V4 verhält sich 1:1 wie 3.1.2, die alte Konfiguration wird nach der Migration nicht mehr benötigt). Ein evtl. vorhandenes `info.legacyConfig` aus Testständen wird gelöscht.
-3. Umwandeln: `linkedDevice.finalIds` → Geräte-Objekte mit Config in deren `native` (inkl. `enabled`, `type`, `pathConsumption`, `pathSwitch`, `startText`, `endText`, `abort`, `autoOff`, `timer`, Empfänger-Referenzen pro Messenger), Messenger-Tabellen → Empfängerliste (IDs erhalten), `default.ids`/`custom.ids` → Typen, `status.ids[0]` → Status-Texte. Alle neuen Optionen aus.
+3. Umwandeln: `linkedDevice.finalIds` → Geräte-Objekte mit Config in deren `native` (inkl. `enabled`, `type`, `pathConsumption`, `pathSwitch`, `startText`, `endText`, `abort`, `autoOff`, `timer`, Empfänger-Referenzen pro Messenger), Messenger-Tabellen → Empfängerliste (IDs erhalten), `default.ids`/`custom.ids` → Erkennungswerte je Gerät (Kopie des verwendeten Typs; Zuordnung Phasen-Spec C.5), nicht abweichende bzw. ungenutzte Typen als Archiv, `status.ids[0]` → Status-Texte. Alle neuen Optionen aus.
 4. Neue native per `extendForeignObject` schreiben (Adapter startet neu).
 5. Nach dem Neustart: Werte aus alten States übernehmen (`last operations`, `lastRuntime`, `config.do not disturb`, `config.runtime max`, `Status`), dann alte Objekte löschen.
 6. Info-Log mit Zusammenfassung (x Geräte, y Empfänger migriert, Warnungen für Einträge, die nicht übernommen werden konnten).
@@ -166,9 +178,9 @@ Das exakte Speicherformat von `linkedDevice`/Messenger-Tabellen ergibt sich aus 
 
 1. **Erinnerung bis Quittierung** (#504, #36) — pro Gerät: Intervall (min), max. Anzahl (Default 10), Quittier-Quelle (eigener Button-State `<dev>.acknowledge` und/oder beliebiger fremder State, der auf `true` geht). Nur im Zeitfenster; außerhalb pausieren und am nächsten Tag ab Fensterbeginn fortsetzen. Neustart des Geräts gilt als Quittierung.
 2. **Zeitfenster für alle Empfänger** (#495) — optional pro Empfänger (Alexa/SayIt wie bisher). Nachrichten außerhalb werden verworfen (Erinnerung holt nach).
-3. **Zeitbasierte Erkennung** (#435) — pro Typ wählbarer Modus „zeitbasiert“: Start, wenn Leistung ≥ `startVal` für ≥ `startDuration`; Ende, wenn Leistung < `endVal` für ≥ `endDuration` (Timer startet beim Unterschreiten, neue Werte über Schwelle setzen zurück). Ereignisbasiert, damit Steckdosen, die nur bei Änderung senden, funktionieren. Kombination mit Anzahl möglich. Abtastintervall einstellbar (#386).
+3. **Zeitbasierte Erkennung** (#435) — pro Gerät wählbarer Modus „zeitbasiert“: Start, wenn Leistung ≥ `startVal` für ≥ `startDuration`; Ende, wenn Leistung < `endVal` für ≥ `endDuration` (Timer startet beim Unterschreiten, neue Werte über Schwelle setzen zurück). Ereignisbasiert, damit Steckdosen, die nur bei Änderung senden, funktionieren. Kombination mit Anzahl möglich. Abtastintervall einstellbar (#386).
 4. **Aktionen** (#446, #442) — pro Gerät Liste `{Ereignis: start|end|reminder|acknowledged, State-ID, Wert}`; plus immer vorhandene, additive States `finished` (bool, bis Quittierung/Neustart true) und `lastFinished` (Zeitstempel) für Skripte.
-5. **Anlernen** (#494) — Buttons `<dev>.learning.start/stop`; aufgezeichnete Kurve → Vorschlag für Typ-Parameter in State `<dev>.learning.result` (JSON) und in der Admin-UI per sendTo abrufbar; Übernahme als neuer Custom-Typ nur nach Bestätigung durch den User.
+5. **Anlernen** (#494) — Buttons `<dev>.learning.start/stop`; aufgezeichnete Kurve → Vorschlag für die Erkennungswerte des Geräts in State `<dev>.learning.result` (JSON) und in der Admin-UI per sendTo abrufbar; Übernahme ins Gerät nur nach Bestätigung durch den User (Phasen-Spec B.7).
 6. **Neue Messenger**: ntfy (#457), Pushsafer (#465), Gotify (#367) — jeweils als sendTo an den entsprechenden Adapter.
 7. **Empfänger deaktivierbar** (#113).
 
@@ -205,7 +217,7 @@ Plus `info.connection` (Repochecker). `stateDefinitions.ts` ist die einzige Quel
 
 ## 11. Qualitätssicherung
 
-- **Migration:** Fixtures aus dem Admin-Code von 3.1.2 abgeleitet (Speicherlogik in `admin/lib/adapterSettings.js`/`index_m.js` nachvollziehen), inkl. Varianten: leere Config, Gerät ohne `matrix`/`discord`-Arrays, alle Messenger, Custom-Typen umbenannt.
+- **Migration:** Fixtures aus dem Admin-Code von 3.1.2 abgeleitet (Speicherlogik in `admin/lib/adapterSettings.js`/`index_m.js` nachvollziehen), inkl. Varianten: leere Config, Gerät ohne `matrix`/`discord`-Arrays, alle Messenger, umbenannte `customN`-Typzeilen aus 3.1.2.
 - **Parität:** Unit-Tests füttern den Legacy-Kern und eine 1:1 aus 3.1.2 extrahierte Referenzimplementierung (als Test-Fixture, nicht im Paket) mit Verbrauchskurven (Waschmaschine, Trockner, Spülmaschine, Abbruch, Standby-Übergang) und vergleichen die Event-Folgen. Kurven zunächst synthetisch; echte Logs des Users werden ergänzt, sobald vorhanden.
 - Unit-Tests für Migration, Type-Detection, Messenger-Payloads, Zeitfenster, Erinnerungen.
 - `@iobroker/testing` Package- und Integrationstests; Coverage-Gate wie hoymiles (c8).
@@ -215,7 +227,7 @@ Plus `info.connection` (Repochecker). `stateDefinitions.ts` ist die einzige Quel
 
 ## 12. Dokumentation
 
-README kurz nach Checklisten-Struktur (Badges, Changelog unter `### **WORK IN PROGRESS**` mit `- (Eistee82) …`, alte Changelog-Einträge nach `CHANGELOG_OLD.md`, MIT, Copyright 2026 inkl. Original-Autor xenon-s). Ausführliche Doku in `docs/en/` und `docs/de/` (Setup, Geräte & Typen, Type-Detector, Empfänger je Messenger, optionale Funktionen, Migration, States-Referenz, FAQ). Kein Sentry.
+README kurz nach Checklisten-Struktur (Badges, Changelog unter `### **WORK IN PROGRESS**` mit `- (Eistee82) …`, alte Changelog-Einträge nach `CHANGELOG_OLD.md`, MIT, Copyright 2026 inkl. Original-Autor xenon-s). Ausführliche Doku in `docs/en/` und `docs/de/` (Setup, Geräte & Erkennungswerte, Type-Detector, Empfänger je Messenger, optionale Funktionen, Migration, States-Referenz, FAQ). Kein Sentry.
 
 ## 13. Vom User entschieden
 
@@ -224,6 +236,20 @@ README kurz nach Checklisten-Struktur (Badges, Changelog unter `### **WORK IN PR
 - Type-Detector: Steckdose wählen → States automatisch; manuell bleibt möglich.
 - Alle Issue-Wünsche mitnehmen, aber optional; Standard = bisheriges Verhalten.
 - Repo unter Eistee82, später Transfer; npm über ioBroker-Team.
+
+### Vom User entschieden: Phasen, Schlussphase, Werte im Gerät, Auto-Optimierung (14.11.2026)
+
+Umsetzung in `docs/superpowers/specs/2026-11-13-phasenerkennung-design.md` (gewinnt bei Widerspruch) und im Plan `docs/superpowers/plans/2026-11-14-phasenerkennung.md`.
+
+1. Gerät mit unbekanntem 3.1.2-Typ wird übernommen, aber deaktiviert (`enabled = false`, `needsReview`), mit Hinweis in Log und Gerätekarte.
+2. AutoOff mit Schlussphase startet erst, wenn die Sperrphase über einen Ruhe- oder Ende-Ausgang (a, b, e) endet; bei einem Aktivitäts-Ausgang (c, d, f, g) folgt AutoOff dem Ende des neuen Laufs.
+3. Die Auto-Optimierung optimiert automatisch ohne Bestätigungsklick, schaltet auch die Schlussphase selbst ein, justiert nach und setzt aus – nur mit Beleg auf allen zugelassenen Läufen des 30-Tage-Fensters plus Grenzläufen; jede Änderung ist sichtbar, rückgängig machbar und optional gemeldet.
+4. Mindestzahlen: Verschärfung ab 8 zugelassenen Läufen, Schlussphase automatisch ab 10 Läufen und mindestens 2 je betroffener Programmgruppe; kleine Schritte (≤ 25 %), Abstand 2 neue Läufe und 24 h, Sperre 5 Läufe bzw. 14 Tage; Reparatur ohne Mindestzahl.
+5. Keine Wiederaufnahme, kein `resume`, keine Korrektur-Nachricht: Alles nach einem frühen Ende ist ein neuer Lauf, Beurteilung nur im Nachhinein.
+6. Geräteunabhängig: keine Regel mit gerätespezifischer Annahme; Wissen nur als gelernte Bedingung (Wert 0 = Regel aus).
+7. Jede 3.1.2-Einstellung landet an der richtigen V4-Stelle (Phasen-Spec C.5), je Zeile durch einen Test abgesichert.
+8. Saubere Erkennung hat Vorrang: Erkennt die Erkennung einen zugelassenen Lauf nicht richtig (Start fehlt, Ende zu früh, zerteilt, Ende nicht erkannt, Phantomstart), wird sofort in die sichere Richtung repariert, unabhängig von Mindestzahl, Abstand und Sperre; Läufe in Quarantäne lösen nichts aus.
+9. Verschmolzene Läufe: „zwei läufe als einen erkennen ist nicht schlimm denn dann läuft das gerät ja durchgehend. wichtig ist nur das dann auch das ende erkannt wird wenn es ein richtiges ende gibt“ – kein Erkennungsfehler, keine Reparatur; Pflicht ist nur, dass das echte Ende des Gesamtlaufs erkannt wird.
 - Checkliste in jedem Punkt verbindlich.
 - Kein notification-manager.
 - **Parität:** Erkennungszeitpunkte (Start/Betrieb/Ende/Standby/Aus) 1:1 wie 3.1.2, inklusive der Eigenheit der Abbrucherkennung (§4.1); zusätzlich eine korrigierte Abbrucherkennung als Option (Default aus). Messenger-Payload-Bugs (Telegram-Keys, Pushover prio/deviceID/ttl, Discord-Leerfelder, Alexa ohne Volume-State) und Anzeigefehler (`lastRuntime`-Überschreiben beim Start, Laufzeitstring-Zeitzonenversatz, `initialize` beim Start) werden **behoben**. Migration setzt Telegram `username`/`firstname`/`chatID` auf die passenden Felder des Telegram-Adapters um.
@@ -237,10 +263,10 @@ README kurz nach Checklisten-Struktur (Badges, Changelog unter `### **WORK IN PR
 - Blockly-Blöcke, Device-Manager-Karte und vis-2-Widgets alle in V4.0 — eine Auslieferung, keine Phasen (vom User entschieden).
 - Quittieren über einen immer vorhandenen Button-State `<dev>.acknowledge` (setzt `finished` zurück und beendet Erinnerungen); zusätzlich optional ein fremder Quittier-State pro Gerät.
 - Neue State-IDs (Breaking) mit Werteübernahme und Löschen der alten Objekte.
-- Custom-Typen unbegrenzt statt fix 10.
+- Erkennungswerte im Gerät, eingebaute Vorlagen und Archiv (statt Gerätetypen, auch statt Custom-Typen).
 - Nachrichten außerhalb eines Zeitfensters werden verworfen, nicht gepuffert.
 - `common.type` bleibt `logic` (wie im Repository eingetragen).
-- Erkennungsmodus (Anzahl / zeitbasiert) wird **pro Typ** gewählt; ein Gerät erbt ihn über seinen Typ. „Kombiniert“ heißt: Anzahl- UND Dauer-Bedingung müssen beide erfüllt sein.
+- Erkennungsmodus (Anzahl / zeitbasiert) wird **pro Gerät** gewählt. „Kombiniert“ heißt: Anzahl- UND Dauer-Bedingung müssen beide erfüllt sein.
 - Erinnerungen: ein Zyklus und ein Zähler **pro Gerät**; jeder Versand prüft das Zeitfenster jedes Empfängers einzeln; liegt kein Empfänger im Fenster, pausiert der Zyklus bis zum nächsten Fensterbeginn eines Empfängers.
 - Zeitfenster über Mitternacht (z. B. 22:00–06:00) werden in V4 unterstützt, ändert keine bestehende Config.
 - Migration akzeptiert alle 3.x-Configs; fehlende Messenger-Arrays werden als leer behandelt. Configs aus den unveröffentlichten GitHub-Branches werden nicht gesondert unterstützt (Warnung, Eintrag wird übersprungen).
