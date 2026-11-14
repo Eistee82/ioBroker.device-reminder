@@ -127,6 +127,7 @@
 	"dm_optKind_finalRepair": "最终阶段已修复",
 	"dm_optKind_finalResume": "最终阶段已重新启用",
 	"dm_optKind_finalSuspend": "最终阶段已暂停（检测到错误的提前结束）",
+	"dm_optKind_finalTune": "最终阶段已调整",
 	"dm_optKind_repair": "修复",
 	"dm_optKind_reset": "重置",
 	"dm_optKind_revert": "已撤回修复",

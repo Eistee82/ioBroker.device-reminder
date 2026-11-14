@@ -127,6 +127,7 @@
 	"dm_optKind_finalRepair": "Fase finale riparata",
 	"dm_optKind_finalResume": "Fase finale riattivata",
 	"dm_optKind_finalSuspend": "Fase finale sospesa (rilevata una fine anticipata errata)",
+	"dm_optKind_finalTune": "Fase finale regolata",
 	"dm_optKind_repair": "Riparazione",
 	"dm_optKind_reset": "Ripristino",
 	"dm_optKind_revert": "Riparazione annullata",

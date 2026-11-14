@@ -174,6 +174,7 @@ async function advanceTo(host, ts) {
  * @param {object} [o.inst] instance fields
  * @param {(deviceId: string) => Promise<void>} [o.beforeOptimizeWrite] test hook between the result of an
  * optimisation and its write
+ * @param {object} [o.objects] object writer of the registry (states created again by the optimisation)
  * @returns {Promise<object>} `{ host, files, inst, reg, cfg }`
  */
 export async function registrySetup(o = {}) {
@@ -184,6 +185,7 @@ export async function registrySetup(o = {}) {
 		language: () => o.lang ?? "de",
 		...(o.history ? { history: o.history } : {}),
 		...(o.beforeOptimizeWrite ? { beforeOptimizeWrite: o.beforeOptimizeWrite } : {}),
+		...(o.objects ? { objects: o.objects } : {}),
 	});
 	const cfg = deviceConfig({
 		name: "Waschmaschine",
@@ -315,8 +317,17 @@ export async function windowsFeed(ctx, ids, copies = 1, name = "washer30d") {
 	for (let c = 0; c < copies; c++) {
 		windows.push(...ids.map(id => runWindow(name, id)));
 	}
-	const line = timelineOf(windows, 86_400_000);
-	// a plug reports every poll, also an unchanged value (the history stores changes only)
+	await liveFeed(ctx, timelineOf(windows, 86_400_000));
+}
+
+/**
+ * Feed stored values through the registry as a plug reports them (every poll, also an unchanged value; the history
+ * stores changes only), times from the clock of the host on, then wait for the optimisation.
+ *
+ * @param {object} ctx registry context
+ * @param {{ ts: number, val: number }[]} line stored values (sorted)
+ */
+export async function liveFeed(ctx, line) {
 	const live = resample(line, line[0].ts, line.at(-1).ts + STEP, STEP);
 	const shift = ctx.host.now() + STEP - live[0].ts;
 	await feedPoints(

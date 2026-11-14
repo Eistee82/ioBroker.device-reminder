@@ -127,6 +127,7 @@
 	"dm_optKind_finalRepair": "Кінцеву фазу виправлено",
 	"dm_optKind_finalResume": "Кінцеву фазу знову увімкнено",
 	"dm_optKind_finalSuspend": "Кінцеву фазу призупинено (виявлено хибне раннє завершення)",
+	"dm_optKind_finalTune": "Кінцеву фазу скориговано",
 	"dm_optKind_repair": "Виправлення",
 	"dm_optKind_reset": "Скидання",
 	"dm_optKind_revert": "Виправлення скасовано",

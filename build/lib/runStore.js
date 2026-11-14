@@ -17,6 +17,51 @@ export const MAX_CHANGES = 10;
 const START_MATCH_MS = 5 * 60_000;
 const POST_ROLL_MS = MAX_PAUSE_MS;
 const BANDS_MIN_RUNS = 3;
+const JOINED_MAX = 20;
+export function markFinalSuspended(store, reason, key, now, on) {
+    const final = store.final ?? { state: on ? "on" : "off", splits: [], suspendedAt: 0 };
+    const was = final.state === "suspended";
+    const joined = reason === "finalSplit" && !(final.joined ?? []).includes(key);
+    store.final = {
+        ...final,
+        state: "suspended",
+        splits: final.splits.includes(key) ? final.splits : [...final.splits, key],
+        suspendedAt: was ? final.suspendedAt : now,
+        reason,
+        ...(joined ? { joined: [...(final.joined ?? []), key].slice(-JOINED_MAX) } : {}),
+    };
+    if (!was) {
+        delete store.final.stays;
+    }
+    pushChange(store, {
+        ts: now,
+        kind: "finalSuspend",
+        from: store.override,
+        to: store.override,
+        reason: `final phase suspended (${reason})`,
+        runs: store.runs.length + store.spikes.length,
+        gainSec: 0,
+        trigger: key,
+    });
+    return was;
+}
+export function markFinalResumed(store, why, now, on, key) {
+    const final = store.final ?? { state: "off", splits: [], suspendedAt: 0 };
+    const next = { ...final, state: on ? "on" : "off", splits: [], suspendedAt: 0 };
+    delete next.reason;
+    delete next.stays;
+    store.final = next;
+    pushChange(store, {
+        ts: now,
+        kind: "finalResume",
+        from: store.override,
+        to: store.override,
+        reason: `final phase used again (${why})`,
+        runs: store.runs.length + store.spikes.length,
+        gainSec: 0,
+        ...(key ? { trigger: key } : {}),
+    });
+}
 export const BASE_KEYS = [
     "startVal",
     "endVal",
@@ -608,6 +653,34 @@ export function finalSplitPairs(c, deviceId) {
         });
     });
     return out;
+}
+const SPLIT_WITHIN_MS = 3 * 60 * 60_000;
+export function joinedCapture(store, c) {
+    const first = c.ev.find(e => e[1] === "s");
+    if (!first || first[2] === undefined || !JUDGED_EXITS.includes(first[2])) {
+        return null;
+    }
+    if (c.ev.some(e => e[1] !== "s" && e[0] < first[0])) {
+        return null;
+    }
+    const prev = store.runs
+        .filter(r => typeof r.data === "string" && r.step === c.stepMs && r.unitFactor === c.unitFactor && r.ts < c.t0)
+        .sort((a, b) => b.ts - a.ts)[0];
+    const last = prev?.ev.at(-1);
+    if (!prev || !last || last[1] === "s" || first[0] - last[0] > SPLIT_WITHIN_MS) {
+        return null;
+    }
+    const cells = decodeCells(prev.data, prev.q);
+    const gap = Math.round((c.t0 - (prev.ts + cells.length * prev.step)) / c.stepMs);
+    const head = gap >= 0 ? [...cells, ...new Array(gap).fill(cells[cells.length - 1])] : cells.slice(0, gap);
+    return {
+        t0: prev.ts,
+        stepMs: c.stepMs,
+        unitFactor: c.unitFactor,
+        cells: [...head, ...c.cells],
+        ev: [...prev.ev.filter(e => !c.ev.some(x => x[0] === e[0] && x[1] === e[1])), ...c.ev].sort((a, b) => a[0] - b[0]),
+        postTruncated: c.postTruncated,
+    };
 }
 export function envelopeOf(runs, spikes) {
     const env = emptyEnvelope();

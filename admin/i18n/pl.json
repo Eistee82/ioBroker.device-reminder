@@ -127,6 +127,7 @@
 	"dm_optKind_finalRepair": "Faza końcowa naprawiona",
 	"dm_optKind_finalResume": "Faza końcowa ponownie włączona",
 	"dm_optKind_finalSuspend": "Faza końcowa wstrzymana (wykryto błędne wczesne zakończenie)",
+	"dm_optKind_finalTune": "Faza końcowa dostosowana",
 	"dm_optKind_repair": "Naprawa",
 	"dm_optKind_reset": "Reset",
 	"dm_optKind_revert": "Naprawa cofnięta",

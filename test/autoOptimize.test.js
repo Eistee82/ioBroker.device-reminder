@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
-import { DRYER as DRYER_VALUES, WASHER as WASHER_VALUES } from "./helpers/devices.js";
+import { DRYER as DRYER_VALUES, registrySetup, WASHER as WASHER_VALUES, windowsFeed } from "./helpers/devices.js";
+import { WM_FINAL } from "./helpers/final.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import { DeviceRuntime } from "../build/lib/deviceRuntime.js";
 import {
@@ -17,7 +18,7 @@ import {
 import { simulate } from "../build/lib/learn/replay.js";
 import { fromCells } from "../build/lib/learn/ticks.js";
 import { Notifier } from "../build/lib/notifier.js";
-import { addRun, emptyStore, labelCapture, typeHash } from "../build/lib/runStore.js";
+import { addRun, emptyStore, labelCapture, recompute, typeHash } from "../build/lib/runStore.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { lcg, runOf, times } from "./helpers/programmes.js";
 import { memoryFiles } from "./helpers/files.js";
@@ -605,5 +606,108 @@ describe("automatic optimisation engine", function () {
 		// a tiny budget stops the job without a change
 		const budget = await optimizeShared(store, { ...ctxOf(now + 60 * DAY), budgetMs: -1 });
 		assert.strictEqual(budget.kind, "budget");
+	});
+});
+
+describe("final phase in the optimisation engine (Spec D.3 point 3, D.5)", function () {
+	this.timeout(600_000);
+	it("an admitted run reported too early in the replay suspends the final phase and repairs it in the same job", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER_VALUES, ...WM_FINAL } });
+		await windowsFeed(ctx, ["w01", "w03", "w06"]);
+		const store = structuredClone(ctx.reg.learningData("dev"));
+		const quality = {
+			bands: store.bands,
+			unitFactor: 1,
+			unit: "W",
+			settings: null,
+			pollMs: STEP,
+			outages: [],
+			scope: "run",
+		};
+		// Y 30 s: the intermediate spins count as final block, every run is reported too early
+		const type = { ...WASHER_VALUES, ...WM_FINAL, finalMinSec: 30 };
+		const out = await optimize(store, {
+			type,
+			pollSec: 10,
+			abort: false,
+			abortFixed: false,
+			yieldFn: async () => {},
+			now: ctx.host.now(),
+			budgetMs: 60_000,
+			clock: () => Date.now(),
+			verdicts: recompute(store, quality),
+			quality,
+		});
+		assert.deepStrictEqual(
+			out.final.map(e => e.kind),
+			["suspended", "repaired", "resumed"],
+		);
+		assert.strictEqual(out.final[0].reason, "earlyEnd");
+		assert.ok(out.override.finalMinSec > 30, JSON.stringify(out.override));
+		assert.strictEqual(
+			out.override.finalMinVal ?? WM_FINAL.finalMinVal,
+			WM_FINAL.finalMinVal,
+			"only the safe direction",
+		);
+		assert.deepStrictEqual(
+			store.changes.map(c => c.kind),
+			["finalSuspend", "finalRepair", "finalResume"],
+		);
+		assert.strictEqual(store.final.state, "on");
+		assert.ok(store.lockRuns > 0, "the repair locks the tightening");
+		assert.strictEqual(out.vetoes.length, 3, "the runs that were reported too early become boundary runs");
+		const again = await gate(store, effectiveOf(type, store.override), {
+			type,
+			pollSec: 10,
+			abort: false,
+			abortFixed: false,
+			yieldFn: async () => {},
+			now: ctx.host.now(),
+			budgetMs: 60_000,
+			clock: () => Date.now(),
+		});
+		assert.strictEqual(again.ok, true, "every stored run is detected again");
+	});
+	it("a split run that is not stored yet keeps the final phase suspended (noted once), the base values are still checked", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER_VALUES, ...WM_FINAL } });
+		await windowsFeed(ctx, ["w01", "w03"]);
+		const store = structuredClone(ctx.reg.learningData("dev"));
+		store.final = {
+			state: "suspended",
+			splits: ["dev@1"],
+			joined: ["dev@1"],
+			suspendedAt: 1,
+			reason: "finalSplit",
+		};
+		const quality = {
+			bands: store.bands ?? null,
+			unitFactor: 1,
+			unit: "W",
+			settings: null,
+			pollMs: STEP,
+			outages: [],
+			scope: "run",
+		};
+		const ctxOpt = {
+			type: { ...WASHER_VALUES, ...WM_FINAL },
+			pollSec: 10,
+			abort: false,
+			abortFixed: false,
+			yieldFn: async () => {},
+			now: ctx.host.now(),
+			budgetMs: 60_000,
+			clock: () => Date.now(),
+			verdicts: recompute(store, quality),
+			quality,
+			finalSuspended: true,
+		};
+		const out = await optimize(store, ctxOpt);
+		assert.deepStrictEqual(
+			out.final.map(e => [e.kind, e.reason]),
+			[["stays", "notStored"]],
+		);
+		assert.deepStrictEqual([store.final.state, store.final.stays], ["suspended", "notStored"]);
+		assert.deepStrictEqual((await optimize(store, ctxOpt)).final, [], "noted once");
+		assert.ok(!store.changes.some(c => c.kind === "finalRepair" || c.kind === "finalResume"));
 	});
 });

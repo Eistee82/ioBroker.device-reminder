@@ -146,13 +146,14 @@ export function phaseInput(points, o = {}) {
 
 /**
  * Soaking programme (Spec 8.2): before the final spin of run k a copy of that spin block, then 45 min of
- * 3 W; everything from the final spin on comes later by that time.
+ * `level` W; everything from the final spin on comes later by that time.
  *
  * @param {{ ts: number, val: number }[]} points stored values in W
  * @param {number} k index into the layout runs
+ * @param {number} [level] power while soaking in W
  * @returns {{ ts: number, val: number }[]} stored values
  */
-export function soaking(points, k) {
+export function soaking(points, k, level = 3) {
 	const { s, L } = layoutOf(points);
 	const r = L.runs[k];
 	const from = s.t0 + r.endBlockFrom * s.stepMs;
@@ -164,7 +165,7 @@ export function soaking(points, k) {
 		...points.filter(p => p.ts < from),
 		{ ts: from, val: held.val },
 		...block,
-		{ ts: to, val: 3 },
+		{ ts: to, val: level },
 		{ ts: from + shiftMs, val: held.val },
 		...points.filter(p => p.ts > from).map(p => ({ ts: p.ts + shiftMs, val: p.val })),
 	];

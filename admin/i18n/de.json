@@ -127,6 +127,7 @@
 	"dm_optKind_finalRepair": "Schlussphase repariert",
 	"dm_optKind_finalResume": "Schlussphase wieder eingeschaltet",
 	"dm_optKind_finalSuspend": "Schlussphase ausgesetzt (falsches frühes Ende erkannt)",
+	"dm_optKind_finalTune": "Schlussphase nachgeführt",
 	"dm_optKind_repair": "Reparatur",
 	"dm_optKind_reset": "Zurückgesetzt",
 	"dm_optKind_revert": "Reparatur zurückgenommen",

@@ -1,6 +1,8 @@
+import { finalViolations } from "../config.js";
+import { finalOn } from "../detector/index.js";
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import { FINAL_KEYS } from "../detector/types.js";
-import type { DetectionSettings } from "../detector/types.js";
+import type { DetectionSettings, FinalSettings } from "../detector/types.js";
 import type { BaseKey, Change, OptimizeInfo, StoredRun, StoreFile } from "../runStore.js";
 import {
 	BASE_KEYS,
@@ -9,15 +11,20 @@ import {
 	DETECTION_KEYS,
 	detectionOf,
 	inUse,
+	markFinalResumed,
+	markFinalSuspended,
 	pushChange,
 	refreshInfo,
 	REPLAY_PICK_MAX,
+	storeSamples,
 	WINDOW_MS,
 } from "../runStore.js";
 import type { HistorySuggestion } from "./analyze.js";
 import { analyzeTicks } from "./analyze.js";
+import type { FinalCandidate } from "./finalLearn.js";
+import { learnFinal } from "./finalLearn.js";
 import { margin, minEndSec } from "./optimize.js";
-import type { Verdict } from "./quality.js";
+import type { QualityContext, Verdict } from "./quality.js";
 import { admitted, primaryOf, sameRun } from "./quality.js";
 import { endOkFull, simulate } from "./replay.js";
 import type { SimResult } from "./replay.js";
@@ -57,6 +64,26 @@ const HINTED_MAX = 50;
 /** Findings of a data error (Spec B.3): the hint says the recording is disturbed, without asking to use the run. */
 const DATA_ERRORS = new Set(["gap", "stuck", "sparse", "incomplete", "unit", "counter"]);
 
+/**
+ * The optimisation switches the final phase on by itself only with this many admitted runs in the 30-day window
+ * (Spec D.5, decision 4; also the fewest runs `learnFinal` must cover when it tunes the final phase).
+ */
+export const FINAL_ENABLE_MIN_RUNS = 10;
+/** … and this many runs per programme group (Spec D.5, decision 4). */
+export const FINAL_ENABLE_MIN_PER_GROUP = 2;
+/** Largest change of the lower limit of the final band (P) per step. */
+const FINAL_P_STEP = 0.1;
+/** Largest drop of the time in the final band (Y) per step … */
+const FINAL_Y_DROP = 0.1;
+/** … which needs this many covered runs (otherwise Y does not drop). */
+const FINAL_Y_DROP_RUNS = 5;
+/** Largest drop of the earliest start of the final block (X) per step. */
+const FINAL_X_DROP = 0.25;
+/** Factors of the final phase repair: time in the final band (Y) higher, earliest start (X) later, P narrower. */
+const FINAL_REPAIR_Y = [1, 1.25, 1.5, 2, 3, 4];
+const FINAL_REPAIR_X = [1, 1.25, 1.5, 2];
+const FINAL_REPAIR_P = [1, 1.1, 1.25, 1.5];
+
 /** Changes of the input data used to check a candidate for robustness. */
 export type Perturbation = "none" | "scale09" | "scale11" | "shift1" | "stale5";
 
@@ -85,6 +112,28 @@ export interface OptimizeContext {
 	verdicts?: ReadonlyMap<string, Verdict>;
 	/** The final phase is suspended: runs are replayed with `finalMinVal = 0` (the values in use at runtime). */
 	finalSuspended?: boolean;
+	/**
+	 * Context of the run check of the stored runs: needed to learn the final phase (switching it on, tuning it);
+	 * without it the final phase is only repaired.
+	 */
+	quality?: QualityContext;
+}
+
+/** What the optimisation did with the final phase (Spec D.5), in order. */
+export interface FinalEvent {
+	/**
+	 * `suspended`: an admitted run was reported too early in the replay; `repaired`: new values of the final phase
+	 * after a suspension; `resumed`: used again (`reason` `repair` or `endOk`); `on`: switched on; `tuned`: adjusted;
+	 * `stays`: still suspended (`reason` `noRepair`: no values detect every admitted run, `notStored`: the split run
+	 * is not stored yet).
+	 */
+	kind: "suspended" | "repaired" | "resumed" | "on" | "tuned" | "stays";
+	/** Reason. */
+	reason?: string;
+	/** Key of the run that caused it. */
+	key?: string;
+	/** Change that was recorded. */
+	change?: Change;
 }
 
 /** A run in quarantine that the values in use do not detect correctly (Spec B.3 hint). */
@@ -112,6 +161,11 @@ export interface GateResult {
 	falseStarts: number;
 	/** Keys of the false starts that start a run. */
 	spikeKeys: string[];
+	/**
+	 * Runs judged `finalSplit`, replayed with their early part as one run (only with a final phase): ok when the
+	 * final phase reports no end before the values without it and starts no run more.
+	 */
+	joined: { key: string; ok: boolean }[];
 }
 
 /** Result of an optimisation job. */
@@ -132,6 +186,8 @@ export interface OptimizeOutcome {
 	vetoClear: string[];
 	/** New hints about runs in quarantine (each run once). */
 	hints: Hint[];
+	/** What happened with the final phase (in this order). */
+	final: FinalEvent[];
 }
 
 class BudgetExceeded extends Error {}
@@ -358,6 +414,11 @@ class Data {
 	public readonly target: StoredRun[];
 	/** Keys of the runs grown together from two runs (only the end of the whole run is checked). */
 	public readonly merged: Set<string>;
+	/** The final phase is suspended: replayed with `finalMinVal = 0` (set during a job that suspends it). */
+	public suspended: boolean;
+	/** Stored runs judged `finalSplit` with their early part (`FinalState.joined`, both parts with cells). */
+	public readonly joined: { key: string; a: StoredRun; b: StoredRun }[];
+	private readonly joinedSeries = new Map<string, { s: TickSeries; win: Window }>();
 
 	public constructor(
 		public readonly store: StoreFile,
@@ -377,15 +438,78 @@ class Data {
 				.filter(r => ctx.verdicts?.get(r.key)?.reasons.some(x => x.code === "merged") === true)
 				.map(r => r.key),
 		);
+		this.suspended = ctx.finalSuspended === true;
+		this.joined = this.joinedRuns();
 	}
 
 	/**
 	 * Values as the detector is built at runtime: with a suspended final phase `finalMinVal = 0`.
 	 *
 	 * @param p - Values
+	 * @param raw - The values as they are (a final phase that would be used again)
 	 */
-	public replayValues(p: DetectionSettings): DetectionSettings {
-		return this.ctx.finalSuspended ? { ...p, finalMinVal: 0 } : p;
+	public replayValues(p: DetectionSettings, raw = false): DetectionSettings {
+		return this.suspended && !raw ? { ...p, finalMinVal: 0 } : p;
+	}
+
+	/**
+	 * Runs judged `finalSplit` that are stored with cells, each with the stored run that ends where it begins (its
+	 * early part); runs excluded or unusable are left out.
+	 */
+	private joinedRuns(): { key: string; a: StoredRun; b: StoredRun }[] {
+		const { store, ctx } = this;
+		const out: { key: string; a: StoredRun; b: StoredRun }[] = [];
+		const usable = (r: StoredRun): boolean =>
+			typeof r.data === "string" && inUse(store, r) && roleOf(store, r, ctx.verdicts) !== "none";
+		for (const key of store.final?.joined ?? []) {
+			const b = store.runs.find(r => r.key === key || sameRun(r.key, key));
+			if (!b || !usable(b) || out.some(x => x.b === b)) {
+				continue;
+			}
+			const a = store.runs
+				.filter(
+					r =>
+						r !== b &&
+						r.step === b.step &&
+						r.ts < b.ts &&
+						usable(r) &&
+						r.ts + this.cellsOf(r).length * r.step >= b.ts - r.step,
+				)
+				.sort((x, y) => y.ts - x.ts)[0];
+			if (a) {
+				out.push({ key: b.key, a, b });
+			}
+		}
+		return out;
+	}
+
+	/**
+	 * Series of a run judged `finalSplit` and its early part as one run (unit of the state) with its window.
+	 *
+	 * @param pair - Both parts
+	 * @param pair.key - Key of the split run
+	 * @param pair.a - Early part
+	 * @param pair.b - Split run
+	 */
+	public joinedOf(pair: { key: string; a: StoredRun; b: StoredRun }): { s: TickSeries; win: Window } {
+		let out = this.joinedSeries.get(pair.key);
+		if (out) {
+			return out;
+		}
+		const a = this.cellsOf(pair.a);
+		const b = this.cellsOf(pair.b);
+		const gap = Math.round((pair.b.ts - (pair.a.ts + a.length * pair.a.step)) / pair.a.step);
+		const fill = gap > 0 ? new Array<TickCell>(gap).fill(a[a.length - 1]) : [];
+		const cells = [...a, ...fill, ...(gap < 0 ? b.slice(-gap) : b)];
+		const off = a.length + gap;
+		const s = fromCells(cells, pair.a.ts, pair.a.step);
+		const end = Math.min(cells.length - 1, off + pair.b.seg.runEndIdx);
+		out = {
+			s,
+			win: { fromIdx: 0, toIdx: cells.length - 1, runStartIdx: pair.a.seg.startIdx, runEndIdx: end, run: 0 },
+		};
+		this.joinedSeries.set(pair.key, out);
+		return out;
 	}
 
 	/**
@@ -538,17 +662,19 @@ function runGood(data: Data, r: StoredRun, s: TickSeries, win: Window, res: SimR
  * @param p - Values (unit of the state)
  * @param perturb - Perturbation of the input
  * @param only - Only these runs (default: all)
+ * @param raw - Replay the values as they are, also while the final phase is suspended
  */
 async function gateOn(
 	data: Data,
 	p: DetectionSettings,
 	perturb: Perturbation,
 	only?: (r: StoredRun) => boolean,
+	raw = false,
 ): Promise<GateResult> {
 	const { ctx } = data;
 	const opts = { abort: ctx.abort, abortFixed: ctx.abortFixed, pollSec: ctx.pollSec };
 	const shift = perturb === "shift1" ? 1 : 0;
-	const values = data.replayValues(p);
+	const values = data.replayValues(p, raw);
 	const perRun: GateResult["perRun"] = [];
 	let ok = true;
 	for (const r of data.runs) {
@@ -578,7 +704,39 @@ async function gateOn(
 		}
 		await data.tick();
 	}
-	return { ok: ok && falseStarts === 0, perRun, spikesOk: falseStarts === 0, falseStarts, spikeKeys };
+	// the rest of a split programme with its early part as one run (Spec D.5): only the final phase can split it
+	const joined: GateResult["joined"] = [];
+	if (perturb === "none" && !only && finalOn(values)) {
+		for (const pair of data.joined) {
+			const { s, win } = data.joinedOf(pair);
+			const good = joinedOk(
+				simulate(s, win, values, opts),
+				simulate(s, win, { ...values, finalMinVal: 0 }, opts),
+				s.stepMs,
+			);
+			joined.push({ key: pair.key, ok: good });
+			ok &&= good;
+			await data.tick();
+		}
+	}
+	return { ok: ok && falseStarts === 0, perRun, spikesOk: falseStarts === 0, falseStarts, spikeKeys, joined };
+}
+
+/**
+ * A split programme replayed as one run (Spec D.5): the final phase reports no end before the values without it
+ * (at most one poll) and starts no run more; its last end may come earlier, that is its gain.
+ *
+ * @param r - Replay with the final phase
+ * @param off - Replay of the same values without it
+ * @param stepMs - Poll interval in ms
+ */
+function joinedOk(r: SimResult, off: SimResult, stepMs: number): boolean {
+	const first = off.finished[0];
+	return (
+		r.started <= off.started &&
+		r.aborted <= off.aborted &&
+		(first === undefined || (r.finished[0] ?? Number.POSITIVE_INFINITY) >= first - stepMs)
+	);
 }
 
 /**
@@ -586,11 +744,12 @@ async function gateOn(
  *
  * @param data - Decoded data
  * @param p - Values (unit of the state)
+ * @param raw - Replay the values as they are, also while the final phase is suspended
  */
-async function quarantineOn(data: Data, p: DetectionSettings): Promise<Map<string, boolean>> {
+async function quarantineOn(data: Data, p: DetectionSettings, raw = false): Promise<Map<string, boolean>> {
 	const { ctx } = data;
 	const opts = { abort: ctx.abort, abortFixed: ctx.abortFixed, pollSec: ctx.pollSec };
-	const values = data.replayValues(p);
+	const values = data.replayValues(p, raw);
 	const out = new Map<string, boolean>();
 	for (const r of data.quarantined) {
 		const s = data.seriesOf(r, "none");
@@ -608,7 +767,11 @@ async function quarantineOn(data: Data, p: DetectionSettings): Promise<Map<strin
  * @param g - Gate result
  */
 function failingOf(g: GateResult): string[] {
-	return [...g.perRun.filter(r => !r.ok).map(r => r.key), ...g.spikeKeys];
+	return [
+		...g.perRun.filter(r => !r.ok).map(r => r.key),
+		...g.spikeKeys,
+		...g.joined.filter(r => !r.ok).map(r => r.key),
+	];
 }
 
 /**
@@ -1070,8 +1233,13 @@ function updateReview(data: Data, hints: readonly Hint[]): void {
  * check set is taken at once, whatever the minimum count, the spacing, the lock, the drift and the step limits say;
  * runs in quarantine trigger nothing and only must not get worse. A tightening (end reported earlier) needs
  * TIGHTEN_MIN_RUNS admitted runs in the window, step limits, a cross-check, perturbed input and the envelope floors,
- * and never runs during a drift. Nothing changes if no candidate passes the gate. The store is updated in place
- * (only top-level fields, `info` and `changes`; vetoes and hints come back in the outcome).
+ * and never runs during a drift. Nothing changes if no candidate passes the gate.
+ *
+ * The final phase (Spec D.5) has its own path: the candidates of the analysis keep it as it is. An admitted run
+ * reported too early by it suspends it at once; a suspended final phase is used again or repaired right after the
+ * run (`recoverFinal`). Without a repair or a drift it is switched on or tuned (`finalStep`) before a tightening of
+ * the base values is tried. The store is updated in place (only top-level fields, `info` and `changes`; vetoes,
+ * hints and the events of the final phase come back in the outcome).
  *
  * @param store - Store
  * @param ctx - Context
@@ -1082,7 +1250,21 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 	refreshInfo(store);
 	const data = new Data(store, ctx);
 	let hints: Hint[] = [];
-	const done: Done = (kind, change = null, extra = {}) => {
+	const events: FinalEvent[] = [];
+	const vetoes: string[] = [];
+	const build: Done = (kind, change = null, extra = {}) => ({
+		kind,
+		override: store.override,
+		change,
+		info,
+		failing: [],
+		vetoes: [],
+		vetoClear: [],
+		hints,
+		final: events,
+		...extra,
+	});
+	const finish = (o: OptimizeOutcome): OptimizeOutcome => {
 		info.nextPossibleTs = nextPossible(store);
 		const eff = effectiveOf(ctx.type, store.override);
 		if ((eff.trailerBurstSec ?? 0) > 0) {
@@ -1095,47 +1277,440 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 			info.status = "review";
 		}
 		return {
-			kind,
+			...o,
 			override: store.override,
-			change,
-			info,
-			failing: [],
-			vetoes: [],
-			vetoClear: [],
 			hints,
-			...extra,
+			final: events,
+			vetoes: [...new Set([...vetoes, ...o.vetoes])],
 		};
 	};
 	if (data.runs.length === 0 && data.spikes.length === 0 && data.quarantined.length === 0) {
 		if (info.status === "drift") {
-			return done("drift");
+			return finish(build("drift"));
 		}
 		info.status = "collecting";
-		return done("none");
+		return finish(build("none"));
 	}
 	const p0 = effectiveOf(ctx.type, store.override);
 	try {
-		const r0 = await gateOn(data, p0, "none");
-		const q0 = await quarantineOn(data, p0);
+		let r0 = await gateOn(data, p0, "none");
+		let q0 = await quarantineOn(data, p0);
+		let failing = failingOf(r0);
+		if (failing.length > 0 && finalOn(p0) && !data.suspended) {
+			// an admitted run reported too early by the final phase (Spec D.3 point 3): suspend it at once, the base
+			// values are then checked as the runtime uses them (without the final phase)
+			const off = await gateOn(data, { ...p0, finalMinVal: 0 }, "none");
+			const okOff = new Set(off.perRun.filter(r => r.ok).map(r => r.key));
+			const byFinal = failing.filter(
+				k =>
+					okOff.has(k) ||
+					r0.joined.some(j => j.key === k) ||
+					(r0.spikeKeys.includes(k) && !off.spikeKeys.includes(k)),
+			);
+			if (byFinal.length > 0) {
+				const key = newestOf(data, byFinal);
+				markFinalSuspended(store, "earlyEnd", key, ctx.now, true);
+				data.suspended = true;
+				events.push({ kind: "suspended", reason: "earlyEnd", key });
+				vetoes.push(...byFinal);
+				r0 = off;
+				q0 = await quarantineOn(data, p0);
+				failing = failingOf(off);
+			}
+		}
 		hints = hintsOf(data, q0);
-		const failing = failingOf(r0);
+		let out: OptimizeOutcome | null = null;
 		if (failing.length > 0) {
 			// repair first, also during a drift and a lock
-			return await repair(data, p0, r0, q0, failing, done);
+			out = await repair(data, p0, r0, q0, failing, build);
+		} else {
+			store.failStreak = 0;
 		}
-		store.failStreak = 0;
-		if (info.status === "drift") {
+		const drift = info.status === "drift";
+		if (data.suspended) {
+			// repair of the final phase right after the run, without minimum count, lock or step limits
+			await recoverFinal(data, q0, events, vetoes);
+		} else if (!out && !drift) {
+			// switching it on and tuning it: like a tightening, only over many runs
+			const change = await finalStep(data, p0, r0, q0, events);
+			if (change) {
+				out = build("none", change);
+			}
+		}
+		if (!out) {
 			// a drift stops only the tightening
-			return done("drift");
+			out = drift ? build("drift") : await tighten(data, p0, r0, q0, build);
 		}
-		return await tighten(data, p0, r0, q0, done);
+		return finish(out);
 	} catch (err) {
 		if (err instanceof BudgetExceeded) {
 			info.status = "budget";
-			return done("budget");
+			return finish(build("budget"));
 		}
 		throw err;
 	}
+}
+
+/**
+ * Key of the newest of some stored runs.
+ *
+ * @param data - Decoded data
+ * @param keys - Keys
+ */
+function newestOf(data: Data, keys: readonly string[]): string {
+	const byKey = new Map([...data.store.runs, ...data.store.spikes].map(r => [r.key, r]));
+	return [...keys].sort((a, b) => (byKey.get(b)?.ts ?? 0) - (byKey.get(a)?.ts ?? 0))[0];
+}
+
+/**
+ * Whether a tightening may run: outside the lock, enough admitted runs, new runs and spacing.
+ *
+ * @param store - Store
+ * @param admittedRuns - Admitted runs in the 30-day window
+ * @param now - Time
+ */
+function tightenAllowed(store: StoreFile, admittedRuns: number, now: number): boolean {
+	return (
+		store.lockRuns <= 0 &&
+		now >= store.lockUntilTs &&
+		admittedRuns >= TIGHTEN_MIN_RUNS &&
+		store.newSinceChange >= TIGHTEN_NEW_RUNS &&
+		!(store.lastChangeTs > 0 && now - store.lastChangeTs < TIGHTEN_SPACING_MS)
+	);
+}
+
+/**
+ * Which runs a tightening may aim at: admitted runs of the window, not cut short, not grown together.
+ *
+ * @param data - Decoded data
+ */
+function trustedOf(data: Data): (r: StoredRun) => boolean {
+	const target = new Set(data.target);
+	return (r: StoredRun): boolean => r.label === "run" && !r.postTruncated && !data.merged.has(r.key) && target.has(r);
+}
+
+/**
+ * Samples of the check set for `learnFinal`: the runs of the check set with cells, without the runs judged
+ * `finalSplit` and their early parts (their early end is no end).
+ *
+ * @param data - Decoded data
+ * @param quality - Context of the run check
+ */
+function finalSamples(data: Data, quality: QualityContext): Parameters<typeof learnFinal>[0] {
+	const { store, ctx } = data;
+	const keys = new Set(checkSet(store, ctx.now, ctx.verdicts).map(r => r.key));
+	const parts = new Set(data.joined.flatMap(j => [j.a, j.b]));
+	return storeSamples(store, quality)
+		.filter(x => keys.has(x.run.key) && !parts.has(x.run) && inUse(store, x.run))
+		.map(x => ({ sample: x.sample, verdict: x.verdict, series: x.series }));
+}
+
+/**
+ * The final phase learned from the check set (Spec B.6) with the minimum counts of the optimisation, or null when
+ * it is not released.
+ *
+ * @param data - Decoded data
+ * @param p - Values in use (their final phase is ignored)
+ */
+async function learnedFinal(data: Data, p: DetectionSettings): Promise<FinalCandidate | null> {
+	const { store, ctx } = data;
+	if (!ctx.quality || !store.bands || store.bands.bands.length === 0) {
+		return null;
+	}
+	const learned = await learnFinal(finalSamples(data, ctx.quality), {
+		base: p,
+		pollSec: ctx.pollSec,
+		unitFactor: store.unitFactor,
+		abort: ctx.abort,
+		abortFixed: ctx.abortFixed,
+		bands: store.bands,
+		minRuns: FINAL_ENABLE_MIN_RUNS,
+		minPerGroup: FINAL_ENABLE_MIN_PER_GROUP,
+		scope: ctx.quality.scope,
+		yieldFn: () => data.tick(),
+	});
+	return learned.ok ? learned : null;
+}
+
+/**
+ * Switch the final phase on or tune it (Spec D.5): on only with FINAL_ENABLE_MIN_RUNS admitted runs in the window
+ * (and FINAL_ENABLE_MIN_PER_GROUP per group, checked by `learnFinal`) outside the lock; tuned only when a tightening
+ * may run, within the step limits of `stepLimitFinal`. `learnFinal` must release the final phase on the check set
+ * (cross-check, robustness, gain) and the gate over every admitted run must pass; no run may end later, no run in
+ * quarantine get worse.
+ *
+ * @param data - Decoded data
+ * @param p0 - Values in use
+ * @param r0 - Gate result of the values in use
+ * @param q0 - Result per key of the values in use on the runs in quarantine
+ * @param events - What happened with the final phase
+ * @returns the change, or null
+ */
+async function finalStep(
+	data: Data,
+	p0: DetectionSettings,
+	r0: GateResult,
+	q0: ReadonlyMap<string, boolean>,
+	events: FinalEvent[],
+): Promise<Change | null> {
+	const { store, ctx } = data;
+	const admittedRuns = data.target.filter(trustedOf(data)).length;
+	const on = finalOn(p0);
+	const allowed = on
+		? tightenAllowed(store, admittedRuns, ctx.now) && admittedRuns >= FINAL_ENABLE_MIN_RUNS
+		: store.lockRuns <= 0 && ctx.now >= store.lockUntilTs && admittedRuns >= FINAL_ENABLE_MIN_RUNS;
+	if (!allowed) {
+		return null;
+	}
+	const learned = await learnedFinal(data, p0);
+	if (!learned) {
+		return null;
+	}
+	const values = on ? stepLimitFinal(learned.values, p0, learned.covered) : learned.values;
+	if (!values) {
+		return null;
+	}
+	const c = detectionOf({ ...p0, ...values });
+	if (
+		FINAL_KEYS.every(k => (c[k] ?? 0) === (p0[k] ?? 0)) ||
+		!finalOn(c) ||
+		finalViolations(c, c.standby, ctx.pollSec).length > 0
+	) {
+		return null;
+	}
+	const g = await gateOn(data, c, "none");
+	if (!g.ok || g.falseStarts > r0.falseStarts) {
+		return null;
+	}
+	if (g.perRun.some((r, i) => r.delaySec > (r0.perRun[i]?.delaySec ?? Number.POSITIVE_INFINITY) + ctx.pollSec)) {
+		return null;
+	}
+	if (!noRegression(await quarantineOn(data, c), q0)) {
+		return null;
+	}
+	const before = store.override;
+	store.override = diffOf(c, ctx.type);
+	const change: Change = {
+		ts: ctx.now,
+		kind: on ? "finalTune" : "finalOn",
+		from: before,
+		to: store.override,
+		reason: describeChange(p0, c),
+		runs: store.runs.length + store.spikes.length,
+		gainSec: Math.round(mean(r0.perRun.map(r => r.delaySec)) - mean(g.perRun.map(r => r.delaySec))),
+	};
+	pushChange(store, change);
+	store.final = { ...(store.final ?? { splits: [], suspendedAt: 0 }), state: "on" };
+	store.lastChangeTs = ctx.now;
+	store.newSinceChange = 0;
+	store.info.status = "ok";
+	events.push({ kind: on ? "tuned" : "on", change });
+	return change;
+}
+
+/**
+ * After a suspension (Spec D.5): if the values in use detect every admitted run (each split programme replayed with
+ * its early part as one run), the early end was right and the final phase is used again (`endOk`); otherwise the
+ * closest values with a later final block, a longer time in the final band and a narrower final band (or the final
+ * phase learned again, which needs the minimum counts) that detect every admitted run repair it and it is used
+ * again (`repair`); without such values it stays suspended. No minimum count, lock, drift or step limits.
+ *
+ * @param data - Decoded data
+ * @param q0 - Result per key of the values in use (without the final phase) on the runs in quarantine
+ * @param events - What happened with the final phase
+ * @param vetoes - Keys of the runs that become boundary runs
+ */
+async function recoverFinal(
+	data: Data,
+	q0: ReadonlyMap<string, boolean>,
+	events: FinalEvent[],
+	vetoes: string[],
+): Promise<void> {
+	const { store, ctx } = data;
+	const final = store.final;
+	const p1 = effectiveOf(ctx.type, store.override);
+	if (!final || final.state !== "suspended" || !finalOn(p1)) {
+		return;
+	}
+	const stays = (reason: string): void => {
+		if (final.stays !== reason) {
+			store.final = { ...final, stays: reason };
+			events.push({ kind: "stays", reason });
+		}
+	};
+	// a split programme can be judged only when it is stored
+	const joined = final.joined ?? [];
+	const missing = final.splits.filter(
+		k => joined.some(j => j === k || sameRun(j, k)) && !data.joined.some(p => p.key === k || sameRun(p.key, k)),
+	);
+	if (missing.length > 0) {
+		stays("notStored");
+		return;
+	}
+	const g1 = await gateOn(data, p1, "none", undefined, true);
+	if (g1.ok && noRegression(await quarantineOn(data, p1, true), q0)) {
+		markFinalResumed(store, "endOk", ctx.now, true);
+		data.suspended = false;
+		events.push({ kind: "resumed", reason: "endOk" });
+		return;
+	}
+	const failing = failingOf(g1);
+	let best: DetectionSettings | null = null;
+	for (const c of await finalRepairCandidates(data, p1)) {
+		const g = await gateOn(data, c, "none", undefined, true);
+		if (g.ok && noRegression(await quarantineOn(data, c, true), q0)) {
+			best = c;
+			break;
+		}
+	}
+	if (!best) {
+		stays("noRepair");
+		return;
+	}
+	const trigger = failing.length > 0 ? newestOf(data, failing) : final.splits.at(-1);
+	const before = store.override;
+	store.override = diffOf(best, ctx.type);
+	const change: Change = {
+		ts: ctx.now,
+		kind: "finalRepair",
+		from: before,
+		to: store.override,
+		reason: describeChange(p1, best),
+		runs: store.runs.length + store.spikes.length,
+		gainSec: 0,
+		...(trigger ? { trigger } : {}),
+	};
+	pushChange(store, change);
+	store.lockRuns = LOCK_RUNS;
+	store.lockUntilTs = ctx.now + LOCK_MS;
+	store.lastChangeTs = ctx.now;
+	store.newSinceChange = 0;
+	store.failStreak = 0;
+	store.info.status = "locked";
+	markFinalResumed(store, "repair", ctx.now, true, trigger);
+	data.suspended = false;
+	vetoes.push(...failing);
+	events.push({ kind: "repaired", change, ...(trigger ? { key: trigger } : {}) });
+	events.push({ kind: "resumed", reason: "repair" });
+}
+
+/**
+ * Candidates of a repair of the final phase, closest first: the final block later (X), longer in the final band (Y)
+ * and a narrower final band (P higher), within the hard bounds; and the final phase learned again (only with the
+ * minimum counts), made safer by the values in use.
+ *
+ * @param data - Decoded data
+ * @param p1 - Values in use
+ */
+async function finalRepairCandidates(data: Data, p1: DetectionSettings): Promise<DetectionSettings[]> {
+	const poll = data.ctx.pollSec;
+	const out: { c: DetectionSettings; d: number }[] = [];
+	const add = (c: DetectionSettings): void => {
+		if (finalOn(c) && finalViolations(c, c.standby, poll).length === 0) {
+			out.push({ c, d: finalDistance(c, p1) });
+		}
+	};
+	const Y = p1.finalMinSec ?? 0;
+	const X = p1.finalAfterSec ?? 0;
+	const P = p1.finalMinVal ?? 0;
+	const Pmax = p1.finalMaxVal ?? 0;
+	for (const fy of FINAL_REPAIR_Y) {
+		for (const fx of FINAL_REPAIR_X) {
+			for (const fp of FINAL_REPAIR_P) {
+				const p = Math.round(P * fp * 1e5) / 1e5;
+				if ((fy === 1 && fx === 1 && fp === 1) || (Pmax > 0 && p >= Pmax)) {
+					continue;
+				}
+				add({
+					...p1,
+					finalMinSec: Math.ceil((Y * fy) / poll) * poll,
+					finalAfterSec: Math.ceil((X * fx) / poll) * poll,
+					finalMinVal: p,
+				});
+			}
+		}
+	}
+	const learned = await learnedFinal(data, p1);
+	if (learned) {
+		const v = learned.values;
+		add({
+			...p1,
+			...v,
+			finalMinSec: Math.max(v.finalMinSec, Y),
+			finalAfterSec: Math.max(v.finalAfterSec, X),
+			finalMinVal: Math.max(v.finalMinVal, P),
+		});
+	}
+	return out.sort((a, b) => a.d - b.d).map(x => x.c);
+}
+
+/**
+ * Distance of the final phase of two value sets (sum of relative changes).
+ *
+ * @param p - Values
+ * @param p0 - Values in use
+ */
+function finalDistance(p: DetectionSettings, p0: DetectionSettings): number {
+	let d = 0;
+	for (const k of FINAL_KEYS) {
+		const x = p[k] ?? 0;
+		const y = p0[k] ?? 0;
+		d += Math.abs(x - y) / Math.max(Math.abs(y), 1);
+	}
+	return d;
+}
+
+/**
+ * Step limits of the final phase when the optimisation tunes it (Spec D.5): P changes by at most 10 %; Y rises
+ * freely and drops by at most 10 %, only with at least 5 covered runs; X drops by at most 25 %; every other field
+ * comes from the data. A candidate without a final phase while the values in use have one is not allowed (null: the
+ * final phase is switched off only by suspending it).
+ *
+ * @param c - Final phase of the candidate
+ * @param p0 - Final phase of the values in use
+ * @param covered - Runs whose end the candidate reports early and not too early
+ */
+export function stepLimitFinal(c: FinalSettings, p0: FinalSettings, covered: number): Required<FinalSettings> | null {
+	const a = finalFields(c);
+	const b = finalFields(p0);
+	if (b.finalMinVal <= 0) {
+		return a;
+	}
+	if (a.finalMinVal <= 0) {
+		return null;
+	}
+	const round = (x: number): number => Math.round(x * 1e5) / 1e5;
+	const out = { ...a };
+	out.finalMinVal = round(
+		Math.min(b.finalMinVal * (1 + FINAL_P_STEP), Math.max(b.finalMinVal * (1 - FINAL_P_STEP), a.finalMinVal)),
+	);
+	if (a.finalMinSec < b.finalMinSec) {
+		out.finalMinSec =
+			covered >= FINAL_Y_DROP_RUNS
+				? round(Math.max(a.finalMinSec, b.finalMinSec * (1 - FINAL_Y_DROP)))
+				: b.finalMinSec;
+	}
+	out.finalAfterSec = round(Math.max(a.finalAfterSec, b.finalAfterSec * (1 - FINAL_X_DROP)));
+	return out;
+}
+
+/**
+ * Every field of the final phase (missing = 0).
+ *
+ * @param s - Values
+ */
+function finalFields(s: FinalSettings): Required<FinalSettings> {
+	return Object.fromEntries(FINAL_KEYS.map(k => [k, s[k] ?? 0])) as Required<FinalSettings>;
+}
+
+/**
+ * Whether a candidate of the analysis or a repair switches an active final phase off (not allowed, Spec D.5).
+ *
+ * @param c - Candidate
+ * @param p0 - Values in use
+ */
+function silentFinalOff(c: DetectionSettings, p0: DetectionSettings): boolean {
+	return finalOn(p0) && !finalOn(c);
 }
 
 type Done = (
@@ -1177,6 +1752,9 @@ async function bestRepair(
 			continue;
 		}
 		seen.add(key);
+		if (silentFinalOff(c, p0)) {
+			continue;
+		}
 		// closest to the current values; a late end (after the anti-crease phase) counts as a change too
 		const d = distance(c, p0);
 		if (best && d >= best.d) {
@@ -1409,7 +1987,7 @@ async function tighten(
 	for (const recipe of recipes) {
 		const c = build(recipe, analysis, variants);
 		const key = JSON.stringify(c);
-		if (seen.has(key) || !withinBounds(c, poll) || unguardedFilterOn(c, p0)) {
+		if (seen.has(key) || !withinBounds(c, poll) || unguardedFilterOn(c, p0) || silentFinalOff(c, p0)) {
 			continue;
 		}
 		seen.add(key);

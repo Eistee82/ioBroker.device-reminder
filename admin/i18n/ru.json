@@ -127,6 +127,7 @@
 	"dm_optKind_finalRepair": "Завершающая фаза исправлена",
 	"dm_optKind_finalResume": "Завершающая фаза снова включена",
 	"dm_optKind_finalSuspend": "Завершающая фаза приостановлена (обнаружено ложное раннее окончание)",
+	"dm_optKind_finalTune": "Завершающая фаза скорректирована",
 	"dm_optKind_repair": "Исправление",
 	"dm_optKind_reset": "Сброс",
 	"dm_optKind_revert": "Исправление отменено",

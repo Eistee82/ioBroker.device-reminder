@@ -1014,6 +1014,7 @@ const OPT_KINDS = [
     "finalSuspend",
     "finalResume",
     "finalRepair",
+    "finalTune",
 ];
 function kindText(kind, tr) {
     const k = kind === "typeChanged" ? "baseChanged" : kind;

@@ -137,8 +137,8 @@ export interface Change {
 	ts: number;
 	/**
 	 * Kind (`adopted`: the values in use became the base values; `typeChanged`: entries of earlier versions, shown
-	 * like `baseChanged`; `revert`: a repair taken back; `finalOn`/`finalSuspend`/`finalResume`/`finalRepair`: the
-	 * final phase switched on, suspended, used again or repaired).
+	 * like `baseChanged`; `revert`: a repair taken back; `finalOn`/`finalSuspend`/`finalResume`/`finalRepair`/
+	 * `finalTune`: the final phase switched on, suspended, used again, repaired or adjusted).
 	 */
 	kind:
 		| "repair"
@@ -152,7 +152,8 @@ export interface Change {
 		| "finalOn"
 		| "finalSuspend"
 		| "finalResume"
-		| "finalRepair";
+		| "finalRepair"
+		| "finalTune";
 	/** Override before. */
 	from: Partial<DetectionSettings> | null;
 	/** Override after. */
@@ -234,6 +235,83 @@ export interface FinalState {
 	reason?: string;
 	/** Keys of the runs after an early end already judged afterwards (not judged again when the capture closes). */
 	checked?: string[];
+	/**
+	 * Keys of the runs judged `finalSplit` (rest of a split programme), kept while they are stored, also after the
+	 * final phase is used again: the optimisation replays each with its early part as one run (Spec D.5).
+	 */
+	joined?: string[];
+	/** Why the suspended final phase is not used again yet (`noRepair`, `notStored`). */
+	stays?: string;
+}
+
+/** Most keys of split runs that are remembered (`FinalState.joined`). */
+const JOINED_MAX = 20;
+
+/**
+ * Suspend the final phase in the store (Spec A.3, D.3 point 3): state, split run, change entry. A run judged
+ * `finalSplit` is also kept as split run to replay it with its early part (`joined`).
+ *
+ * @param store - Store
+ * @param reason - `finalSplit` or `earlyEnd`
+ * @param key - Key of the run that caused it
+ * @param now - Time
+ * @param on - Whether the values in use have a final phase (state when the store has none yet)
+ * @returns whether the final phase was suspended before
+ */
+export function markFinalSuspended(store: StoreFile, reason: string, key: string, now: number, on: boolean): boolean {
+	const final = store.final ?? { state: on ? "on" : "off", splits: [], suspendedAt: 0 };
+	const was = final.state === "suspended";
+	const joined = reason === "finalSplit" && !(final.joined ?? []).includes(key);
+	store.final = {
+		...final,
+		state: "suspended",
+		splits: final.splits.includes(key) ? final.splits : [...final.splits, key],
+		suspendedAt: was ? final.suspendedAt : now,
+		reason,
+		...(joined ? { joined: [...(final.joined ?? []), key].slice(-JOINED_MAX) } : {}),
+	};
+	if (!was) {
+		delete store.final.stays;
+	}
+	pushChange(store, {
+		ts: now,
+		kind: "finalSuspend",
+		from: store.override,
+		to: store.override,
+		reason: `final phase suspended (${reason})`,
+		runs: store.runs.length + store.spikes.length,
+		gainSec: 0,
+		trigger: key,
+	});
+	return was;
+}
+
+/**
+ * Use the suspended final phase again in the store (Spec A.3 point 6, D.5): every split run is cleared (the runs
+ * judged `finalSplit` stay in `joined`), state from the values in use, change entry.
+ *
+ * @param store - Store with a suspended final phase
+ * @param why - Reason (`user`, `repair`, `endOk`, …)
+ * @param now - Time
+ * @param on - Whether the values in use have a final phase
+ * @param key - Key of the run (optional)
+ */
+export function markFinalResumed(store: StoreFile, why: string, now: number, on: boolean, key?: string): void {
+	const final = store.final ?? { state: "off", splits: [], suspendedAt: 0 };
+	const next: FinalState = { ...final, state: on ? "on" : "off", splits: [], suspendedAt: 0 };
+	delete next.reason;
+	delete next.stays;
+	store.final = next;
+	pushChange(store, {
+		ts: now,
+		kind: "finalResume",
+		from: store.override,
+		to: store.override,
+		reason: `final phase used again (${why})`,
+		runs: store.runs.length + store.spikes.length,
+		gainSec: 0,
+		...(key ? { trigger: key } : {}),
+	});
 }
 
 /** Learning data of one device. */
@@ -1214,6 +1292,49 @@ export function finalSplitPairs(c: Capture, deviceId: string): FinalSplitPair[] 
 		});
 	});
 	return out;
+}
+
+/** The rest of a split programme starts at most this long after the early end (as in `splitPairs` of the tests). */
+const SPLIT_WITHIN_MS = 3 * 60 * 60_000;
+
+/**
+ * A capture whose first start comes after an early end of the final phase (mark `afterFinal` b–g) without that early
+ * end in the capture itself, joined with the stored run before it: a rest of more than 30 quiet minutes (e.g.
+ * soaking) closed the capture of the early part, which is stored as a run of its own. Null when the capture holds its
+ * early end itself or no stored run ends with an end at most 3 h before (then nothing is judged).
+ *
+ * @param store - Store
+ * @param c - Capture (closed, or a snapshot of the open one)
+ */
+export function joinedCapture(store: StoreFile, c: Capture): Capture | null {
+	const first = c.ev.find(e => e[1] === "s");
+	if (!first || first[2] === undefined || !JUDGED_EXITS.includes(first[2])) {
+		return null;
+	}
+	if (c.ev.some(e => e[1] !== "s" && e[0] < first[0])) {
+		return null;
+	}
+	const prev = store.runs
+		.filter(r => typeof r.data === "string" && r.step === c.stepMs && r.unitFactor === c.unitFactor && r.ts < c.t0)
+		.sort((a, b) => b.ts - a.ts)[0];
+	const last = prev?.ev.at(-1);
+	if (!prev || !last || last[1] === "s" || first[0] - last[0] > SPLIT_WITHIN_MS) {
+		return null;
+	}
+	const cells = decodeCells(prev.data as string, prev.q);
+	// the pre-roll of a capture is the end of the one before: overlapping cells come from the newer capture
+	const gap = Math.round((c.t0 - (prev.ts + cells.length * prev.step)) / c.stepMs);
+	const head = gap >= 0 ? [...cells, ...new Array<TickCell>(gap).fill(cells[cells.length - 1])] : cells.slice(0, gap);
+	return {
+		t0: prev.ts,
+		stepMs: c.stepMs,
+		unitFactor: c.unitFactor,
+		cells: [...head, ...c.cells],
+		ev: [...prev.ev.filter(e => !c.ev.some(x => x[0] === e[0] && x[1] === e[1])), ...c.ev].sort(
+			(a, b) => a[0] - b[0],
+		),
+		postTruncated: c.postTruncated,
+	};
 }
 
 /**

@@ -1,6 +1,15 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { checkSet, replayPick, targetSet, TIGHTEN_MIN_RUNS } from "../build/lib/learn/autoOptimize.js";
+import {
+	checkSet,
+	FINAL_ENABLE_MIN_PER_GROUP,
+	FINAL_ENABLE_MIN_RUNS,
+	replayPick,
+	stepLimitFinal,
+	targetSet,
+	TIGHTEN_MIN_RUNS,
+} from "../build/lib/learn/autoOptimize.js";
+import { FINAL_KEYS } from "../build/lib/detector/types.js";
 import { DeviceSync } from "../build/lib/deviceSync.js";
 import { fill, TEXT } from "../build/lib/dmTexts.js";
 import {
@@ -26,14 +35,15 @@ import {
 	feedPoints,
 	historyEnv,
 	instanceConfig,
+	liveFeed,
 	P,
 	pauseRun,
 	registrySetup,
 	WASHER,
 	windowsFeed,
 } from "./helpers/devices.js";
-import { syntheticRun, WM_FINAL } from "./helpers/final.js";
-import { layoutOf, loadSeries, restartScenarios, sparse } from "./helpers/fixtures.js";
+import { soaking, syntheticRun, WM_FINAL } from "./helpers/final.js";
+import { layoutOf, loadSeries, restartScenarios, runWindow, sparse } from "./helpers/fixtures.js";
 import { historyOf, runStarts } from "./helpers/history.js";
 import { runOf } from "./helpers/programmes.js";
 
@@ -480,8 +490,10 @@ describe("judging afterwards (Spec A.3)", function () {
 		const st = ctx.reg.learningData("dev");
 		const first = st.final.splits[0];
 		st.final.splits.push("dev@1");
+		assert.deepStrictEqual(st.final.joined, [first], "kept to be replayed with its early part");
 		assert.strictEqual(await ctx.reg.resumeFinal("dev", "newRun", first), false, "another split is left");
 		assert.deepStrictEqual(st.final.splits, ["dev@1"]);
+		assert.deepStrictEqual(st.final.joined, [], "a new run is no split run");
 		assert.strictEqual(await ctx.reg.resumeFinal("dev", "newRun", "dev@1"), true);
 		assert.deepStrictEqual(
 			[st.final.state, ctx.reg.get("dev").active.finalMinVal, st.changes.at(-1).kind],
@@ -959,5 +971,116 @@ describe("optimisation over 30 days (Spec D.1–D.4)", function () {
 			queries.length > 0 && queries.every(q => q.start >= lastSeen - 1),
 			JSON.stringify(queries.map(q => q.start - lastSeen)),
 		);
+	});
+});
+
+/**
+ * Object writer that records the ids it created and deleted.
+ *
+ * @returns {object} writer
+ */
+function recordingWriter() {
+	return {
+		extended: [],
+		deleted: [],
+		async extendObject(id) {
+			this.extended.push(id);
+		},
+		async setObjectNotExists() {},
+		async delObject(id) {
+			this.deleted.push(id);
+		},
+	};
+}
+
+// windows that each give one stored run (w08 and w10 end in the next run, w09 starts in the trailer of w08, w12 has too
+// little time after its end as a live capture)
+const CLONES = ["w01", "w03", "w06", "w07", "w11"];
+describe("final phase in the optimisation (Spec D.5)", function () {
+	this.timeout(900_000);
+	it("switches the final phase on by itself with 10 admitted runs and ≥ 2 per group, not with 9", async () => {
+		assert.deepStrictEqual([FINAL_ENABLE_MIN_RUNS, FINAL_ENABLE_MIN_PER_GROUP], [10, 2]);
+		const objects = recordingWriter();
+		const ctx = await registrySetup({ objects, notify: true });
+		await windowsFeed(ctx, [...CLONES, ...CLONES.slice(0, 4)]);
+		const st = ctx.reg.learningData("dev");
+		assert.notStrictEqual(st.final?.state, "on");
+		assert.strictEqual(ctx.reg.get("dev").effective.finalMinVal ?? 0, 0);
+		assert.ok(!st.changes.some(c => c.kind === "finalOn"));
+		await windowsFeed(ctx, [CLONES[4]]);
+		assert.strictEqual(st.final.state, "on");
+		const c = st.changes.at(-1);
+		assert.strictEqual(c.kind, "finalOn");
+		assert.ok(ctx.reg.get("dev").effective.finalMinVal > 0);
+		assert.ok(objects.extended.includes("dev.settlingUntil"), "settlingUntil created with the final phase");
+		assert.ok(ctx.host.logs.info.some(m => m.includes("final phase switched on")));
+		const u = await ctx.reg.undoOptimization("dev");
+		assert.ok(u === true || u.ok === true, "undo (boolean until Task 25, then { ok })");
+		assert.strictEqual(ctx.reg.get("dev").effective.finalMinVal ?? 0, 0, "undo switches it off");
+		assert.ok(objects.deleted.includes("dev.settlingUntil"), "settlingUntil removed again");
+	});
+	it("analysis candidates never change final fields; no silent switch-off", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, ...WM_FINAL, endCount: 120 } });
+		for (let k = 1; k <= 9; k++) {
+			await feed(ctx, runOf({ device: "washer", programme: "cotton60", shape: "T3", seed: k }).values);
+			ctx.host.tickClock(25 * 3_600_000);
+		}
+		for (const c of ctx.reg.learningData("dev").changes.filter(x => x.kind === "tighten" || x.kind === "repair")) {
+			for (const k of FINAL_KEYS) {
+				assert.strictEqual(c.to?.[k] ?? WM_FINAL[k], c.from?.[k] ?? WM_FINAL[k], `${c.kind} ${k}`);
+			}
+		}
+		assert.ok(ctx.reg.get("dev").effective.finalMinVal > 0);
+	});
+	it("own step limits of the final phase", () => {
+		const p0 = { ...WM_FINAL };
+		const c = stepLimitFinal({ ...WM_FINAL, finalMinVal: 100, finalMinSec: 100, finalAfterSec: 1000 }, p0, 4);
+		assert.deepStrictEqual([c.finalMinVal, c.finalMinSec, c.finalAfterSec], [135, 168, 2700]);
+		const d = stepLimitFinal({ ...WM_FINAL, finalMinVal: 200, finalMinSec: 100, finalAfterSec: 7200 }, p0, 5);
+		assert.deepStrictEqual([d.finalMinVal, d.finalMinSec, d.finalAfterSec], [165, 151.2, 7200]);
+		assert.strictEqual(stepLimitFinal({ ...WM_FINAL, finalMinVal: 0 }, p0, 9), null);
+		const e = stepLimitFinal({ ...WM_FINAL, finalMinSec: 400, finalLockSec: 1800 }, p0, 1);
+		assert.deepStrictEqual([e.finalMinSec, e.finalLockSec], [400, 1800], "Y rises freely, the rest from the data");
+	});
+	it("synthetic soaking programme: afterFinal start, finalSplit, suspended and repaired right after the run (also while locked), passed as one run", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, ...WM_FINAL } });
+		// comparison runs for the judgement afterwards (typical start of a programme)
+		await windowsFeed(ctx, ["w01", "w03", "w06", "w07"]);
+		const st0 = ctx.reg.learningData("dev");
+		st0.lockRuns = 5;
+		st0.lockUntilTs = ctx.host.now() + 10 * DAY;
+		// w11 (layout run 10) soaking at 0.5 W: the 45 min rest closes the capture of the early part
+		const pts = soaking(loadSeries("washer30d"), 10, 0.5);
+		const win = runWindow("washer30d", "w11");
+		const end = win.at(-1).ts + 3_600_000;
+		const part = pts.filter(p => p.ts >= win[0].ts && p.ts <= end);
+		await liveFeed(ctx, [...part, { ts: end, val: part.at(-1).val }]);
+		const st = ctx.reg.learningData("dev");
+		assert.ok(st.runs.some(r => r.afterFinal !== undefined));
+		assert.ok(st.final.joined.length >= 1, "kept as split run");
+		assert.ok(st.changes.some(c => c.kind === "finalSuspend"));
+		const rep = st.changes.find(c => c.kind === "finalRepair");
+		assert.ok(rep, "repair started right after the run");
+		if (st.final.state === "on") {
+			assert.ok(
+				ctx.reg.get("dev").effective.finalMinSec > WM_FINAL.finalMinSec,
+				"Y raised above the inserted block",
+			);
+			const check = await ctx.reg.checkStoredRuns("dev");
+			assert.strictEqual(check.ok, true);
+			assert.ok(check.joined.length >= 1 && check.joined.every(j => j.ok), "replayed as one run");
+			assert.strictEqual(st.changes.at(-1).kind, "finalResume");
+		} else {
+			assert.ok(st.final.reason, "stays suspended with a reason");
+		}
+	});
+	it("resume after a correct early end", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, ...WM_FINAL } });
+		const st = ctx.reg.learningData("dev");
+		await ctx.reg.suspendFinal("dev", "earlyEnd", "dev@1");
+		await windowsFeed(ctx, ["w10"]);
+		assert.strictEqual(st.final.state, "on");
+		assert.strictEqual(st.changes.at(-1).kind, "finalResume");
+		assert.ok(ctx.host.logs.info.some(m => m.includes("final phase used again (endOk)")));
 	});
 });

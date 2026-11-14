@@ -1,7 +1,10 @@
+import { finalViolations } from "../config.js";
+import { finalOn } from "../detector/index.js";
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import { FINAL_KEYS } from "../detector/types.js";
-import { BASE_KEYS, boundaryRuns, decisionOf, DETECTION_KEYS, detectionOf, inUse, pushChange, refreshInfo, REPLAY_PICK_MAX, WINDOW_MS, } from "../runStore.js";
+import { BASE_KEYS, boundaryRuns, decisionOf, DETECTION_KEYS, detectionOf, inUse, markFinalResumed, markFinalSuspended, pushChange, refreshInfo, REPLAY_PICK_MAX, storeSamples, WINDOW_MS, } from "../runStore.js";
 import { analyzeTicks } from "./analyze.js";
+import { learnFinal } from "./finalLearn.js";
 import { margin, minEndSec } from "./optimize.js";
 import { admitted, primaryOf, sameRun } from "./quality.js";
 import { endOkFull, simulate } from "./replay.js";
@@ -21,6 +24,15 @@ const SEPARATOR_MS = MAX_PAUSE_MS + 10 * 60_000;
 const YIELD_MS = 20;
 const HINTED_MAX = 50;
 const DATA_ERRORS = new Set(["gap", "stuck", "sparse", "incomplete", "unit", "counter"]);
+export const FINAL_ENABLE_MIN_RUNS = 10;
+export const FINAL_ENABLE_MIN_PER_GROUP = 2;
+const FINAL_P_STEP = 0.1;
+const FINAL_Y_DROP = 0.1;
+const FINAL_Y_DROP_RUNS = 5;
+const FINAL_X_DROP = 0.25;
+const FINAL_REPAIR_Y = [1, 1.25, 1.5, 2, 3, 4];
+const FINAL_REPAIR_X = [1, 1.25, 1.5, 2];
+const FINAL_REPAIR_P = [1, 1.1, 1.25, 1.5];
 class BudgetExceeded extends Error {
 }
 export function boundsOf(pollSec) {
@@ -146,6 +158,9 @@ class Data {
     quarantined;
     target;
     merged;
+    suspended;
+    joined;
+    joinedSeries = new Map();
     constructor(store, ctx) {
         this.store = store;
         this.ctx = ctx;
@@ -159,9 +174,53 @@ class Data {
         this.merged = new Set(store.runs
             .filter(r => ctx.verdicts?.get(r.key)?.reasons.some(x => x.code === "merged") === true)
             .map(r => r.key));
+        this.suspended = ctx.finalSuspended === true;
+        this.joined = this.joinedRuns();
     }
-    replayValues(p) {
-        return this.ctx.finalSuspended ? { ...p, finalMinVal: 0 } : p;
+    replayValues(p, raw = false) {
+        return this.suspended && !raw ? { ...p, finalMinVal: 0 } : p;
+    }
+    joinedRuns() {
+        const { store, ctx } = this;
+        const out = [];
+        const usable = (r) => typeof r.data === "string" && inUse(store, r) && roleOf(store, r, ctx.verdicts) !== "none";
+        for (const key of store.final?.joined ?? []) {
+            const b = store.runs.find(r => r.key === key || sameRun(r.key, key));
+            if (!b || !usable(b) || out.some(x => x.b === b)) {
+                continue;
+            }
+            const a = store.runs
+                .filter(r => r !== b &&
+                r.step === b.step &&
+                r.ts < b.ts &&
+                usable(r) &&
+                r.ts + this.cellsOf(r).length * r.step >= b.ts - r.step)
+                .sort((x, y) => y.ts - x.ts)[0];
+            if (a) {
+                out.push({ key: b.key, a, b });
+            }
+        }
+        return out;
+    }
+    joinedOf(pair) {
+        let out = this.joinedSeries.get(pair.key);
+        if (out) {
+            return out;
+        }
+        const a = this.cellsOf(pair.a);
+        const b = this.cellsOf(pair.b);
+        const gap = Math.round((pair.b.ts - (pair.a.ts + a.length * pair.a.step)) / pair.a.step);
+        const fill = gap > 0 ? new Array(gap).fill(a[a.length - 1]) : [];
+        const cells = [...a, ...fill, ...(gap < 0 ? b.slice(-gap) : b)];
+        const off = a.length + gap;
+        const s = fromCells(cells, pair.a.ts, pair.a.step);
+        const end = Math.min(cells.length - 1, off + pair.b.seg.runEndIdx);
+        out = {
+            s,
+            win: { fromIdx: 0, toIdx: cells.length - 1, runStartIdx: pair.a.seg.startIdx, runEndIdx: end, run: 0 },
+        };
+        this.joinedSeries.set(pair.key, out);
+        return out;
     }
     verdictOf(r) {
         return verdictOf(this.store, r, this.ctx.verdicts);
@@ -253,11 +312,11 @@ function runGood(data, r, s, win, res, shift) {
         res.finished.every(f => f >= runEnd) &&
         res.startedAt.every(t => res.finished.every(f => t <= f)));
 }
-async function gateOn(data, p, perturb, only) {
+async function gateOn(data, p, perturb, only, raw = false) {
     const { ctx } = data;
     const opts = { abort: ctx.abort, abortFixed: ctx.abortFixed, pollSec: ctx.pollSec };
     const shift = perturb === "shift1" ? 1 : 0;
-    const values = data.replayValues(p);
+    const values = data.replayValues(p, raw);
     const perRun = [];
     let ok = true;
     for (const r of data.runs) {
@@ -285,12 +344,28 @@ async function gateOn(data, p, perturb, only) {
         }
         await data.tick();
     }
-    return { ok: ok && falseStarts === 0, perRun, spikesOk: falseStarts === 0, falseStarts, spikeKeys };
+    const joined = [];
+    if (perturb === "none" && !only && finalOn(values)) {
+        for (const pair of data.joined) {
+            const { s, win } = data.joinedOf(pair);
+            const good = joinedOk(simulate(s, win, values, opts), simulate(s, win, { ...values, finalMinVal: 0 }, opts), s.stepMs);
+            joined.push({ key: pair.key, ok: good });
+            ok &&= good;
+            await data.tick();
+        }
+    }
+    return { ok: ok && falseStarts === 0, perRun, spikesOk: falseStarts === 0, falseStarts, spikeKeys, joined };
 }
-async function quarantineOn(data, p) {
+function joinedOk(r, off, stepMs) {
+    const first = off.finished[0];
+    return (r.started <= off.started &&
+        r.aborted <= off.aborted &&
+        (first === undefined || (r.finished[0] ?? Number.POSITIVE_INFINITY) >= first - stepMs));
+}
+async function quarantineOn(data, p, raw = false) {
     const { ctx } = data;
     const opts = { abort: ctx.abort, abortFixed: ctx.abortFixed, pollSec: ctx.pollSec };
-    const values = data.replayValues(p);
+    const values = data.replayValues(p, raw);
     const out = new Map();
     for (const r of data.quarantined) {
         const s = data.seriesOf(r, "none");
@@ -302,7 +377,11 @@ async function quarantineOn(data, p) {
     return out;
 }
 function failingOf(g) {
-    return [...g.perRun.filter(r => !r.ok).map(r => r.key), ...g.spikeKeys];
+    return [
+        ...g.perRun.filter(r => !r.ok).map(r => r.key),
+        ...g.spikeKeys,
+        ...g.joined.filter(r => !r.ok).map(r => r.key),
+    ];
 }
 function mergedOk(s, win, r, progEnd) {
     const last = r.finished.at(-1);
@@ -599,7 +678,21 @@ export async function optimize(store, ctx) {
     refreshInfo(store);
     const data = new Data(store, ctx);
     let hints = [];
-    const done = (kind, change = null, extra = {}) => {
+    const events = [];
+    const vetoes = [];
+    const build = (kind, change = null, extra = {}) => ({
+        kind,
+        override: store.override,
+        change,
+        info,
+        failing: [],
+        vetoes: [],
+        vetoClear: [],
+        hints,
+        final: events,
+        ...extra,
+    });
+    const finish = (o) => {
         info.nextPossibleTs = nextPossible(store);
         const eff = effectiveOf(ctx.type, store.override);
         if ((eff.trailerBurstSec ?? 0) > 0) {
@@ -613,46 +706,309 @@ export async function optimize(store, ctx) {
             info.status = "review";
         }
         return {
-            kind,
+            ...o,
             override: store.override,
-            change,
-            info,
-            failing: [],
-            vetoes: [],
-            vetoClear: [],
             hints,
-            ...extra,
+            final: events,
+            vetoes: [...new Set([...vetoes, ...o.vetoes])],
         };
     };
     if (data.runs.length === 0 && data.spikes.length === 0 && data.quarantined.length === 0) {
         if (info.status === "drift") {
-            return done("drift");
+            return finish(build("drift"));
         }
         info.status = "collecting";
-        return done("none");
+        return finish(build("none"));
     }
     const p0 = effectiveOf(ctx.type, store.override);
     try {
-        const r0 = await gateOn(data, p0, "none");
-        const q0 = await quarantineOn(data, p0);
+        let r0 = await gateOn(data, p0, "none");
+        let q0 = await quarantineOn(data, p0);
+        let failing = failingOf(r0);
+        if (failing.length > 0 && finalOn(p0) && !data.suspended) {
+            const off = await gateOn(data, { ...p0, finalMinVal: 0 }, "none");
+            const okOff = new Set(off.perRun.filter(r => r.ok).map(r => r.key));
+            const byFinal = failing.filter(k => okOff.has(k) ||
+                r0.joined.some(j => j.key === k) ||
+                (r0.spikeKeys.includes(k) && !off.spikeKeys.includes(k)));
+            if (byFinal.length > 0) {
+                const key = newestOf(data, byFinal);
+                markFinalSuspended(store, "earlyEnd", key, ctx.now, true);
+                data.suspended = true;
+                events.push({ kind: "suspended", reason: "earlyEnd", key });
+                vetoes.push(...byFinal);
+                r0 = off;
+                q0 = await quarantineOn(data, p0);
+                failing = failingOf(off);
+            }
+        }
         hints = hintsOf(data, q0);
-        const failing = failingOf(r0);
+        let out = null;
         if (failing.length > 0) {
-            return await repair(data, p0, r0, q0, failing, done);
+            out = await repair(data, p0, r0, q0, failing, build);
         }
-        store.failStreak = 0;
-        if (info.status === "drift") {
-            return done("drift");
+        else {
+            store.failStreak = 0;
         }
-        return await tighten(data, p0, r0, q0, done);
+        const drift = info.status === "drift";
+        if (data.suspended) {
+            await recoverFinal(data, q0, events, vetoes);
+        }
+        else if (!out && !drift) {
+            const change = await finalStep(data, p0, r0, q0, events);
+            if (change) {
+                out = build("none", change);
+            }
+        }
+        if (!out) {
+            out = drift ? build("drift") : await tighten(data, p0, r0, q0, build);
+        }
+        return finish(out);
     }
     catch (err) {
         if (err instanceof BudgetExceeded) {
             info.status = "budget";
-            return done("budget");
+            return finish(build("budget"));
         }
         throw err;
     }
+}
+function newestOf(data, keys) {
+    const byKey = new Map([...data.store.runs, ...data.store.spikes].map(r => [r.key, r]));
+    return [...keys].sort((a, b) => (byKey.get(b)?.ts ?? 0) - (byKey.get(a)?.ts ?? 0))[0];
+}
+function tightenAllowed(store, admittedRuns, now) {
+    return (store.lockRuns <= 0 &&
+        now >= store.lockUntilTs &&
+        admittedRuns >= TIGHTEN_MIN_RUNS &&
+        store.newSinceChange >= TIGHTEN_NEW_RUNS &&
+        !(store.lastChangeTs > 0 && now - store.lastChangeTs < TIGHTEN_SPACING_MS));
+}
+function trustedOf(data) {
+    const target = new Set(data.target);
+    return (r) => r.label === "run" && !r.postTruncated && !data.merged.has(r.key) && target.has(r);
+}
+function finalSamples(data, quality) {
+    const { store, ctx } = data;
+    const keys = new Set(checkSet(store, ctx.now, ctx.verdicts).map(r => r.key));
+    const parts = new Set(data.joined.flatMap(j => [j.a, j.b]));
+    return storeSamples(store, quality)
+        .filter(x => keys.has(x.run.key) && !parts.has(x.run) && inUse(store, x.run))
+        .map(x => ({ sample: x.sample, verdict: x.verdict, series: x.series }));
+}
+async function learnedFinal(data, p) {
+    const { store, ctx } = data;
+    if (!ctx.quality || !store.bands || store.bands.bands.length === 0) {
+        return null;
+    }
+    const learned = await learnFinal(finalSamples(data, ctx.quality), {
+        base: p,
+        pollSec: ctx.pollSec,
+        unitFactor: store.unitFactor,
+        abort: ctx.abort,
+        abortFixed: ctx.abortFixed,
+        bands: store.bands,
+        minRuns: FINAL_ENABLE_MIN_RUNS,
+        minPerGroup: FINAL_ENABLE_MIN_PER_GROUP,
+        scope: ctx.quality.scope,
+        yieldFn: () => data.tick(),
+    });
+    return learned.ok ? learned : null;
+}
+async function finalStep(data, p0, r0, q0, events) {
+    const { store, ctx } = data;
+    const admittedRuns = data.target.filter(trustedOf(data)).length;
+    const on = finalOn(p0);
+    const allowed = on
+        ? tightenAllowed(store, admittedRuns, ctx.now) && admittedRuns >= FINAL_ENABLE_MIN_RUNS
+        : store.lockRuns <= 0 && ctx.now >= store.lockUntilTs && admittedRuns >= FINAL_ENABLE_MIN_RUNS;
+    if (!allowed) {
+        return null;
+    }
+    const learned = await learnedFinal(data, p0);
+    if (!learned) {
+        return null;
+    }
+    const values = on ? stepLimitFinal(learned.values, p0, learned.covered) : learned.values;
+    if (!values) {
+        return null;
+    }
+    const c = detectionOf({ ...p0, ...values });
+    if (FINAL_KEYS.every(k => (c[k] ?? 0) === (p0[k] ?? 0)) ||
+        !finalOn(c) ||
+        finalViolations(c, c.standby, ctx.pollSec).length > 0) {
+        return null;
+    }
+    const g = await gateOn(data, c, "none");
+    if (!g.ok || g.falseStarts > r0.falseStarts) {
+        return null;
+    }
+    if (g.perRun.some((r, i) => r.delaySec > (r0.perRun[i]?.delaySec ?? Number.POSITIVE_INFINITY) + ctx.pollSec)) {
+        return null;
+    }
+    if (!noRegression(await quarantineOn(data, c), q0)) {
+        return null;
+    }
+    const before = store.override;
+    store.override = diffOf(c, ctx.type);
+    const change = {
+        ts: ctx.now,
+        kind: on ? "finalTune" : "finalOn",
+        from: before,
+        to: store.override,
+        reason: describeChange(p0, c),
+        runs: store.runs.length + store.spikes.length,
+        gainSec: Math.round(mean(r0.perRun.map(r => r.delaySec)) - mean(g.perRun.map(r => r.delaySec))),
+    };
+    pushChange(store, change);
+    store.final = { ...(store.final ?? { splits: [], suspendedAt: 0 }), state: "on" };
+    store.lastChangeTs = ctx.now;
+    store.newSinceChange = 0;
+    store.info.status = "ok";
+    events.push({ kind: on ? "tuned" : "on", change });
+    return change;
+}
+async function recoverFinal(data, q0, events, vetoes) {
+    const { store, ctx } = data;
+    const final = store.final;
+    const p1 = effectiveOf(ctx.type, store.override);
+    if (!final || final.state !== "suspended" || !finalOn(p1)) {
+        return;
+    }
+    const stays = (reason) => {
+        if (final.stays !== reason) {
+            store.final = { ...final, stays: reason };
+            events.push({ kind: "stays", reason });
+        }
+    };
+    const joined = final.joined ?? [];
+    const missing = final.splits.filter(k => joined.some(j => j === k || sameRun(j, k)) && !data.joined.some(p => p.key === k || sameRun(p.key, k)));
+    if (missing.length > 0) {
+        stays("notStored");
+        return;
+    }
+    const g1 = await gateOn(data, p1, "none", undefined, true);
+    if (g1.ok && noRegression(await quarantineOn(data, p1, true), q0)) {
+        markFinalResumed(store, "endOk", ctx.now, true);
+        data.suspended = false;
+        events.push({ kind: "resumed", reason: "endOk" });
+        return;
+    }
+    const failing = failingOf(g1);
+    let best = null;
+    for (const c of await finalRepairCandidates(data, p1)) {
+        const g = await gateOn(data, c, "none", undefined, true);
+        if (g.ok && noRegression(await quarantineOn(data, c, true), q0)) {
+            best = c;
+            break;
+        }
+    }
+    if (!best) {
+        stays("noRepair");
+        return;
+    }
+    const trigger = failing.length > 0 ? newestOf(data, failing) : final.splits.at(-1);
+    const before = store.override;
+    store.override = diffOf(best, ctx.type);
+    const change = {
+        ts: ctx.now,
+        kind: "finalRepair",
+        from: before,
+        to: store.override,
+        reason: describeChange(p1, best),
+        runs: store.runs.length + store.spikes.length,
+        gainSec: 0,
+        ...(trigger ? { trigger } : {}),
+    };
+    pushChange(store, change);
+    store.lockRuns = LOCK_RUNS;
+    store.lockUntilTs = ctx.now + LOCK_MS;
+    store.lastChangeTs = ctx.now;
+    store.newSinceChange = 0;
+    store.failStreak = 0;
+    store.info.status = "locked";
+    markFinalResumed(store, "repair", ctx.now, true, trigger);
+    data.suspended = false;
+    vetoes.push(...failing);
+    events.push({ kind: "repaired", change, ...(trigger ? { key: trigger } : {}) });
+    events.push({ kind: "resumed", reason: "repair" });
+}
+async function finalRepairCandidates(data, p1) {
+    const poll = data.ctx.pollSec;
+    const out = [];
+    const add = (c) => {
+        if (finalOn(c) && finalViolations(c, c.standby, poll).length === 0) {
+            out.push({ c, d: finalDistance(c, p1) });
+        }
+    };
+    const Y = p1.finalMinSec ?? 0;
+    const X = p1.finalAfterSec ?? 0;
+    const P = p1.finalMinVal ?? 0;
+    const Pmax = p1.finalMaxVal ?? 0;
+    for (const fy of FINAL_REPAIR_Y) {
+        for (const fx of FINAL_REPAIR_X) {
+            for (const fp of FINAL_REPAIR_P) {
+                const p = Math.round(P * fp * 1e5) / 1e5;
+                if ((fy === 1 && fx === 1 && fp === 1) || (Pmax > 0 && p >= Pmax)) {
+                    continue;
+                }
+                add({
+                    ...p1,
+                    finalMinSec: Math.ceil((Y * fy) / poll) * poll,
+                    finalAfterSec: Math.ceil((X * fx) / poll) * poll,
+                    finalMinVal: p,
+                });
+            }
+        }
+    }
+    const learned = await learnedFinal(data, p1);
+    if (learned) {
+        const v = learned.values;
+        add({
+            ...p1,
+            ...v,
+            finalMinSec: Math.max(v.finalMinSec, Y),
+            finalAfterSec: Math.max(v.finalAfterSec, X),
+            finalMinVal: Math.max(v.finalMinVal, P),
+        });
+    }
+    return out.sort((a, b) => a.d - b.d).map(x => x.c);
+}
+function finalDistance(p, p0) {
+    let d = 0;
+    for (const k of FINAL_KEYS) {
+        const x = p[k] ?? 0;
+        const y = p0[k] ?? 0;
+        d += Math.abs(x - y) / Math.max(Math.abs(y), 1);
+    }
+    return d;
+}
+export function stepLimitFinal(c, p0, covered) {
+    const a = finalFields(c);
+    const b = finalFields(p0);
+    if (b.finalMinVal <= 0) {
+        return a;
+    }
+    if (a.finalMinVal <= 0) {
+        return null;
+    }
+    const round = (x) => Math.round(x * 1e5) / 1e5;
+    const out = { ...a };
+    out.finalMinVal = round(Math.min(b.finalMinVal * (1 + FINAL_P_STEP), Math.max(b.finalMinVal * (1 - FINAL_P_STEP), a.finalMinVal)));
+    if (a.finalMinSec < b.finalMinSec) {
+        out.finalMinSec =
+            covered >= FINAL_Y_DROP_RUNS
+                ? round(Math.max(a.finalMinSec, b.finalMinSec * (1 - FINAL_Y_DROP)))
+                : b.finalMinSec;
+    }
+    out.finalAfterSec = round(Math.max(a.finalAfterSec, b.finalAfterSec * (1 - FINAL_X_DROP)));
+    return out;
+}
+function finalFields(s) {
+    return Object.fromEntries(FINAL_KEYS.map(k => [k, s[k] ?? 0]));
+}
+function silentFinalOff(c, p0) {
+    return finalOn(p0) && !finalOn(c);
 }
 function oldVetoes(data) {
     return data.runs.filter(r => r.veto !== undefined && r.veto < data.ctx.now).map(r => r.key);
@@ -665,6 +1021,9 @@ async function bestRepair(data, p0, candidates, seen, q0) {
             continue;
         }
         seen.add(key);
+        if (silentFinalOff(c, p0)) {
+            continue;
+        }
         const d = distance(c, p0);
         if (best && d >= best.d) {
             continue;
@@ -796,7 +1155,7 @@ async function tighten(data, p0, r0, q0, done) {
     for (const recipe of recipes) {
         const c = build(recipe, analysis, variants);
         const key = JSON.stringify(c);
-        if (seen.has(key) || !withinBounds(c, poll) || unguardedFilterOn(c, p0)) {
+        if (seen.has(key) || !withinBounds(c, poll) || unguardedFilterOn(c, p0) || silentFinalOff(c, p0)) {
             continue;
         }
         seen.add(key);

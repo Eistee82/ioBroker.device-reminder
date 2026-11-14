@@ -1352,6 +1352,7 @@ const OPT_KINDS = [
 	"finalSuspend",
 	"finalResume",
 	"finalRepair",
+	"finalTune",
 ] as const;
 
 /**

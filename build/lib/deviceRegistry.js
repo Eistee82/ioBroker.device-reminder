@@ -1,5 +1,6 @@
 import { runActions } from "./actions.js";
 import { finalOn, finalValuesOf } from "./detector/index.js";
+import { ensureDeviceObjects } from "./deviceObjects.js";
 import { DeviceRuntime } from "./deviceRuntime.js";
 import { fill, TEXT } from "./dmTexts.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
@@ -12,11 +13,12 @@ import { scaled } from "./learn/ticks.js";
 import { LearningRecorder, suggestType } from "./learning.js";
 import { ReminderScheduler } from "./reminder.js";
 import { RunRecorder } from "./runRecorder.js";
-import { addRun, clearLearningData, convertRuns, decisionOf, detectionOf, emptyStore, finalSplitPairs, fitSize, labelCapture, loadStore, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, splitCapture, storeSamples, typeHash, upgradeStore, WINDOW_MS, } from "./runStore.js";
+import { addRun, clearLearningData, convertRuns, decisionOf, detectionOf, emptyStore, finalSplitPairs, fitSize, joinedCapture, labelCapture, loadStore, markFinalResumed, markFinalSuspended, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, splitCapture, storeSamples, typeHash, upgradeStore, WINDOW_MS, } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 const OPTIMIZE_BUDGET_MS = 30_000;
 const OUTAGE_MS = 60 * 60_000;
 const CHECKED_MAX = 20;
+const UNDOABLE = new Set(["repair", "tighten", "finalOn", "finalRepair", "finalTune"]);
 function isTrue(val) {
     return val === true || val === 1 || val === "true" || val === "1";
 }
@@ -432,12 +434,16 @@ export class DeviceRegistry {
         if (!entry || !store) {
             return false;
         }
-        const last = [...store.changes].reverse().find(c => c.kind !== "undo" && c.kind !== "reset");
-        if (!last || (last.kind !== "repair" && last.kind !== "tighten")) {
+        const last = [...store.changes]
+            .reverse()
+            .find(c => !["undo", "reset", "finalSuspend", "finalResume"].includes(c.kind));
+        if (!last || !UNDOABLE.has(last.kind)) {
             return false;
         }
+        const wasOn = finalOn(entry.runtime.effective);
         this.setOverrideByUser(entry, store, last.from, "undo", "undo of the last change");
         await this.saveOpt(entry);
+        await this.syncFinalObjects(deviceId, entry, wasOn);
         await this.writeOptStates(deviceId, entry);
         this.host.log.info(`${entry.runtime.config.name}: last optimisation undone`);
         return true;
@@ -451,8 +457,10 @@ export class DeviceRegistry {
         if (!entry || !store) {
             return false;
         }
+        const wasOn = finalOn(entry.runtime.effective);
         this.setOverrideByUser(entry, store, null, "reset", "reset to the detection values of the device");
         await this.saveOpt(entry);
+        await this.syncFinalObjects(deviceId, entry, wasOn);
         await this.writeOptStates(deviceId, entry);
         this.host.log.info(`${entry.runtime.config.name}: optimised values reset to the detection values of the device`);
         return true;
@@ -747,6 +755,7 @@ export class DeviceRegistry {
             clock: () => this.host.now(),
             ...(entry.opt?.verdicts ? { verdicts: entry.opt.verdicts } : {}),
             finalSuspended: entry.opt?.store.final?.state === "suspended",
+            ...(entry.opt ? { quality: this.qualityContext(entry.opt.store) } : {}),
         };
     }
     persistPending(entry) {
@@ -810,7 +819,7 @@ export class DeviceRegistry {
         }
         refreshInfo(store);
         await this.saveOpt(entry);
-        if (this.unjudged(store, finalSplitPairs(cap, store.deviceId)).length > 0) {
+        if (this.unjudged(store, this.splitPairsOf(store, cap)).length > 0) {
             this.enqueue(deviceId, () => this.judgeSplits(deviceId, cap));
         }
         if (stored) {
@@ -823,10 +832,18 @@ export class DeviceRegistry {
     judgeAtEnd(deviceId, entry) {
         const opt = entry.opt;
         const snap = opt?.recorder.snapshot();
-        if (!opt || !snap || this.unjudged(opt.store, finalSplitPairs(snap, opt.store.deviceId)).length === 0) {
+        if (!opt || !snap || this.unjudged(opt.store, this.splitPairsOf(opt.store, snap)).length === 0) {
             return;
         }
         this.enqueue(deviceId, () => this.judgeSplits(deviceId, snap));
+    }
+    splitPairsOf(store, cap) {
+        const own = finalSplitPairs(cap, store.deviceId);
+        const joined = joinedCapture(store, cap);
+        if (!joined) {
+            return own;
+        }
+        return [...own, ...finalSplitPairs(joined, store.deviceId).filter(p => !own.some(o => o.key === p.key))];
     }
     unjudged(store, pairs) {
         const known = [...(store.final?.checked ?? []), ...(store.final?.splits ?? [])];
@@ -838,13 +855,13 @@ export class DeviceRegistry {
         if (!entry || !store) {
             return;
         }
-        const pairs = this.unjudged(store, finalSplitPairs(cap, store.deviceId));
+        const pairs = this.unjudged(store, this.splitPairsOf(store, cap));
         if (pairs.length === 0) {
             return;
         }
         const ctx = this.qualityContext(store);
         const clean = storeSamples(store, ctx)
-            .filter(x => x.sample.kind === "run" && !x.sample.afterFinal && admitted(x.verdict, "final"))
+            .filter(x => x.sample.kind === "run" && (x.sample.afterFinal ?? "a") === "a" && admitted(x.verdict, "final"))
             .map(x => x.sample);
         const restVal = finalValuesOf(entry.runtime.effective, this.getConfig().pollIntervalSec).finalRestVal;
         const final = this.finalOf(entry, store);
@@ -872,27 +889,8 @@ export class DeviceRegistry {
         if (!entry || !store) {
             return false;
         }
-        const final = this.finalOf(entry, store);
-        const was = final.state === "suspended";
-        const now = this.host.now();
-        store.final = {
-            ...final,
-            state: "suspended",
-            splits: final.splits.includes(key) ? final.splits : [...final.splits, key],
-            suspendedAt: was ? final.suspendedAt : now,
-            reason,
-        };
+        const was = markFinalSuspended(store, reason, key, this.host.now(), finalOn(entry.runtime.effective));
         entry.runtime.setFinalSuspended(true);
-        pushChange(store, {
-            ts: now,
-            kind: "finalSuspend",
-            from: store.override,
-            to: store.override,
-            reason: `final phase suspended (${reason})`,
-            runs: store.runs.length + store.spikes.length,
-            gainSec: 0,
-            trigger: key,
-        });
         await this.saveOpt(entry);
         await this.writeOptStates(deviceId, entry);
         if (!was) {
@@ -913,25 +911,16 @@ export class DeviceRegistry {
         }
         const left = why === "newRun" ? final.splits.filter(k => k !== key && !sameRun(k, key ?? "")) : [];
         final.splits = left;
+        if (why === "newRun" && final.joined) {
+            final.joined = final.joined.filter(k => k !== key && !sameRun(k, key ?? ""));
+        }
         if (left.length > 0 || final.state !== "suspended") {
             await this.saveOpt(entry);
             await this.writeOptStates(deviceId, entry);
             return false;
         }
-        final.state = finalOn(entry.runtime.effective) ? "on" : "off";
-        final.suspendedAt = 0;
-        delete final.reason;
+        markFinalResumed(store, why, this.host.now(), finalOn(entry.runtime.effective), key);
         entry.runtime.setFinalSuspended(false);
-        pushChange(store, {
-            ts: this.host.now(),
-            kind: "finalResume",
-            from: store.override,
-            to: store.override,
-            reason: `final phase used again (${why})`,
-            runs: store.runs.length + store.spikes.length,
-            gainSec: 0,
-            ...(key ? { trigger: key } : {}),
-        });
         await this.saveOpt(entry);
         await this.writeOptStates(deviceId, entry);
         this.host.log.info(`${entry.runtime.config.name}: final phase used again (${why})`);
@@ -979,14 +968,20 @@ export class DeviceRegistry {
             this.host.log.info(`${entry.runtime.config.name}: base values changed during the optimisation, result discarded`);
             return;
         }
+        const wasOn = finalOn(entry.runtime.effective);
         mergeFork(store, fork);
         applyVetoes(store, outcome, ctx.now);
         entry.holdOverride = false;
         entry.runtime.setOverride(store.override);
+        if (store.final) {
+            entry.runtime.setFinalSuspended(store.final.state === "suspended");
+        }
         await this.saveOpt(entry);
+        await this.syncFinalObjects(deviceId, entry, wasOn);
         await this.writeOptStates(deviceId, entry);
         await this.reportHints(entry, outcome.hints);
         await this.reportOutcome(entry, outcome);
+        await this.reportFinal(entry, outcome.final);
         if (store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
             await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
         }
@@ -1026,6 +1021,60 @@ export class DeviceRegistry {
                 break;
             default:
                 break;
+        }
+    }
+    async reportFinal(entry, events) {
+        const name = entry.runtime.config.name;
+        const runs = entry.opt ? entry.opt.store.runs.length + entry.opt.store.spikes.length : 0;
+        for (const ev of events) {
+            const changes = ev.change?.reason ?? "";
+            switch (ev.kind) {
+                case "on":
+                    await this.notifyOptimization(entry, TEXT.optFinalOn, {
+                        changes,
+                        runs,
+                        gain: formatMinutes(ev.change?.gainSec ?? 0),
+                    });
+                    break;
+                case "tuned":
+                    await this.notifyOptimization(entry, TEXT.optFinalTuned, { changes, runs });
+                    break;
+                case "suspended":
+                    this.host.log.warn(`${name}: final phase suspended (${ev.reason ?? ""})`);
+                    await this.sendOptimization(entry, TEXT.finalSuspended, {});
+                    break;
+                case "repaired": {
+                    const run = entry.opt?.store.runs.find(r => r.key === ev.key);
+                    await this.notifyOptimization(entry, TEXT.optFinalRepaired, {
+                        changes,
+                        date: formatDate(run ? run.ts + run.seg.startIdx * run.step : this.host.now()),
+                    });
+                    break;
+                }
+                case "resumed":
+                    this.host.log.info(`${name}: final phase used again (${ev.reason ?? ""})`);
+                    if (ev.reason === "endOk") {
+                        await this.sendOptimization(entry, TEXT.finalResumed, {});
+                    }
+                    break;
+                case "stays":
+                    this.host.log.info(ev.reason === "notStored"
+                        ? `${name}: final phase stays suspended until the split run is stored`
+                        : `${name}: final phase stays suspended: no values of the final phase detect every admitted run`);
+                    break;
+            }
+        }
+    }
+    async syncFinalObjects(deviceId, entry, wasOn) {
+        const objects = this.opts.objects;
+        if (!objects || finalOn(entry.runtime.effective) === wasOn) {
+            return;
+        }
+        try {
+            await ensureDeviceObjects(objects, deviceId, entry.runtime.config, this.getConfig(), entry.runtime.currentOverride);
+        }
+        catch (err) {
+            this.host.log.warn(`Cannot update the states of ${entry.runtime.config.name}: ${errorMessage(err)}`);
         }
     }
     async reportHints(entry, hints) {

@@ -54,6 +54,7 @@ class DeviceReminder extends utils.Adapter {
                     alive: async (instance) => (await this.getForeignStateAsync(`system.adapter.${instance}.alive`))?.val === true,
                     getHistory: (id, options) => this.getHistoryAsync(id, options),
                 },
+                objects: this.objectWriter(),
             });
             this.registry = registry;
             const sync = new DeviceSync(registry, this.objectWriter(), () => this.instanceConfig, this.log);

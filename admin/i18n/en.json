@@ -207,6 +207,7 @@
 	"dm_optKind_finalSuspend": "Final phase suspended (wrong early end found)",
 	"dm_optKind_finalResume": "Final phase used again",
 	"dm_optKind_finalRepair": "Final phase repaired",
+	"dm_optKind_finalTune": "Final phase adjusted",
 	"dm_optOperation": "Action",
 	"dm_optOpNone": "Only show",
 	"dm_optUndo": "Undo last change",

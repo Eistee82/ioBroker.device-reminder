@@ -127,6 +127,7 @@
 	"dm_optKind_finalRepair": "Eindfase gerepareerd",
 	"dm_optKind_finalResume": "Eindfase weer ingeschakeld",
 	"dm_optKind_finalSuspend": "Eindfase opgeschort (onjuist vroeg einde herkend)",
+	"dm_optKind_finalTune": "Eindfase bijgesteld",
 	"dm_optKind_repair": "Reparatie",
 	"dm_optKind_reset": "Reset",
 	"dm_optKind_revert": "Reparatie teruggedraaid",
