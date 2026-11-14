@@ -70,6 +70,9 @@ export type FinalSettings = Partial<Record<FinalKey, number>>;
 /** How the lock phase after an early end was left (Spec A.3, exits a–g). */
 export type FinalExit = "a" | "b" | "c" | "d" | "e" | "f" | "g";
 
+/** Counters of the final phase: early ends and exits of the lock phase. */
+export type FinalStats = Record<"early" | FinalExit, number>;
+
 /** Thresholds plus the time-based settings. */
 export interface DetectionSettings extends TypeThresholds, FinalSettings {
 	/** Detection mode. */
@@ -110,6 +113,17 @@ export interface Detector {
 	feed?(power: number, now: number): TickResult;
 	/** Whether a run is in progress. */
 	readonly started: boolean;
+	/** Final phase only: whether the lock phase after an early end is active. */
+	readonly settling?: boolean;
+	/**
+	 * Final phase only: exit of the last lock phase, set only during the call that returns the first
+	 * `started` after that lock phase, otherwise null.
+	 */
+	readonly finalExit?: FinalExit | null;
+	/** Final phase only: time of the early end that began the current lock phase, otherwise null. */
+	readonly lockAt?: number | null;
+	/** Final phase only: counters of early ends and exits. */
+	readonly stats?: FinalStats;
 	/** Reset to the initial state. */
 	reset(): void;
 }

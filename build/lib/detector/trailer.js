@@ -30,6 +30,7 @@ export class TrailerFilter {
     queuedTicks = 0;
     holdStart = 0;
     suppressedInTrailer = 0;
+    shownExit = null;
     burstsSuppressed = 0;
     constructor(inner, s) {
         this.inner = inner;
@@ -50,7 +51,19 @@ export class TrailerFilter {
         return this.inner.started;
     }
     get inTrailer() {
-        return this.trailerUntil !== null && this.suppressedInTrailer > 0;
+        return this.trailerUntil !== null && (this.suppressedInTrailer > 0 || this.inner.settling === true);
+    }
+    get settling() {
+        return this.inner.settling;
+    }
+    get finalExit() {
+        return this.inner.settling === undefined ? undefined : this.shownExit;
+    }
+    get lockAt() {
+        return this.inner.lockAt;
+    }
+    get stats() {
+        return this.inner.stats;
     }
     get holding() {
         return this.queue.length > 0;
@@ -71,12 +84,15 @@ export class TrailerFilter {
         this.queuedTicks = 0;
         this.holdStart = 0;
         this.suppressedInTrailer = 0;
+        this.shownExit = null;
         this.burstsSuppressed = 0;
     }
     tick(power, now, hints) {
+        this.shownExit = null;
         return this.step({ kind: "tick", power, now, hints });
     }
     feed(power, now) {
+        this.shownExit = null;
         if (!this.inner.feed) {
             return this.held();
         }
@@ -90,6 +106,10 @@ export class TrailerFilter {
             return this.resolve(call);
         }
         this.updateTrailer(call.now);
+        if (this.inner.settling === true) {
+            this.trackQuiet(call);
+            return this.pass(call);
+        }
         const quietMs = this.quietSince === null ? 0 : call.now - this.quietSince;
         if (call.power >= this.endVal && this.armed(call.now, quietMs)) {
             this.trackQuiet(call);
@@ -113,10 +133,15 @@ export class TrailerFilter {
         else {
             r = this.inner.tick(call.power, call.now, call.hints);
         }
-        for (const ev of r.events) {
-            this.note(ev, call.now);
-        }
+        r.events.forEach((ev, k) => this.note(ev, r.times?.[k] ?? call.now));
+        this.markExit(r);
         return r;
+    }
+    markExit(r) {
+        const exit = this.inner.finalExit;
+        if (exit && r.events.includes("started")) {
+            this.shownExit = exit;
+        }
     }
     note(ev, now) {
         if (ev === "started") {
@@ -157,7 +182,7 @@ export class TrailerFilter {
         }
         const replaced = this.forward(calls, this.base());
         const current = this.pass(call);
-        return merge(replaced, { ...current, times: current.events.map(() => call.now) }, this.inner.started);
+        return merge(replaced, { ...current, times: current.events.map((_, k) => current.times?.[k] ?? call.now) }, this.inner.started);
     }
     armed(now, quietMs) {
         if (this.quietSince === null || quietMs < this.gapMs) {
@@ -250,11 +275,13 @@ export class TrailerFilter {
             else {
                 r = this.inner.tick(power, c.now, c.hints);
             }
-            for (const ev of r.events) {
+            r.events.forEach((ev, k) => {
+                const at = r.times?.[k] ?? c.now;
                 events.push(ev);
-                times.push(c.now);
-                this.note(ev, c.now);
-            }
+                times.push(at);
+                this.note(ev, at);
+            });
+            this.markExit(r);
             status = r.status ?? status;
             average = r.average ?? average;
         }

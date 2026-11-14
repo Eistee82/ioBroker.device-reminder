@@ -78,6 +78,7 @@ Ein Gerät ohne gültige Erkennungswerte (zum Beispiel, weil sein Gerätetyp nic
 | Pause, wenn sie beginnt vor (s) | Pausenschutz: eine Phase unter dem Endwert, die so früh nach dem Start beginnt, ist eine Pause (0 = nicht verwendet) |
 | Pause, wenn Leistung unter (W) | Pausenschutz: eine Phase unter dem Endwert, deren Leistung unter diesem Wert bleibt, ist eine Pause (0 = nicht verwendet) |
 | Knitterschutz: max. Burst / min. Pause / erst nach / min. Blockleistung / max. Dauer | [Knitterschutz-Filter](#knitterschutz) (max. Burst 0 = aus) |
+| Schlussphase (13 Werte, Expertenwerte) | [frühes Fertig nach der letzten Programmphase](#schlussphase) (Untergrenze oder Zeit im Band 0 = aus) |
 
 ### Erkennungsmodi
 
@@ -320,6 +321,44 @@ Der optionale **Knitterschutz-Filter** eines Geräts (standardmäßig aus) hält
 Die Felder gehören zu den Erkennungswerten des Geräts. Sie sind Teil des Anlern-Dialogs, wenn das Anlernen den Filter vorschlägt, und werden in den Gerätedetails angezeigt. Solange der Filter Trommelbewegungen zurückhält, ist der State `antiCrease` des Geräts true.
 
 Das Anlernen findet Knitterschutzphasen (mindestens 2 kurze Bursts, auch im Abstand von 1 Minute, nach einem längeren Block; eine längere Lücke für eine zwischendurch geöffnete Tür ist erlaubt) und auch einen dichten Knitterschutz, bei dem Trommel und Elektronik bei jeder Meldung wechseln (z. B. 6 W und 20–110 W abwechselnd für 30 Minuten nach dem letzten Schleudern; mindestens 6 Bursts über 5 Minuten, höchstens 70 % der Zeit Trommel und die Elektronik dazwischen höchstens ein Viertel der Burst-Leistung), misst die Ende-Verzögerung ab dem Programmende und setzt die Felder, wenn mindestens 2 Läufe eine solche Phase haben und der Filter das Ende mindestens eine Minute früher meldet. Liegt die Elektronik zwischen den Trommelbewegungen zeitweise über dem Laufpegel (Trockner: Trommel etwa 100 W, dazwischen 4 W und 8–13 W im Wechsel), misst das Anlernen den Knitterschutz über einem Viertel der hohen Werte am Laufende, solange die Elektronik dazwischen höchstens ein Viertel der Burst-Leistung hat; so wird er in jedem Lauf gefunden und das Ende des Abkühlens gilt als Programmende. Endwerte in der Nähe der Burst-Leistung werden nie vorgeschlagen. Innerhalb eines Programms kann eine Phase genauso aussehen wie der Knitterschutz (Einweichen mit Trommelbewegungen). Die Filtervarianten mit `trailerBlockVal` und `trailerAfterSec` unterscheiden sie; erkennt keine Variante jeden Lauf, zeigt der Dialog „nicht trennbar“ und das Ende bleibt nach dem Knitterschutz (es wird nie zu früh gemeldet).
+
+### Schlussphase
+
+Viele Geräte haben am Programmende eine letzte typische Phase, nach der nur noch Ruhe oder ein Nachlauf kommt (Waschmaschine: Endschleudern, danach Knitterschutz). Die Ende-Erkennung wartet nach dieser Phase noch die Endanzahl bzw. Enddauer ab; bei einer Waschmaschine mit den Werten von 3.1.2 sind das 11–31 Minuten. Die optionale **Schlussphase** meldet das Ende stattdessen kurz nach dieser letzten Phase (auf den Daten einer Waschmaschine 1,5–2,2 Minuten nach dem Programmende). Sie ist standardmäßig aus (alle 13 Werte 0 = Verhalten von 3.1.2) und eingeschaltet, sobald Untergrenze und Zeit im Band gesetzt sind. Die Werte stehen unter **Expertenwerte** im Geräteformular.
+
+So funktioniert sie:
+
+- **Frühes Fertig:** Liegt die Leistung im Lauf zusammen mindestens „Zeit im Band“ (Y) im **Schlussband** (Untergrenze P bis unter die Obergrenze; ein Wert über der Obergrenze verwirft den Block), beginnt dieser Block frühestens „Block nach Start“ (X) nach dem Start und liegt die Leistung danach „Ruhezeit“ (Z) lang unter P, wird **Fertig** gemeldet – mit allem, was zu einem normalen Ende gehört (Ende-Text, Ende-Aktionen, Erinnerungen, `lastOperations`). Unterbrechungen bis „Unterbrechung“ (G) gehören noch zum Block. Gezählt wird bei jeder Abfrage der zuletzt gemeldete Wert; eine Steckdose, die minutenlang nichts meldet, verlängert die Zeit im Band also nicht.
+- **Sperrphase:** Nach dem frühen Fertig folgt eine Sperrphase. Die Erkennung läuft im Hintergrund weiter, meldet aber nichts; der Status ist „standby“ bzw. „switched off“. Ein Abbruch über den Schalter wird in der Sperrphase nicht gemeldet. Nachlauf-Bewegungen der Trommel lösen so keinen neuen Lauf aus. Die erste zutreffende Bedingung beendet die Sperrphase:
+
+| Ausgang | Bedingung |
+| --- | --- |
+| a) Ende | die normale Ende-Erkennung meldet das Ende (bzw. einen Abbruch) |
+| b) Ruhe | die Leistung bleibt „Ruhedauer“ lang unter dem „Ruhepegel“ (0 = Standby-Wert) |
+| c) Hochlast | die Leistung bleibt G lang auf oder über dem „Hochlast-Pegel“ (0 = aus) |
+| d) Schlussband spät | ein Wert im Schlussband später als das „Prüffenster“ nach dem frühen Fertig |
+| e) Höchstdauer | die „Höchstdauer der Sperrphase“ ist abgelaufen (0 = 4 Stunden) |
+| f) Aktivität | in den letzten 5 Minuten liegt die Leistung mindestens zum „Aktivitätsanteil“ der Zeit über dem „Aktivitätspegel“ (beide 0 = aus) |
+| g) Schlussband früh | innerhalb des Prüffensters liegt die Leistung zusammen mindestens Y/2 im Schlussband |
+
+- **Alles danach ist ein neuer Lauf:** Nach b–g beginnt die Erkennung von vorn und erkennt einen neuen Lauf mit den normalen Startregeln. Der Start wird auf die erste Aktivität über dem Ruhepegel nach der letzten Ruhe zurückdatiert, frühestens auf das frühe Fertig, damit Laufzeit und `lastOperations` stimmen. Es gibt keine Korrektur-Nachricht und keine Wiederaufnahme: Wurde ein Programm direkt nach dem Ende neu gestartet, ist das ein neuer Lauf mit eigener Start- und Fertig-Meldung; war das frühe Fertig falsch (die Schlussphase passt nicht zu diesem Programm), meldet der Rest des Programms Start und Fertig.
+- **Grenzen:** Zeiten gelten unabhängig vom Abfrageintervall mindestens so, dass ein einzelner Wert nie reicht (Y und G mindestens 2 Abfragen, Z mindestens G, Ruhedauer mindestens 3 Abfragen); das wirkt nur in die sichere Richtung (späteres Fertig, späterer Ausgang). Mit aktivem [Knitterschutz-Filter](#knitterschutz) liegt dieser außen: Das frühe Fertig startet den Knitterschutz (State `antiCrease` ist in der Sperrphase true, solange der Knitterschutz läuft), in der Sperrphase hält der Filter nichts zurück.
+
+Die Werte trägst du derzeit von Hand ein; Anlernen und automatische Optimierung der Schlussphase folgen. Ohne passende Werte (Schlussband, das auch mitten im Programm erreicht wird, oder zu kleines Y) kommt das Fertig zu früh, und der Rest des Programms wird als neuer Lauf gemeldet.
+
+| Feld | Bedeutung |
+| --- | --- |
+| `finalMinVal` (P) | Untergrenze des Schlussbands (0 = Schlussphase aus) |
+| `finalMaxVal` | Obergrenze; ein Wert ab hier verwirft den Block (0 = offen) |
+| `finalHotVal` | Hochlast-Pegel für Ausgang c (0 = aus) |
+| `finalAfterSec` (X) | der Block beginnt frühestens so lange nach dem Start (s) |
+| `finalMinSec` (Y) | Zeit im Schlussband (s; 0 = Schlussphase aus) |
+| `finalQuietSec` (Z) | so lange unter P nach dem Block → Fertig (s; 0 = 120 s) |
+| `finalDipSec` (G) | Unterbrechung im Block (s; 0 = 60 s bzw. 2 Abfragen) |
+| `finalRestVal` / `finalRestSec` | Ruhepegel und Ruhedauer für Ausgang b (0 = Standby-Wert bzw. 60 s) |
+| `finalActVal` / `finalActShare` | Aktivitätspegel und -anteil für Ausgang f (0 = aus) |
+| `finalCheckSec` | Prüffenster für die Ausgänge d und g (s; 0 = 30 min) |
+| `finalLockSec` | Höchstdauer der Sperrphase (s; 0 = 4 h) |
 
 ### Automatische Optimierung
 

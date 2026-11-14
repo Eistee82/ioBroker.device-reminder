@@ -33,6 +33,10 @@ describe("detector behaviour of 3.1.2 (golden fixture of commit cd5e67f)", () =>
 		assert.deepStrictEqual(differences(Object.fromEntries(FINAL_KEYS.map(k => [k, 0]))), []);
 	});
 
+	it("is unchanged with the final phase on but a final band no value reaches (wrapper built, I1)", () => {
+		assert.deepStrictEqual(differences({ finalMinVal: 1e9, finalMinSec: 168 }), []);
+	});
+
 	for (const k of FINAL_KEYS) {
 		// Spec 8.2 / G1: golden per field – each field alone (without the master switch) changes nothing
 		it(`is unchanged with only ${k} set (master switch off)`, () => {

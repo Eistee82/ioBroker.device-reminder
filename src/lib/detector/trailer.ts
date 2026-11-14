@@ -1,4 +1,4 @@
-import type { Detector, DetectorEvent, DeviceStatus, TickHints, TickResult } from "./types.js";
+import type { Detector, DetectorEvent, DeviceStatus, FinalExit, FinalStats, TickHints, TickResult } from "./types.js";
 
 /** A phase continuously >= endVal for at least this long is a sustained block (programme activity). */
 export const TRAILER_BLOCK_SEC = 120;
@@ -50,6 +50,8 @@ interface Call {
  * programme finishes, and during the anti-crease phase after the end, so that bursts start no run
  * (there a phase is real activity only after TRAILER_BLOCK_SEC).
  * The inner detector is unchanged; without the filter (trailerBurstSec 0) it is not built at all.
+ * While the inner final phase is in its lock phase (`settling`), every call is passed on unchanged: the
+ * lock phase calms the output itself and must see short blocks in the final band (Spec A.3, P13).
  */
 export class TrailerFilter implements Detector {
 	private readonly burstMs: number;
@@ -77,6 +79,7 @@ export class TrailerFilter implements Detector {
 	private queuedTicks = 0;
 	private holdStart = 0;
 	private suppressedInTrailer = 0;
+	private shownExit: FinalExit | null = null;
 	/** Number of bursts replaced by the quiet level since the last reset. */
 	public burstsSuppressed = 0;
 
@@ -110,9 +113,32 @@ export class TrailerFilter implements Detector {
 		return this.inner.started;
 	}
 
-	/** Whether the anti-crease phase is active and at least one burst was suppressed in it. */
+	/**
+	 * Whether the anti-crease phase is active and at least one burst was suppressed in it; while the
+	 * lock phase of the final phase passes calls through, as long as the anti-crease phase lasts.
+	 */
 	public get inTrailer(): boolean {
-		return this.trailerUntil !== null && this.suppressedInTrailer > 0;
+		return this.trailerUntil !== null && (this.suppressedInTrailer > 0 || this.inner.settling === true);
+	}
+
+	/** Final phase (inner detector): whether the lock phase is active. */
+	public get settling(): boolean | undefined {
+		return this.inner.settling;
+	}
+
+	/** Final phase (inner detector): exit of the last lock phase, during the call that returns the first start after it. */
+	public get finalExit(): FinalExit | null | undefined {
+		return this.inner.settling === undefined ? undefined : this.shownExit;
+	}
+
+	/** Final phase (inner detector): time of the early end of the current lock phase. */
+	public get lockAt(): number | null | undefined {
+		return this.inner.lockAt;
+	}
+
+	/** Final phase (inner detector): counters of early ends and exits. */
+	public get stats(): FinalStats | undefined {
+		return this.inner.stats;
 	}
 
 	/** Whether calls are held back right now. */
@@ -137,6 +163,7 @@ export class TrailerFilter implements Detector {
 		this.queuedTicks = 0;
 		this.holdStart = 0;
 		this.suppressedInTrailer = 0;
+		this.shownExit = null;
 		this.burstsSuppressed = 0;
 	}
 
@@ -148,6 +175,7 @@ export class TrailerFilter implements Detector {
 	 * @param hints - Additional evidence
 	 */
 	public tick(power: number, now: number, hints?: TickHints): TickResult {
+		this.shownExit = null;
 		return this.step({ kind: "tick", power, now, hints });
 	}
 
@@ -158,6 +186,7 @@ export class TrailerFilter implements Detector {
 	 * @param now - Timestamp of the value in ms
 	 */
 	public feed(power: number, now: number): TickResult {
+		this.shownExit = null;
 		if (!this.inner.feed) {
 			return this.held();
 		}
@@ -173,6 +202,10 @@ export class TrailerFilter implements Detector {
 			return this.resolve(call);
 		}
 		this.updateTrailer(call.now);
+		if (this.inner.settling === true) {
+			this.trackQuiet(call);
+			return this.pass(call);
+		}
 		const quietMs = this.quietSince === null ? 0 : call.now - this.quietSince;
 		if (call.power >= this.endVal && this.armed(call.now, quietMs)) {
 			this.trackQuiet(call);
@@ -201,10 +234,22 @@ export class TrailerFilter implements Detector {
 		} else {
 			r = this.inner.tick(call.power, call.now, call.hints);
 		}
-		for (const ev of r.events) {
-			this.note(ev, call.now);
-		}
+		r.events.forEach((ev, k) => this.note(ev, r.times?.[k] ?? call.now));
+		this.markExit(r);
 		return r;
+	}
+
+	/**
+	 * Keep the mark of the first start after a lock phase for the whole outer call (one call may pass
+	 * several held calls on to the inner detector).
+	 *
+	 * @param r - Result of one inner call
+	 */
+	private markExit(r: TickResult): void {
+		const exit = this.inner.finalExit;
+		if (exit && r.events.includes("started")) {
+			this.shownExit = exit;
+		}
 	}
 
 	/**
@@ -261,7 +306,11 @@ export class TrailerFilter implements Detector {
 		}
 		const replaced = this.forward(calls, this.base());
 		const current = this.pass(call);
-		return merge(replaced, { ...current, times: current.events.map(() => call.now) }, this.inner.started);
+		return merge(
+			replaced,
+			{ ...current, times: current.events.map((_, k) => current.times?.[k] ?? call.now) },
+			this.inner.started,
+		);
 	}
 
 	/**
@@ -384,11 +433,13 @@ export class TrailerFilter implements Detector {
 			} else {
 				r = this.inner.tick(power, c.now, c.hints);
 			}
-			for (const ev of r.events) {
+			r.events.forEach((ev, k) => {
+				const at = r.times?.[k] ?? c.now;
 				events.push(ev);
-				times.push(c.now);
-				this.note(ev, c.now);
-			}
+				times.push(at);
+				this.note(ev, at);
+			});
+			this.markExit(r);
 			status = r.status ?? status;
 			average = r.average ?? average;
 		}

@@ -1,7 +1,9 @@
+import { FinalPhaseFilter } from "./finalPhase.js";
 import { LegacyDetector } from "./legacy.js";
 import { TimedDetector } from "./timed.js";
 import { TrailerFilter } from "./trailer.js";
-import type { DetectionSettings, Detector } from "./types.js";
+import { FINAL_KEYS } from "./types.js";
+import type { DetectionSettings, Detector, FinalSettings } from "./types.js";
 
 export type {
 	DetectionMode,
@@ -12,11 +14,14 @@ export type {
 	FinalExit,
 	FinalKey,
 	FinalSettings,
+	FinalStats,
 	TickHints,
 	TickResult,
 	TypeThresholds,
 } from "./types.js";
 export { FINAL_KEYS } from "./types.js";
+export { FINAL_ACT_WINDOW_MS, FinalPhaseFilter, finalFloors } from "./finalPhase.js";
+export type { FinalPhaseOptions } from "./finalPhase.js";
 export { LegacyDetector } from "./legacy.js";
 export { TimedDetector } from "./timed.js";
 export { PauseGuard } from "./pauseGuard.js";
@@ -30,8 +35,10 @@ export interface DetectorOptions {
 	abort: boolean;
 	/** Corrected abort detection (count and combined mode). */
 	abortFixed: boolean;
-	/** Poll interval in s (used by the anti-crease filter; default 10). */
+	/** Poll interval in s (used by the anti-crease filter and the final phase; default 10). */
 	pollSec?: number;
+	/** Final phase: start in the lock phase that began at this time (restart during the lock phase). */
+	resumeLockAt?: number;
 }
 
 /**
@@ -59,17 +66,25 @@ export function finalOn(s: DetectionSettings): boolean {
  * - `count`: 3.1.2 detection (optionally with the corrected abort detection).
  * - `timed`: time-based, event-driven detection.
  * - `combined`: 3.1.2 detection plus minimum durations above startVal / below endVal.
- * - with `trailerBurstSec > 0` the detector is wrapped in the anti-crease filter (otherwise unchanged).
+ * - with the final phase on (`finalOn`) the detector of the mode is wrapped in the final phase filter,
+ *   and with `trailerBurstSec > 0` everything in the anti-crease filter (outside); otherwise unchanged.
  *
  * @param s - Thresholds, mode and durations of the device type
  * @param o - Device options
  */
 export function createDetector(s: DetectionSettings, o: DetectorOptions): Detector {
-	const inner = createInner(s, o);
+	const pollSec = Math.max(1, o.pollSec ?? 10);
+	let inner = createInner(s, o);
+	if (finalOn(s)) {
+		inner = new FinalPhaseFilter(inner, finalSettingsOf(s), {
+			pollSec,
+			standby: s.standby,
+			resumeLockAt: o.resumeLockAt,
+		});
+	}
 	if ((s.trailerBurstSec ?? 0) <= 0) {
 		return inner;
 	}
-	const pollSec = Math.max(1, o.pollSec ?? 10);
 	return new TrailerFilter(inner, {
 		trailerBurstSec: s.trailerBurstSec as number,
 		trailerGapSec: trailerGapOf(s, pollSec),
@@ -80,6 +95,20 @@ export function createDetector(s: DetectionSettings, o: DetectorOptions): Detect
 		standby: s.standby,
 		pollSec,
 	});
+}
+
+/**
+ * Every field of the final phase (missing or invalid = 0).
+ *
+ * @param s - Detection settings
+ */
+function finalSettingsOf(s: DetectionSettings): Required<FinalSettings> {
+	const out = {} as Required<FinalSettings>;
+	for (const k of FINAL_KEYS) {
+		const v = s[k];
+		out[k] = typeof v === "number" && Number.isFinite(v) ? v : 0;
+	}
+	return out;
 }
 
 /**

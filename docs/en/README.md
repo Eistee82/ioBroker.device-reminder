@@ -78,6 +78,7 @@ A device without valid detection values (for example because its device type no 
 | Pause if it starts before (s) | Pause protection: a phase below the end value that begins this early after the start is a pause (0 = unused) |
 | Pause if power below (W) | Pause protection: a phase below the end value whose power stays below this value is a pause (0 = unused) |
 | Anti-crease: max. burst / min. gap / only after / min. block power / max. duration | [Anti-crease filter](#anti-crease-phase) (max. burst 0 = off) |
+| Final phase (13 values, expert values) | [early finish after the last programme phase](#final-phase) (lower edge or time in band 0 = off) |
 
 ### Detection modes
 
@@ -320,6 +321,44 @@ The optional **anti-crease filter** of a device (off by default) holds back a ph
 The fields belong to the detection values of the device. They are part of the learn dialog when learning suggests the filter, and are shown in the device details. While the filter holds drum movements, the state `antiCrease` of the device is true.
 
 Learning finds anti-crease phases (at least 2 short bursts, also 1 minute apart, after a sustained block; one longer gap for a door opened in between is allowed) and also a dense anti-crease phase where drum and electronics alternate with every report (e.g. 6 W and 20–110 W alternating for 30 minutes after the last spin; at least 6 bursts over 5 minutes, drum at most 70 % of the time and the electronics in between at most a quarter of the burst power), measures the end delay from the end of the programme and sets the fields when at least 2 runs have such a phase and the filter reports the end at least a minute earlier. If the electronics between the drum movements is above the run level now and then (dryer: drum about 100 W, in between 4 W and 8–13 W alternating), learning measures the anti-crease phase above a quarter of the high values at the end of the run, as long as the electronics in between stays at most a quarter of the burst power; so it is found in every run and the end of the cool-down counts as the end of the programme. End values near the burst power are never suggested. Inside a programme a phase can look exactly like the anti-crease phase (soaking with drum movements). The filter variants with `trailerBlockVal` and `trailerAfterSec` tell them apart; if no variant detects every run, the dialog shows "not separable" and the end stays after the anti-crease phase (it is never reported too early).
+
+### Final phase
+
+Many devices end their programme with a last typical phase, after which only rest or a trailer follows (washing machine: final spin, then anti-crease). After this phase the end detection still waits for the end count or end duration; for a washing machine with the 3.1.2 values that is 11–31 minutes. The optional **final phase** reports the end shortly after this last phase instead (on the data of a washing machine 1.5–2.2 minutes after the end of the programme). It is off by default (all 13 values 0 = behaviour of 3.1.2) and on as soon as the lower edge and the time in the band are set. The values are under **Expert values** in the device form.
+
+How it works:
+
+- **Early finish:** If the power stays in the **final band** (lower edge P up to below the upper edge; a value above the upper edge discards the block) for at least "time in band" (Y) in total during the run, the block begins at the earliest "block after start" (X) after the start, and the power then stays below P for "quiet time" (Z), **finished** is reported – with everything a normal end has (end text, end actions, reminders, `lastOperations`). Interruptions up to "interruption" (G) still belong to the block. Each poll counts the last reported value, so a plug that reports nothing for minutes does not lengthen the time in the band.
+- **Lock phase:** After the early finish a lock phase follows. The detection keeps running in the background but reports nothing; the status is "standby" or "switched off". An abort via the switch is not reported in the lock phase. Drum movements of a trailer start no new run this way. The first matching condition ends the lock phase:
+
+| Exit | Condition |
+| --- | --- |
+| a) End | the normal end detection reports the end (or an abort) |
+| b) Rest | the power stays below the "rest level" (0 = standby value) for the "rest duration" |
+| c) High load | the power stays at or above the "high-load level" for G (0 = off) |
+| d) Final band late | a value in the final band later than the "check window" after the early finish |
+| e) Maximum duration | the "maximum duration of the lock phase" has passed (0 = 4 hours) |
+| f) Activity | in the last 5 minutes the power is above the "activity level" for at least the "activity share" of the time (both 0 = off) |
+| g) Final band early | within the check window the power is in the final band for at least Y/2 in total |
+
+- **Everything after it is a new run:** After b–g the detection starts again and detects a new run with the normal start rules. The start is dated back to the first activity above the rest level after the last rest, at the earliest to the early finish, so that the runtime and `lastOperations` are right. There is no correction message and no resume: if a programme was started again right after the end, it is a new run with its own start and finished messages; if the early finish was wrong (the final phase does not fit this programme), the rest of the programme reports start and finished.
+- **Limits:** Independent of the poll interval, times are at least long enough that a single value is never enough (Y and G at least 2 polls, Z at least G, rest duration at least 3 polls); this only works in the safe direction (later finish, later exit). With an active [anti-crease filter](#anti-crease-phase) the filter sits outside: the early finish starts the anti-crease phase (the state `antiCrease` is true in the lock phase as long as the anti-crease phase lasts), and in the lock phase the filter holds nothing back.
+
+For now you enter the values by hand; learning and automatic optimisation of the final phase follow. Without fitting values (a final band that is also reached in the middle of the programme, or a too small Y) finished comes too early and the rest of the programme is reported as a new run.
+
+| Field | Meaning |
+| --- | --- |
+| `finalMinVal` (P) | lower edge of the final band (0 = final phase off) |
+| `finalMaxVal` | upper edge; a value from here on discards the block (0 = open) |
+| `finalHotVal` | high-load level for exit c (0 = off) |
+| `finalAfterSec` (X) | the block begins at the earliest this long after the start (s) |
+| `finalMinSec` (Y) | time in the final band (s; 0 = final phase off) |
+| `finalQuietSec` (Z) | this long below P after the block → finished (s; 0 = 120 s) |
+| `finalDipSec` (G) | interruption in the block (s; 0 = 60 s or 2 polls) |
+| `finalRestVal` / `finalRestSec` | rest level and rest duration for exit b (0 = standby value or 60 s) |
+| `finalActVal` / `finalActShare` | activity level and share for exit f (0 = off) |
+| `finalCheckSec` | check window for the exits d and g (s; 0 = 30 min) |
+| `finalLockSec` | maximum duration of the lock phase (s; 0 = 4 h) |
 
 ### Automatic optimisation
 

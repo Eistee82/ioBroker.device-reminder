@@ -1,7 +1,10 @@
+import { FinalPhaseFilter } from "./finalPhase.js";
 import { LegacyDetector } from "./legacy.js";
 import { TimedDetector } from "./timed.js";
 import { TrailerFilter } from "./trailer.js";
+import { FINAL_KEYS } from "./types.js";
 export { FINAL_KEYS } from "./types.js";
+export { FINAL_ACT_WINDOW_MS, FinalPhaseFilter, finalFloors } from "./finalPhase.js";
 export { LegacyDetector } from "./legacy.js";
 export { TimedDetector } from "./timed.js";
 export { PauseGuard } from "./pauseGuard.js";
@@ -13,11 +16,18 @@ export function finalOn(s) {
     return (s.finalMinVal ?? 0) > 0 && (s.finalMinSec ?? 0) > 0;
 }
 export function createDetector(s, o) {
-    const inner = createInner(s, o);
+    const pollSec = Math.max(1, o.pollSec ?? 10);
+    let inner = createInner(s, o);
+    if (finalOn(s)) {
+        inner = new FinalPhaseFilter(inner, finalSettingsOf(s), {
+            pollSec,
+            standby: s.standby,
+            resumeLockAt: o.resumeLockAt,
+        });
+    }
     if ((s.trailerBurstSec ?? 0) <= 0) {
         return inner;
     }
-    const pollSec = Math.max(1, o.pollSec ?? 10);
     return new TrailerFilter(inner, {
         trailerBurstSec: s.trailerBurstSec,
         trailerGapSec: trailerGapOf(s, pollSec),
@@ -28,6 +38,14 @@ export function createDetector(s, o) {
         standby: s.standby,
         pollSec,
     });
+}
+function finalSettingsOf(s) {
+    const out = {};
+    for (const k of FINAL_KEYS) {
+        const v = s[k];
+        out[k] = typeof v === "number" && Number.isFinite(v) ? v : 0;
+    }
+    return out;
 }
 function createInner(s, o) {
     const pauseGuard = { pauseHoldSec: s.pauseHoldSec, pauseUntilSec: s.pauseUntilSec, pauseBelowVal: s.pauseBelowVal };
