@@ -1,3 +1,7 @@
+import type { RunInfo } from "./runs.js";
+import { median } from "./runs.js";
+import type { TickSeries } from "./ticks.js";
+
 /** Features of a stored run used to group programmes. */
 export interface RunFeatures {
 	/** Duration of the programme (start to core end) in s. */
@@ -18,6 +22,20 @@ export interface RunFeatures {
 	topBandSec?: number;
 	/** Number of blocks in the band of the final block (`bandFeaturesOf`). */
 	finalBandBlocks?: number;
+}
+
+/** Features of a stored run: the group features plus the extremes the optimisation needs (W, s). */
+export interface StoredFeatures extends RunFeatures {
+	/** Longest burst of the trailer in s. */
+	burstMaxSec: number;
+	/** Length of the anti-crease phase in s. */
+	trailerSec: number;
+	/** Median power of the active ticks in W. */
+	minRunW: number;
+	/** Longest gap between two anti-crease bursts in s. */
+	trailerGapMaxSec: number;
+	/** Shortest quiet time before a burst of the trailer in s. */
+	trailerGapMinSec: number;
 }
 
 /** Runs closer than this (RMS of the z-normalised features) belong to one programme group. */
@@ -62,12 +80,14 @@ function hasBandFeatures(f: RunFeatures): boolean {
  * @param features - Features per run
  * @param known - Known family id per run (-1 = new run)
  * @param nextId - Next free family id
+ * @param distance - Runs closer than this belong to one group (default FAMILY_DISTANCE)
  * @returns family id per run and the next free id
  */
 export function assignFamilies(
 	features: readonly RunFeatures[],
 	known: readonly number[],
 	nextId: number,
+	distance = FAMILY_DISTANCE,
 ): { families: number[]; nextId: number } {
 	const n = features.length;
 	if (n === 0) {
@@ -92,7 +112,7 @@ export function assignFamilies(
 	for (let i = 0; i < n; i++) {
 		for (let j = i + 1; j < n; j++) {
 			const dist = Math.sqrt(z[i].reduce((s, x, d) => s + (x - z[j][d]) ** 2, 0) / dim);
-			if (dist < FAMILY_DISTANCE) {
+			if (dist < distance) {
 				parent[find(i)] = find(j);
 			}
 		}
@@ -115,4 +135,45 @@ export function assignFamilies(
 		return id;
 	});
 	return { families, nextId: next };
+}
+
+/**
+ * Features of a run of a series in W.
+ *
+ * @param s - Series in W
+ * @param r - Run
+ * @param runLimit - Run level in W
+ */
+export function featuresOf(s: TickSeries, r: RunInfo, runLimit: number): StoredFeatures {
+	const stepSec = s.stepMs / 1000;
+	const active: number[] = [];
+	let energy = 0;
+	let peak = 0;
+	for (let i = r.from; i <= r.coreEnd; i++) {
+		energy += s.last[i] * stepSec;
+		if (s.last[i] > runLimit) {
+			active.push(s.last[i]);
+			peak = Math.max(peak, s.last[i]);
+		}
+	}
+	const hi = active.filter(v => v >= 0.5 * peak).length;
+	const pauses = r.gaps.map(g => (g.to - g.from + 1) * stepSec);
+	let trailGap = 0;
+	for (let k = 1; k < r.bursts.length; k++) {
+		trailGap = Math.max(trailGap, (r.bursts[k].from - r.bursts[k - 1].to - 1) * stepSec);
+	}
+	return {
+		coreSec: (r.coreEnd - r.from + 1) * stepSec,
+		energyWh: energy / 3600,
+		hiShare: active.length > 0 ? hi / active.length : 0,
+		maxPauseSec: pauses.length > 0 ? Math.max(...pauses) : 0,
+		nPause: pauses.length,
+		trailer: r.bursts.length >= 2,
+		blockMean: r.blockMean,
+		burstMaxSec: r.burstMaxMs / 1000,
+		trailerSec: r.trailerTo !== null ? (r.trailerTo - r.coreEnd) * stepSec : 0,
+		minRunW: median(active),
+		trailerGapMaxSec: trailGap,
+		trailerGapMinSec: r.gapMinMs / 1000,
+	};
 }

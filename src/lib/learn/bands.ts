@@ -827,6 +827,28 @@ export function suspectLimitOf(b: BaseBands, val: number): number | null {
 }
 
 /**
+ * Own segments of a unit in the base bands (blocks of at least `dipSec`, shorter blocks between two
+ * blocks of the same band bridged), in order: band index (0 = lowest band) and duration in ms. Empty
+ * without bands.
+ *
+ * @param u - Run or day section
+ * @param b - Base bands
+ * @param coreTo - Up to this time in ms (default: end of the unit)
+ */
+export function bandSegmentsOf(u: Unit, b: BaseBands, coreTo = u.to): { band: number; ms: number }[] {
+	if (b.bands.length === 0) {
+		return [];
+	}
+	const core: Unit = { points: u.points, from: u.from, to: Math.max(u.from, Math.min(u.to, coreTo)) };
+	const lv = b.opts.mode === "raw" ? heldOf(core) : medianOf(core);
+	const dipMs = Math.max(0, b.opts.dipSec) * 1000;
+	const edges = b.bands.slice(1).map(x => x.min);
+	return blocksOf(lv, b.runLimit, edges, dipMs)
+		.filter(bl => bl.lab >= 0 && bl.d >= dipMs)
+		.map(bl => ({ band: bl.lab, ms: bl.d }));
+}
+
+/**
  * Programme group features of a run from the base bands (Spec B.5 step 9): time in the highest band
  * and number of own segments in the band of the final block (the last own segment in a band up to
  * `coreTo`). Null without bands.
@@ -849,15 +871,12 @@ export function bandFeaturesOf(
 	const edges = b.bands.slice(1).map(x => x.min);
 	const top = b.bands.length - 1;
 	let topMs = 0;
-	const own: number[] = [];
 	for (const bl of blocksOf(lv, b.runLimit, edges, dipMs)) {
 		if (bl.lab === top) {
 			topMs += bl.d;
 		}
-		if (bl.lab >= 0 && bl.d >= dipMs) {
-			own.push(bl.lab);
-		}
 	}
+	const own = bandSegmentsOf(u, b, coreTo).map(x => x.band);
 	const last = own.at(-1);
 	return { topBandSec: topMs / 1000, finalBandBlocks: last === undefined ? 0 : own.filter(x => x === last).length };
 }

@@ -64,11 +64,11 @@ const DENSE_MAX_QUIET_SHARE = 0.25;
 /** Time at the end of a run whose low values give the quiet level of a dense trailer. */
 const DENSE_PROBE_MS = 10 * 60_000;
 /** The end block of a run with a separated tail lies above this multiple of the highest burst maximum. */
-const END_BLOCK_SHARE = 1.25;
+export const END_BLOCK_SHARE = 1.25;
 /** The tail ceiling is this multiple of the highest burst maximum (separated tail only). */
 const TAIL_CEIL_SHARE = 1.1;
 /** Dips of the end block up to this long are bridged. */
-const END_BLOCK_BRIDGE_MS = 60_000;
+export const END_BLOCK_BRIDGE_MS = 60_000;
 /** The end block of a separated tail reaches the core end within this time. */
 const END_BLOCK_REACH_MS = 60_000;
 /** Idle time after the end used for the idle level. */

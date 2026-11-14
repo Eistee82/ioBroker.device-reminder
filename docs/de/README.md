@@ -262,6 +262,38 @@ Wird der Leistungs-State von einem History-Adapter gespeichert (history, SQL, In
 - Vergleich mit den aktuellen Erkennungswerten des Geräts über dieselben Läufe und die längste Pause in einem Lauf.
 - Vor dem Speichern kannst du jeden Wert, den Pausenschutz und den Modus ändern. Die Rückfrage nennt jede Änderung als alt → neu. Die Werte werden ins Gerät geschrieben (ohne Neustart, die Instanz-Einstellungen bleiben unberührt); eine Schlussphase des Geräts bleibt erhalten.
 
+### Laufprüfung
+
+Jeder Lauf (aus der History, aus einer Aufzeichnung oder aus den gespeicherten Läufen der Optimierung) wird geprüft, bevor aus ihm gelernt wird. So verdirbt eine gestörte Aufzeichnung keine Werte, und ein seltenes echtes Programm wird trotzdem verwendet. Die Prüfung vergleicht jeden Lauf mit den anderen und wird darum bei jeder Auswertung neu gerechnet. Grundlage sind die **Leistungsbänder** des Geräts (z. B. Waschen, Schleudern und Heizen einer Waschmaschine) und wie lange ein gespeicherter Wert in jedem Band üblicherweise steht.
+
+| Stufe | Wirkung |
+| --- | --- |
+| ok | für alles verwendet, auch seltene Programme |
+| eingeschränkt | nur für einen Teil verwendet (z. B. nicht für die Dauer des Nachlaufs) |
+| Quarantäne | nicht verwendet, aber sichtbar |
+| unbrauchbar | nie verwendet |
+
+Einen Lauf in Quarantäne kannst du aufnehmen, jeden anderen Lauf ausschließen; einen unbrauchbaren Lauf kannst du nicht aufnehmen. Gibt es mehrere Befunde, gilt der schwerste: unbrauchbar vor Datenfehlern (Lücke, hängender Wert, dünn aufgezeichnet) vor Form-Befunden (Fremdlast, Test) vor eingeschränkt.
+
+- **Unvollständig** (unbrauchbar): Lauf am Ende der Daten, Neustart des Adapters im Lauf oder unbekannte Zeit im Lauf (fehlgeschlagene Abfrage, Zeitsprung).
+- **Lücke**, beweisbar (unbrauchbar): Der History-Adapter speichert den Wert regelmäßig neu (`changesRelogInterval`), es kam aber länger als zwei Intervalle nichts; im Meldelog einer Aufzeichnung fehlt jede Meldung, auch mit gleichem Wert, mindestens 2 Minuten und dreimal so lange wie fast alle Meldeabstände; der Adapter war aus.
+- **Lücke**, Verdacht (Quarantäne): Ein Wert steht viel länger, als Werte in seinem Band sonst stehen (Grenze 5 × die längsten üblichen Haltezeiten, mindestens 10 Minuten). Das wird erst ab 3 Läufen geprüft. Bei Geräten, die durchgehend laufen, fällt nur dieser Abschnitt aus; der Tag bleibt verwendbar.
+- **Hängt** (Quarantäne): mindestens 20 Meldungen mit genau demselben Wert, länger als diese Grenze, in einem Band, dessen Werte sonst schwanken. Ein Wert, der nur lange gleich bleibt, ohne dass Meldungen kommen, hängt nie.
+- **Dünn aufgezeichnet** (Quarantäne): Die Abstände zwischen den gespeicherten Werten sind im Lauf mehr als 4-mal so groß wie in den anderen Läufen.
+- **Einheit** (unbrauchbar): Die Spitze eines Laufs liegt unter 1/50 oder über dem 50-Fachen der üblichen Spitze, oder die übliche Spitze unter 1/100 der Spitze der Vorlage (z. B. kW-Werte ohne Einheit). **Zähler** (unbrauchbar): Der State hat die Einheit Wh oder kWh.
+- **Fremdlast** (Quarantäne): Die Leistung in den 30 Minuten vor oder nach dem Lauf liegt mindestens 20 W (bzw. 3-mal die übliche Streuung) über der üblichen, oder mehr als 5 % des Laufs liegen weit über allem, was das Gerät sonst zieht. Langes Heizen in einem bekannten Band ist nie Fremdlast.
+- **Störspitze** (eingeschränkt): ein einzelner Wert über dem 3-Fachen der höchsten Werte der Läufe.
+- **Test** (Quarantäne): eine kurze Aktivität, die mehr als doppelt so lang ist wie jede andere; ein Lauf unter 10 Minuten; ein Lauf, der nur ein Band oder keines der Bänder berührt, die in mindestens der Hälfte der Läufe vorkommen (entfällt bei Geräten, deren Läufe selbst nur ein Band berühren). Dauer und Energie allein machen nie einen Test.
+- **Abgebrochen** (eingeschränkt, nur für den Start): in der Aufzeichnung als Abbruch gemeldet; in der History ein abruptes Ende ohne Endblock und Nachlauf, kürzer als fast alle Läufe seiner Programmgruppe.
+- **Nachlauf abgeschnitten** (eingeschränkt, nicht für Nachlauf- und Ruhedauer): Der Knitterschutz ist kürzer als die Hälfte des üblichen, oder das Gerät schaltet sich mindestens 5 Minuten früher ab als sonst (z. B. Tür im Knitterschutz geöffnet). Nur bei Geräten, die in mindestens 2 Läufen einen Knitterschutz haben.
+- **Zusammengewachsen** (eingeschränkt): Ein Lauf ist mehr als 1,8-mal so lang wie der längste seiner Programmgruppe und hat zwei Endblöcke (z. B. zweimal Endschleudern): zwei Programme direkt hintereinander, die als ein Lauf aufgezeichnet sind. Das ist **kein Erkennungsfehler**, das Gerät lief ja durchgehend. Wichtig ist nur, dass das Ende des Gesamtlaufs erkannt wird; dafür wird der Lauf verwendet, nicht für Pausen, Dauer, Grenzwerte, Phasen, Schlussphase und Nachlauf (die Ruhe zwischen den beiden Programmen verlängert keine Ende-Wartezeit). Es gibt keinen Hinweis und keine Reparatur.
+- **History-Einstellung** (eingeschränkt): `ignoreZero` (nicht für die Ruhedauer), Entprellung (`debounceTime`, `blockTime`) länger als das Abfrageintervall (nicht für Phasen und Nachlauf), Rundung gröber als 10 % des Ruhepegels (nur Hinweis).
+- **Ungültige Werte** und **Zeitsprung** (eingeschränkt): mehr als 1 % fehlende, ungültige oder negative Werte im Lauf bzw. Zeit, die um mehr als eine Minute zurückspringt. Die Werte werden bereinigt; nach einem Zeitsprung ist die Zeit bis zum letzten Wert davor unbekannt.
+- **Selten** (ok, voll verwendet): ein seltenes echtes Programm, z. B. ein Kurzprogramm oder langes Heizen: der einzige Lauf seiner Programmgruppe, weit außerhalb seiner Gruppe, oder Dauer, Energie oder längster Block unter der Hälfte bzw. über dem Doppelten aller anderen Läufe. Seltene Programme werden verwendet, nicht aussortiert.
+- **Früher verworfen?** (Verwendung unverändert): ein History-Lauf im Zeitraum eines alten Anlernspeichers einer Testversion von Version 4, der dort fehlt.
+
+Programmgruppen werden nur aus Läufen ohne Quarantäne gebildet; ein Lauf in Quarantäne bestätigt nie einen anderen. Ein Lauf aus der Aufzeichnung und einer aus der History sind derselbe Lauf, wenn sie höchstens 5 Minuten auseinander beginnen.
+
 ### Einen Lauf aufzeichnen
 
 1. Anlernen auf der Gerätekarte starten (**Anlernen**) oder `learning.start` des Geräts schreiben.

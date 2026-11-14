@@ -262,6 +262,38 @@ If the power state is logged by a history adapter (history, SQL, InfluxDB or any
 - Comparison with the current detection values of the device over the same runs, and the longest pause in a run.
 - You can change every value, the pause protection and the mode before saving. The confirmation lists every change as old → new. The values are written into the device (no restart, the instance settings stay untouched); a final phase of the device is kept.
 
+### Run check
+
+Every run (from the history, from a recording or from the stored runs of the optimisation) is checked before anything is learned from it. A disturbed recording therefore cannot spoil the values, and a rare real programme is still used. The check compares every run with the others and is therefore computed again at every evaluation. It is based on the **power bands** of the device (for example washing, spinning and heating of a washing machine) and on how long a stored value usually stays in each band.
+
+| Stage | Effect |
+| --- | --- |
+| ok | used for everything, rare programmes too |
+| limited | used for some purposes only (for example not for the length of the trailer) |
+| quarantine | not used, but shown |
+| unusable | never used |
+
+You can include a run in quarantine and exclude any other run; an unusable run cannot be included. With several findings the most severe one counts: unusable before data errors (gap, stuck value, sparse recording) before form findings (foreign load, test) before limited.
+
+- **Incomplete** (unusable): run at the end of the data, adapter restart during the run, or unknown time in the run (failed query, jump in time).
+- **Gap**, proven (unusable): the history adapter stores the value again regularly (`changesRelogInterval`), but nothing came for longer than two intervals; the report log of a recording has no report at all, not even with the same value, for at least 2 minutes and three times as long as nearly all report intervals; the adapter was down.
+- **Gap**, suspected (quarantine): a value stays much longer than values in its band usually do (limit 5 × the longest usual hold times, at least 10 minutes). This is only checked from 3 runs on. For devices that run continuously only this section drops out; the day stays usable.
+- **Stuck** (quarantine): at least 20 reports with exactly the same value, longer than this limit, in a band whose values otherwise vary. A value that just stays the same for a long time without reports is never stuck.
+- **Sparse** (quarantine): the intervals between the stored values in the run are more than 4 times those of the other runs.
+- **Unit** (unusable): the peak of a run is below 1/50 or above 50 times the usual peak, or the usual peak is below 1/100 of the peak of the template (for example kW values without a unit). **Counter** (unusable): the state has the unit Wh or kWh.
+- **Foreign load** (quarantine): the power in the 30 minutes before or after the run is at least 20 W (or 3 times the usual spread) above the usual one, or more than 5 % of the run lie far above anything the device draws otherwise. Long heating in a known band is never a foreign load.
+- **Spike** (limited): a single value above 3 times the highest values of the runs.
+- **Test** (quarantine): a short activity more than twice as long as any other; a run shorter than 10 minutes; a run that touches only one band or none of the bands found in at least half of the runs (not for devices whose runs themselves touch only one band). Duration and energy alone never make a test.
+- **Aborted** (limited, for the start only): reported as aborted in the recording; in the history an abrupt end without end block and trailer, shorter than nearly all runs of its programme group.
+- **Trailer cut** (limited, not for the length of trailer and rest): the anti-crease phase is shorter than half the usual one, or the device switches off at least 5 minutes earlier than usual (for example door opened during the anti-crease phase). Only for devices with an anti-crease phase in at least 2 runs.
+- **Grown together** (limited): a run more than 1.8 times as long as the longest one of its programme group and with two end blocks (for example two final spins): two programmes right after each other, recorded as one run. This is **no detection error**, the device was running all the time. What matters is only that the end of the whole run is detected; the run is used for that, not for pauses, durations, limits, phases, final phase and trailer (the rest between the two programmes does not make any end wait longer). There is no hint and no repair.
+- **History setting** (limited): `ignoreZero` (not for the rest length), debounce (`debounceTime`, `blockTime`) longer than the poll interval (not for phases and trailer), rounding coarser than 10 % of the rest level (hint only).
+- **Invalid values** and **jump in time** (limited): more than 1 % missing, invalid or negative values in the run, or time that jumps back by more than a minute. The values are cleaned; after a jump in time the time up to the last value before it is unknown.
+- **Rare** (ok, fully used): a rare real programme, for example a quick programme or long heating: the only run of its programme group, far off within its group, or duration, energy or longest block below half or above twice those of all other runs. Rare programmes are used, not sorted out.
+- **Formerly discarded?** (use unchanged): a history run in the time range of an old learning store of a version 4 test build that is missing there.
+
+Programme groups are formed from runs without quarantine only; a run in quarantine never confirms another one. A run from a recording and one from the history are the same run when they start at most 5 minutes apart.
+
 ### Recording a run
 
 1. Start learning from the device card (**Learn**) or write `learning.start` of the device.

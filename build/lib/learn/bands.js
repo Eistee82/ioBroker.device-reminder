@@ -489,6 +489,18 @@ export function suspectLimitOf(b, val) {
     const band = bandOf(b, val);
     return (band && b.holds.find(h => h.band === band.id)?.suspectSec) ?? null;
 }
+export function bandSegmentsOf(u, b, coreTo = u.to) {
+    if (b.bands.length === 0) {
+        return [];
+    }
+    const core = { points: u.points, from: u.from, to: Math.max(u.from, Math.min(u.to, coreTo)) };
+    const lv = b.opts.mode === "raw" ? heldOf(core) : medianOf(core);
+    const dipMs = Math.max(0, b.opts.dipSec) * 1000;
+    const edges = b.bands.slice(1).map(x => x.min);
+    return blocksOf(lv, b.runLimit, edges, dipMs)
+        .filter(bl => bl.lab >= 0 && bl.d >= dipMs)
+        .map(bl => ({ band: bl.lab, ms: bl.d }));
+}
 export function bandFeaturesOf(u, b, coreTo = u.to) {
     if (b.bands.length === 0) {
         return null;
@@ -499,15 +511,12 @@ export function bandFeaturesOf(u, b, coreTo = u.to) {
     const edges = b.bands.slice(1).map(x => x.min);
     const top = b.bands.length - 1;
     let topMs = 0;
-    const own = [];
     for (const bl of blocksOf(lv, b.runLimit, edges, dipMs)) {
         if (bl.lab === top) {
             topMs += bl.d;
         }
-        if (bl.lab >= 0 && bl.d >= dipMs) {
-            own.push(bl.lab);
-        }
     }
+    const own = bandSegmentsOf(u, b, coreTo).map(x => x.band);
     const last = own.at(-1);
     return { topBandSec: topMs / 1000, finalBandBlocks: last === undefined ? 0 : own.filter(x => x === last).length };
 }

@@ -1,6 +1,6 @@
 import { FINAL_KEYS } from "./detector/types.js";
-import { assignFamilies } from "./learn/families.js";
-import { buildLayout, MAX_PAUSE_MS, MAX_WINDOWS, median } from "./learn/runs.js";
+import { assignFamilies, featuresOf } from "./learn/families.js";
+import { buildLayout, MAX_PAUSE_MS, MAX_WINDOWS } from "./learn/runs.js";
 import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
 import { errorMessage } from "./utils.js";
 export const STORE_VERSION = 1;
@@ -291,39 +291,6 @@ export function refreshInfo(store) {
     store.info.runs = store.runs.length;
     store.info.spikes = store.spikes.length;
     store.info.families = new Set(store.runs.map(r => r.family)).size;
-}
-function featuresOf(s, r, runLimit) {
-    const stepSec = s.stepMs / 1000;
-    const active = [];
-    let energy = 0;
-    let peak = 0;
-    for (let i = r.from; i <= r.coreEnd; i++) {
-        energy += s.last[i] * stepSec;
-        if (s.last[i] > runLimit) {
-            active.push(s.last[i]);
-            peak = Math.max(peak, s.last[i]);
-        }
-    }
-    const hi = active.filter(v => v >= 0.5 * peak).length;
-    const pauses = r.gaps.map(g => (g.to - g.from + 1) * stepSec);
-    let trailGap = 0;
-    for (let k = 1; k < r.bursts.length; k++) {
-        trailGap = Math.max(trailGap, (r.bursts[k].from - r.bursts[k - 1].to - 1) * stepSec);
-    }
-    return {
-        coreSec: (r.coreEnd - r.from + 1) * stepSec,
-        energyWh: energy / 3600,
-        hiShare: active.length > 0 ? hi / active.length : 0,
-        maxPauseSec: pauses.length > 0 ? Math.max(...pauses) : 0,
-        nPause: pauses.length,
-        trailer: r.bursts.length >= 2,
-        blockMean: r.blockMean,
-        burstMaxSec: r.burstMaxMs / 1000,
-        trailerSec: r.trailerTo !== null ? (r.trailerTo - r.coreEnd) * stepSec : 0,
-        minRunW: median(active),
-        trailerGapMaxSec: trailGap,
-        trailerGapMinSec: r.gapMinMs / 1000,
-    };
 }
 export function labelCapture(c, keepAboveW, src = "live") {
     const sW = fromCells(c.cells, c.t0, c.stepMs, c.unitFactor);

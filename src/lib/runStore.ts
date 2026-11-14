@@ -1,12 +1,10 @@
 import { FINAL_KEYS } from "./detector/types.js";
 import type { DetectionSettings } from "./detector/types.js";
 import type { FileIO } from "./host.js";
-import type { RunFeatures } from "./learn/families.js";
-import { assignFamilies } from "./learn/families.js";
-import { buildLayout, MAX_PAUSE_MS, MAX_WINDOWS, median } from "./learn/runs.js";
-import type { RunInfo } from "./learn/runs.js";
+import type { StoredFeatures } from "./learn/families.js";
+import { assignFamilies, featuresOf } from "./learn/families.js";
+import { buildLayout, MAX_PAUSE_MS, MAX_WINDOWS } from "./learn/runs.js";
 import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
-import type { TickSeries } from "./learn/ticks.js";
 import type { Capture, CaptureEvent } from "./runRecorder.js";
 import { errorMessage } from "./utils.js";
 
@@ -61,13 +59,7 @@ export interface StoredRun {
 		trailerTo: number | null;
 	};
 	/** Features (W, s). */
-	feat: RunFeatures & {
-		burstMaxSec: number;
-		trailerSec: number;
-		minRunW: number;
-		trailerGapMaxSec: number;
-		trailerGapMinSec: number;
-	};
+	feat: StoredFeatures;
 	/** Programme group. */
 	family: number;
 }
@@ -650,47 +642,6 @@ export interface LabelResult {
 	endDelaySec: number | null;
 	/** Whether the run may be used for tightening. */
 	trusted: boolean;
-}
-
-/**
- * Features of a run of a series in W.
- *
- * @param s - Series in W
- * @param r - Run
- * @param runLimit - Run level in W
- */
-function featuresOf(s: TickSeries, r: RunInfo, runLimit: number): StoredRun["feat"] {
-	const stepSec = s.stepMs / 1000;
-	const active: number[] = [];
-	let energy = 0;
-	let peak = 0;
-	for (let i = r.from; i <= r.coreEnd; i++) {
-		energy += s.last[i] * stepSec;
-		if (s.last[i] > runLimit) {
-			active.push(s.last[i]);
-			peak = Math.max(peak, s.last[i]);
-		}
-	}
-	const hi = active.filter(v => v >= 0.5 * peak).length;
-	const pauses = r.gaps.map(g => (g.to - g.from + 1) * stepSec);
-	let trailGap = 0;
-	for (let k = 1; k < r.bursts.length; k++) {
-		trailGap = Math.max(trailGap, (r.bursts[k].from - r.bursts[k - 1].to - 1) * stepSec);
-	}
-	return {
-		coreSec: (r.coreEnd - r.from + 1) * stepSec,
-		energyWh: energy / 3600,
-		hiShare: active.length > 0 ? hi / active.length : 0,
-		maxPauseSec: pauses.length > 0 ? Math.max(...pauses) : 0,
-		nPause: pauses.length,
-		trailer: r.bursts.length >= 2,
-		blockMean: r.blockMean,
-		burstMaxSec: r.burstMaxMs / 1000,
-		trailerSec: r.trailerTo !== null ? (r.trailerTo - r.coreEnd) * stepSec : 0,
-		minRunW: median(active),
-		trailerGapMaxSec: trailGap,
-		trailerGapMinSec: r.gapMinMs / 1000,
-	};
 }
 
 /**
