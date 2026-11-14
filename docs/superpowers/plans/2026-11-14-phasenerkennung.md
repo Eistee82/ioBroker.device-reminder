@@ -145,9 +145,9 @@ Muss vor Task 13 laufen: `v4store.json` wird mit dem Code von 5684124 erzeugt.
   - `restartScenarios(): { key: string; values: number[]; aEnd: number; bOn: number }[]` – die 72 Szenarien aus `…/scratchpad/y_actexit.mjs`: Lauf A = w01, Lauf B = w03; `cold ∈ {false, true}` (B: Werte ≥ 1500 → 60), `[lvl, restVal] ∈ {[0, 5.5], [5, 5.5], [5, 1]}`, `unload ∈ {5, 10, 20}` min nach Kernende von A, `gapTicks ∈ {3, 6, 18, 36}`; `values = A[from−30 … coreEnd + unload·6] ++ lvl×gapTicks ++ B[from−3 … to+200]`, `aEnd` = Index Kernende A, `bOn = |A-Teil| + gapTicks + 3`; `restVal` wird je Szenario als `finalRestVal` verwendet.
   - Defekte (rein, geben neue Listen zurück): `withGap(points, atMs, minutes)` (Punkte entfernt), `withHold(points, atMs, minutes, val)` (ein Punkt, danach keiner), `withForeign(points, atMs, minutes, addW)`, `withSpikes(points, n, valW, seed)` (je 1 Punkt), `asKw(points)` (÷ 1000), `withRelog(points, everyMs)` (gleiche Werte wiederholt), `sparse(points, keepEvery)`, `bridge(points, fromMs, toMs, val)` (alle Werte im Bereich = `val`), `handTest(atMs, minutes, valW)` (Punktliste mit 30 min 0,5 W davor und danach), `cutTrailer(points, atMs)` (ab `atMs` für 60 min 0 W).
 
-- [ ] **Step 1: Konverter im Scratchpad** `C:/Users/Eistee/AppData/Local/Temp/claude/76a49c15faa97d7f/20aedea5-acc7-47c0-b284-a72daa939b11/scratchpad/mk_fixtures.mjs` (nicht ins Repo): liest `wm.json`/`tr.json`/`kessel.json`, schreibt die drei Fixtures im Format oben; `runs` aus `buildLayout` (`build/lib/learn/runs.js`), für w13 die letzte Aktivität vor Datenende.
-- [ ] **Step 2: `v4store.json`** mit dem heutigen Build (5684124) im Scratchpad erzeugen: `emptyStore("wm", "washing-machine", "39417b8a", 10000, 1)`; für w01–w12 je eine Capture (Zellen ab 30 min vor bis 3 h nach dem Lauf, Ereignisse aus `detectorRun` mit 3.1.2-WM-Werten) über `labelCapture` + `addRun`, so dass `envelope` alle 12 Läufe enthält; danach w04 und w07 bei unveränderter `envelope` direkt aus `store.runs` entfernen (Kopien von w08 verdrängen sie nie: `pickVictim` schützt Gruppen mit ≤ 2 Läufen, `runStore.ts:822`); `serializeStore` → Datei. Läufe ohne `rev`.
-- [ ] **Step 3: Failing test** `test/fixtures.test.js`:
+- [x] **Step 1: Konverter im Scratchpad** `C:/Users/Eistee/AppData/Local/Temp/claude/76a49c15faa97d7f/20aedea5-acc7-47c0-b284-a72daa939b11/scratchpad/mk_fixtures.mjs` (nicht ins Repo): liest `wm.json`/`tr.json`/`kessel.json`, schreibt die drei Fixtures im Format oben; `runs` aus `buildLayout` (`build/lib/learn/runs.js`), für w13 die letzte Aktivität vor Datenende.
+- [x] **Step 2: `v4store.json`** mit dem heutigen Build (5684124) im Scratchpad erzeugen: `emptyStore("wm", "washing-machine", "39417b8a", 10000, 1)`; für w01–w12 je eine Capture (Zellen ab 30 min vor bis 3 h nach dem Lauf, Ereignisse aus `detectorRun` mit 3.1.2-WM-Werten) über `labelCapture` + `addRun`, so dass `envelope` alle 12 Läufe enthält; danach w04 und w07 bei unveränderter `envelope` direkt aus `store.runs` entfernen (Kopien von w08 verdrängen sie nie: `pickVictim` schützt Gruppen mit ≤ 2 Läufen, `runStore.ts:822`); `serializeStore` → Datei. Läufe ohne `rev`.
+- [x] **Step 3: Failing test** `test/fixtures.test.js`:
 
 ```js
 import assert from "node:assert";
@@ -203,10 +203,12 @@ describe("real-data fixtures", () => {
 
 Die Zahlen 19 816 (WM-Punkte) und 2367 (Kessel-Punkte) stammen aus dem Lesen der Rohdaten (`plan_list.mjs`, `plan_kessel.mjs` im Scratchpad); 12/7 Läufe aus `buildLayout` auf denselben Daten.
 
-- [ ] **Step 4:** `npm run build && npx mocha test/fixtures.test.js` → FAIL (`loadSeries` fehlt). Helfer schreiben, erneut → PASS.
-- [ ] **Step 5: Commit** `test: real-data fixtures with neutral times and defect injection helpers`
+- [x] **Step 4:** `npm run build && npx mocha test/fixtures.test.js` → FAIL (`loadSeries` fehlt). Helfer schreiben, erneut → PASS.
+- [x] **Step 5: Commit** `test: real-data fixtures with neutral times and defect injection helpers`
 
 ---
+
+**Umsetzungsnotizen (Task 2):** `runWindow` setzt den gehaltenen Wert an beiden Fenstergrenzen (der Logger speichert nur Änderungen, ohne Randpunkt wäre das Fenster keine vollständige Aufzeichnung). Für `v4store.json` wurden w05 (Vorlauf nach Nachlauf-Schüben von w04, Haltewert 0 W) und w09 (Vorlauf 15 min, Haltewert 0 W) sowie w04/w08 gegen den Nachbarlauf begrenzt, damit alle 12 Läufe in die `envelope` kommen (n = 12, 10 Läufe nach Entfernen von w04 und w07). `restartScenarios` liefert zusätzlich `restVal`, `cold`, `lvl`, `unload`, `gapTicks`; Schlüssel `cold|warm/lvl/restVal/unload/gapTicks`. `detectorRun` gibt alle Ereignisse inkl. `running` zurück; `resumeLockAt` wird an `createDetector` durchgereicht (wirkt ab Task 14).
 
 ### Task 3: Schlussphasen-Felder, Hash-Regel, Grenzen (Spec A.2 mit Spalte „Bereich“)
 
