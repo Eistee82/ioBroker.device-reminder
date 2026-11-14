@@ -6,7 +6,7 @@ import { BASE_KEYS, DETECTION_KEYS, detectionOf, pushChange, refreshInfo } from 
 import type { HistorySuggestion } from "./analyze.js";
 import { analyzeTicks } from "./analyze.js";
 import { margin, minEndSec } from "./optimize.js";
-import { runOkFull, simulate } from "./replay.js";
+import { endOkFull, simulate } from "./replay.js";
 import type { SimResult } from "./replay.js";
 import type { Window } from "./runs.js";
 import { MAX_PAUSE_MS } from "./runs.js";
@@ -288,7 +288,8 @@ async function gateOn(
 			run: 0,
 		};
 		const res = simulate(s, win, p, opts);
-		const good = r.postTruncated ? truncatedOk(s, win, res) : runOkFull(s, win, res);
+		// a stored run carries no programme end yet: the end has to come at or after the end of the run
+		const good = r.postTruncated ? truncatedOk(s, win, res) : endOkFull(s, win, res, null);
 		const delaySec =
 			good && res.finished.length > 0
 				? (res.finished[0] - (s.t0 + (win.runEndIdx as number) * s.stepMs)) / 1000

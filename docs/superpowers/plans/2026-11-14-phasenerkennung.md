@@ -1190,7 +1190,7 @@ describe("raw data", () => {
   - `progEnd` = letzter Tick in [from, runEnd] mit gehaltenem Wert > `tailCeil`.
   - `endOk(s: TickSeries, win: Window, r: SimResult, progEnd: number | null): boolean` = `f ≥ runEnd ∨ (f > progEnd ∧ runEnd − f ≤ DENSE_MIN_MS)` mit `f` = erstes `finished` im Fenster; `progEnd = null` → wie `runOk`. Ersetzt `runOk` in Analyse, Gate und Freigabe (`runOkFull` analog).
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```js
 // test/layout.test.js
@@ -1295,9 +1295,11 @@ describe("end criterion endOk (Spec B.4)", () => {
 
 Bestehende Erwartungen zu `washerAntiCrease.json` in `test/historyLearning.test.js` und `test/antiCreaseLearning.test.js` bleiben unverändert grün (WM-Nachlauf 10/10).
 
-- [ ] **Step 2:** FAIL. **Step 3:** implementieren (Trockner-`trailerOf` frei nach Spec §11, Abnahme 7/7). **Step 4:** `npm test` → PASS.
-- [ ] **Doku:** `docs/de|en/README.md` §8 (Kriterium „Ende nicht zu früh“: Programmende statt Ende des Nachlaufs; Knitterschutz des Trockners wird in jedem Lauf gefunden); Changelog-Zeile zum Anlernen ergänzen.
-- [ ] **Step 5: Commit** `feat: end criterion uses the programme end; anti-crease of the dryer is found in every run`
+- [x] **Step 2:** FAIL. **Step 3:** implementieren (Trockner-`trailerOf` frei nach Spec §11, Abnahme 7/7). **Step 4:** `npm test` → PASS.
+- [x] **Doku:** `docs/de|en/README.md` §8 (Kriterium „Ende nicht zu früh“: Programmende statt Ende des Nachlaufs; Knitterschutz des Trockners wird in jedem Lauf gefunden); Changelog-Zeile zum Anlernen ergänzen.
+- [x] **Step 5: Commit** `feat: end criterion uses the programme end; anti-crease of the dryer is found in every run`
+
+**Umsetzungsnotizen (Task 10):** Trockner-`trailerOf` (Spec §11 frei): zwischen den Trommelbewegungen (≈ 100 W) wechselt die Elektronik zwischen 4 W und 8–13 W, also über `runLimit` 5,5 W – die Bursts verschmelzen zu Blöcken > 2 min. Neu `raisedTrailerOf`: Bursts über `0,25 × p90` der letzten 10 min des Segments, sonst wie `trailerOf`; verworfen, wenn die Elektronik dazwischen (höchster Median einer Lücke) > 0,25 × Median der Burst-Maxima ist (synthetische Trockner-Heizung 375/600 W in `historyLearning` E war sonst ein Schein-Nachlauf). Reihenfolge: `trailerOf` am Laufpegel, sonst dicht, sonst erhöht; der erhöhte gewinnt auch gegen `trailerOf`, wenn sein Block früher endet (Trockner d02/d07: der „Block“ am Laufpegel waren verschmolzene Bursts). Endblock beim erhöhten Nachlauf über dessen Pegel, Pausen (`gaps`) weiter am Laufpegel; `trailerQuietW` = Elektronik-Pegel (zusätzlicher Endwert-Kandidat). Ergebnis Trockner 7/7, Kern-Ende = Ende Abkühlen, `burstMaxW` 116 W (wie Spec); WM (`washer30d` 10/12, `washerAntiCrease`) und Kessel bitgleich bis auf die neuen Felder (Vorher/Nachher-Vergleich im Scratchpad `t10/`), Anlernen auf WM unverändert, Trockner jetzt Ende 50 s nach dem Abkühlen statt 331–670 s. `RunInfo` zusätzlich `burstMaxW` und `endBlockMinW` (für `feat` in Task 13). `Window.progEndIdx?` (aus dem Layout gesetzt) – `allOk`, `evaluate` und die Gegenprobe in `analyze.ts` prüfen `endOk`/`endOkFull` damit; `runOkFull` = `endOkFull(…, null)`, `runOk` bleibt. Gate (`autoOptimize.gateOn`) nutzt `endOkFull(…, null)` = heutiges Kriterium, bis Task 13 `seg.progEndIdx` und `store.tail` liefert. `tailSeparated` verlangt zusätzlich `burstMaxW > runLimit`; „± G“ = `coreEnd − endBlockTo ≤ 6 Ticks` (60 s, Endblock ist auf `coreEnd` begrenzt). Ohne Block über 1,25 × Burst-Maximum (bei Trennung) fällt der Endblock auf den letzten Block über `runLimit` zurück; ein Lauf ohne Wert über `tailCeil` behält `progEnd = runEnd`. `maxRuns` gilt auch für `spikes` (Standard 20 wie bisher). `incomplete` = berührte Segmente mit ≥ `MIN_ACTIVE_MS` aktiv plus Läufe, deren Fenster wegen ungültiger Ticks im Lauf entfällt. Testanpassungen: `maxRuns`-Test mit `w01` statt `w08` (das Fenster von w08 endet mitten in w09: der gehaltene 80 W über 18 h macht `runLimit` 242 W und 3 Bruchstücke je Fenster, 75 statt 25 Läufe); im progEnd-Test gilt `progEnd ≤ endBlockTo + 1` nicht für w04 (k = 3): dessen Endschleudern über 141 W dauert 110 s < `SUSTAINED_MS`, der Endblock ist das Heizen davor, `progEnd` liegt richtig am Ende des Schleuderns (244). Doku §8 (Kriterium, Trockner-Knitterschutz) und Changelog-Zeile zum Anlernen ergänzt.
 
 ---
 ### Task 11: Grundbänder und Haltezeit-Profil (Spec B.1a, B.5 Schritt 2 und 9)

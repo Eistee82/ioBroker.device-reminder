@@ -1,6 +1,6 @@
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import { endCandidates, planFor, runTable, suppressBursts } from "./optimize.js";
-import { allOk, compare, evaluate, runOkFull, simulate } from "./replay.js";
+import { allOk, compare, endOkFull, evaluate, simulate } from "./replay.js";
 import { buildLayout, LEVEL_SEP_W, median } from "./runs.js";
 import { scaled } from "./ticks.js";
 export const HISTORY_DAYS = 30;
@@ -209,7 +209,7 @@ export async function analyzeTicks(series, pollIntervalSec, opts = {}) {
                 ...(mode === "count" ? { endCount, endDurationSec: endCount * poll } : { endDurationSec: plan.Ds }),
             };
             const res = an.simulate(win, loo);
-            if (runOkFull(series, win, res)) {
+            if (endOkFull(series, win, res, win.progEndIdx ?? null)) {
                 looDetected++;
             }
             await opts.yieldFn?.();

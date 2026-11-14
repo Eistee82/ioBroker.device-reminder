@@ -9,8 +9,13 @@ export const MIN_ACTIVE_MS = 5 * 60_000;
 export const PAD_BEFORE_MS = 30 * 60_000;
 /** Time after a run in which the end has to be reported. */
 export const PAD_AFTER_MS = 3 * 60 * 60_000;
-/** Newest runs / spikes that are used. */
+/** Newest runs / spikes that are used (default of `LayoutOptions.maxRuns`). */
 export const MAX_WINDOWS = 20;
+/**
+ * Revision of the layout rules. A stored run with an older revision (or none) is laid out again from
+ * its cells when it is loaded.
+ */
+export const LAYOUT_REV = 2;
 /** Longest burst of an anti-crease trailer. */
 export const TRAILER_BURST_MS = 2 * 60_000;
 /** Longest distance between two bursts of an anti-crease trailer. */
@@ -47,14 +52,25 @@ export const REST_MIN_MS = 5 * 60_000;
 const REST_MAX_SHARE = 0.1;
 /** Minimum number of bursts of a dense trailer. */
 const DENSE_MIN_BURSTS = 6;
-/** Minimum length of a dense trailer. */
-const DENSE_MIN_MS = 5 * 60_000;
+/**
+ * Minimum length of a dense trailer. An end reported after the programme end and at most this long
+ * before the end of the run is not too early (`endOk`): a shorter trailer is not found as one.
+ */
+export const DENSE_MIN_MS = 5 * 60_000;
 /** Highest share of burst time in a dense trailer (tumbling during the programme is busier). */
 const DENSE_MAX_DUTY = 0.7;
 /** Highest quiet level of a dense trailer as share of the median burst maximum. */
 const DENSE_MAX_QUIET_SHARE = 0.25;
 /** Time at the end of a run whose low values give the quiet level of a dense trailer. */
 const DENSE_PROBE_MS = 10 * 60_000;
+/** The end block of a run with a separated tail lies above this multiple of the highest burst maximum. */
+const END_BLOCK_SHARE = 1.25;
+/** The tail ceiling is this multiple of the highest burst maximum (separated tail only). */
+const TAIL_CEIL_SHARE = 1.1;
+/** Dips of the end block up to this long are bridged. */
+const END_BLOCK_BRIDGE_MS = 60_000;
+/** The end block of a separated tail reaches the core end within this time. */
+const END_BLOCK_REACH_MS = 60_000;
 /** Idle time after the end used for the idle level. */
 const IDLE_SPAN_MS = 2 * 60 * 60_000;
 /** Pauses inside a run shorter than this describe the level of pauses. */
@@ -104,6 +120,19 @@ export interface RunInfo {
 	blockMean: number;
 	/** Quiet level between the bursts of a dense trailer in W (0 otherwise). */
 	trailerQuietW: number;
+	/** Highest value of the bursts of the trailer in W (0 without trailer). */
+	burstMaxW: number;
+	/**
+	 * Programme end: last tick in [from, runEnd] above `Layout.tailCeil` (`runEnd` without a separated
+	 * tail). An end reported after it and at most DENSE_MIN_MS before `runEnd` is not too early.
+	 */
+	progEnd: number;
+	/** First tick of the end block (the last sustained block before the core end). */
+	endBlockFrom: number;
+	/** Last tick of the end block. */
+	endBlockTo: number;
+	/** Lowest held value in the end block in W. */
+	endBlockMinW: number;
 }
 
 /** Simulated tick range with the expected result. */
@@ -118,6 +147,8 @@ export interface Window {
 	runEndIdx: number | null;
 	/** Index into `Layout.runs` for a run window. */
 	run: number | null;
+	/** Programme end of the run (`RunInfo.progEnd`); missing = the end has to come after `runEndIdx`. */
+	progEndIdx?: number;
 }
 
 /** Runs, spikes, levels and windows of a series. */
@@ -128,9 +159,9 @@ export interface Layout {
 	idle: number;
 	/** Highest level after the end of a run. */
 	lpost: number;
-	/** Runs (newest MAX_WINDOWS). */
+	/** Runs (newest `LayoutOptions.maxRuns`). */
 	runs: RunInfo[];
-	/** Short activity that is no run (newest MAX_WINDOWS). */
+	/** Short activity that is no run (newest `LayoutOptions.maxRuns`). */
 	spikes: Span[];
 	/** Windows of the runs and spikes to simulate. */
 	windows: Window[];
@@ -138,6 +169,20 @@ export interface Layout {
 	gapsDropped: number;
 	/** Rest level after the end of the runs in W (display before the device switches off), or null. */
 	rest: number | null;
+	/**
+	 * Highest value of the trailer bursts over all runs with a trailer (W); 0 without. Both the end
+	 * block (above 1.25 times) and the tail ceiling (1.1 times) are derived from it.
+	 */
+	burstMaxW: number;
+	/**
+	 * Whether the trailer is separated from the programme: at least 2 runs with a trailer, and in each of
+	 * them the end block above 1.25 times the burst maximum reaches the core end.
+	 */
+	tailSeparated: boolean;
+	/** Values above it belong to the programme (1.1 times the burst maximum if separated, else `runLimit`). */
+	tailCeil: number;
+	/** Run-sized segments dropped because they touch a gap or the end of the data. */
+	incomplete: Span[];
 }
 
 /** Options of the layout. */
@@ -151,6 +196,11 @@ export interface LayoutOptions {
 	 * the display or door lock after the end.
 	 */
 	keepAbove?: number;
+	/**
+	 * Newest runs and spikes that are kept (default MAX_WINDOWS; `Infinity` for the run check and the
+	 * stored runs, so that 30 days are not cut to the newest 20).
+	 */
+	maxRuns?: number;
 }
 
 interface Segment extends Span {
@@ -258,7 +308,7 @@ function segments(s: TickSeries, limit: number, maxGap: number, endIsGap: number
  * @param span - Range
  * @param limit - Level in W
  */
-function blocksOf(s: TickSeries, span: Span, limit: number): Span[] {
+export function blocksOf(s: TickSeries, span: Span, limit: number): Span[] {
 	const out: Span[] = [];
 	let cur: Span | null = null;
 	for (let i = span.from; i <= span.to; i++) {
@@ -280,7 +330,7 @@ function blocksOf(s: TickSeries, span: Span, limit: number): Span[] {
  * @param blocks - Active blocks in order
  * @param upTo - Last tick to consider
  */
-function gapsBetween(blocks: Span[], upTo: number): Span[] {
+export function gapsBetween(blocks: Span[], upTo: number): Span[] {
 	const out: Span[] = [];
 	for (let k = 1; k < blocks.length; k++) {
 		if (blocks[k].from > upTo) {
@@ -299,7 +349,7 @@ function gapsBetween(blocks: Span[], upTo: number): Span[] {
  * @param blocks - Active blocks in order
  * @param minGapTicks - Shortest distance that separates two blocks
  */
-function mergeBlocks(blocks: Span[], minGapTicks: number): Span[] {
+export function mergeBlocks(blocks: Span[], minGapTicks: number): Span[] {
 	const out: Span[] = [];
 	for (const b of blocks) {
 		const last = out.at(-1);
@@ -402,6 +452,54 @@ function denseTrailerOf(
 	return { block: blocks[k], bursts, quiet, limit };
 }
 
+/**
+ * Anti-crease trailer above a raised level: between the drum moves the electronics (fan, display) may
+ * stay above the run level for a while, which joins the bursts into blocks longer than a burst (dryer:
+ * drum moves of about 100 W, between them 4 W or 8–13 W). The bursts are measured above a quarter of
+ * the high values at the end of the run instead (DENSE_MAX_QUIET_SHARE, as for a dense trailer).
+ *
+ * @param s - Series
+ * @param seg - Segment of the run
+ * @param runLimit - Run level
+ * @returns the sustained block, the bursts, the highest quiet level between them and the level, or null
+ */
+function raisedTrailerOf(
+	s: TickSeries,
+	seg: Span,
+	runLimit: number,
+): { block: Span; bursts: Span[]; quiet: number; limit: number } | null {
+	const tail = valuesOf(s, seg.to - Math.ceil(DENSE_PROBE_MS / s.stepMs) + 1, seg.to);
+	if (tail.length === 0) {
+		return null;
+	}
+	const limit = DENSE_MAX_QUIET_SHARE * quantile(tail, 0.9);
+	if (limit <= runLimit) {
+		return null;
+	}
+	const found = trailerOf(blocksOf(s, seg, limit), s.stepMs);
+	if (!found) {
+		return null;
+	}
+	// highest level between the bursts: the end threshold has to lie above it
+	let quiet = 0;
+	let prev = found.block.to;
+	const maxima: number[] = [];
+	for (const b of found.bursts) {
+		const vals = valuesOf(s, prev + 1, b.from - 1);
+		if (vals.length > 0) {
+			quiet = Math.max(quiet, median(vals));
+		}
+		maxima.push(Math.max(...valuesOf(s, b.from, b.to)));
+		prev = b.to;
+	}
+	// between the drum moves only the electronics runs (a heater switching between two high levels is
+	// no trailer)
+	if (quiet > DENSE_MAX_QUIET_SHARE * median(maxima)) {
+		return null;
+	}
+	return { ...found, quiet, limit };
+}
+
 interface Bounds {
 	/** First tick of the next segment (or series length). */
 	next: number;
@@ -416,8 +514,13 @@ interface Bounds {
  */
 function coreOf(s: TickSeries, seg: Span & { active: number }, runLimit: number): RunInfo {
 	const blocks = blocksOf(s, seg, runLimit);
-	const dense = trailerOf(blocks, s.stepMs) === null ? denseTrailerOf(s, seg, runLimit) : null;
-	const trailer = dense ?? trailerOf(blocks, s.stepMs);
+	const plain = trailerOf(blocks, s.stepMs);
+	const dense = plain === null ? denseTrailerOf(s, seg, runLimit) : null;
+	const raisedFound = dense === null ? raisedTrailerOf(s, seg, runLimit) : null;
+	// a trailer at the run level whose sustained block ends later than the one above the raised level
+	// took bursts joined by the electronics for the block
+	const raised = raisedFound && (plain === null || raisedFound.block.to < plain.block.to) ? raisedFound : null;
+	const trailer = raised ?? dense ?? plain;
 	const coreEnd = trailer ? trailer.block.to : seg.to;
 	const bursts = trailer ? trailer.bursts : [];
 	let burstMaxMs = 0;
@@ -435,12 +538,14 @@ function coreOf(s: TickSeries, seg: Span & { active: number }, runLimit: number)
 		maxima.push(m);
 	});
 	// a dense trailer is measured above its quiet level: the electronics between the drum moves is
-	// above the run level and would join the whole run into one block
-	const level = dense ? dense.limit : runLimit;
+	// above the run level and would join the whole run into one block; a raised trailer likewise for
+	// the terminal block, the pauses of the run stay those at the run level
+	const level = dense ? dense.limit : raised ? raised.limit : runLimit;
 	const coreBlocks = dense ? blocksOf(s, seg, level) : blocks;
+	const terminalBlocks = raised ? blocksOf(s, seg, level) : coreBlocks;
 	// terminal block: the last block of at least SUSTAINED_MS before the core end (short dips bridged)
 	const merged = mergeBlocks(
-		coreBlocks.filter(b => b.to <= coreEnd),
+		terminalBlocks.filter(b => b.to <= coreEnd),
 		Math.ceil(TRAILER_GAP_MIN_MS(s.stepMs) / s.stepMs),
 	);
 	const terminal =
@@ -480,7 +585,12 @@ function coreOf(s: TickSeries, seg: Span & { active: number }, runLimit: number)
 		gapMinMs,
 		burstP10W: maxima.length > 0 ? quantile(maxima, 0.1) : 0,
 		blockMean,
-		trailerQuietW: dense ? dense.quiet : 0,
+		trailerQuietW: dense ? dense.quiet : raised ? raised.quiet : 0,
+		burstMaxW: maxima.length > 0 ? Math.max(...maxima) : 0,
+		progEnd: coreEnd,
+		endBlockFrom: terminal ? terminal.from : seg.from,
+		endBlockTo: terminal ? terminal.to : coreEnd,
+		endBlockMinW: 0,
 	};
 }
 
@@ -802,6 +912,77 @@ function boundsOf(spans: Span[], all: Span[], length: number): Bounds[] {
 }
 
 /**
+ * Last block of at least SUSTAINED_MS above a level up to the core end; dips up to
+ * END_BLOCK_BRIDGE_MS are bridged.
+ *
+ * @param s - Series
+ * @param r - Run
+ * @param level - Level in W
+ */
+function endBlockOf(s: TickSeries, r: RunInfo, level: number): Span | null {
+	const merged = mergeBlocks(
+		blocksOf(s, { from: r.from, to: r.coreEnd }, level),
+		Math.floor(END_BLOCK_BRIDGE_MS / s.stepMs) + 1,
+	);
+	return [...merged].reverse().find(b => (b.to - b.from + 1) * s.stepMs >= SUSTAINED_MS) ?? null;
+}
+
+/**
+ * Programme end and tail of all runs (Spec B.4): the tail is separated from the programme if at
+ * least 2 runs have a trailer and in each of them the last block above 1.25 times the highest burst
+ * maximum reaches the core end. Then values above 1.1 times the burst maximum belong to the
+ * programme; otherwise the tail ceiling is the run level and the programme end is the end of the run.
+ * Sets `progEnd`, `endBlockFrom`, `endBlockTo` and `endBlockMinW` of every run.
+ *
+ * @param s - Series
+ * @param runs - Runs (updated)
+ * @param runLimit - Run level
+ */
+function tailOf(
+	s: TickSeries,
+	runs: RunInfo[],
+	runLimit: number,
+): { burstMaxW: number; tailSeparated: boolean; tailCeil: number } {
+	const withTrailer = runs.filter(r => r.trailerFrom !== null);
+	const burstMaxW = withTrailer.length > 0 ? Math.max(...withTrailer.map(r => r.burstMaxW)) : 0;
+	const hi = END_BLOCK_SHARE * burstMaxW;
+	const reach = Math.ceil(END_BLOCK_REACH_MS / s.stepMs);
+	const tailSeparated =
+		withTrailer.length >= 2 &&
+		burstMaxW > runLimit &&
+		withTrailer.every(r => {
+			const b = endBlockOf(s, r, hi);
+			return b !== null && r.coreEnd - b.to <= reach;
+		});
+	const tailCeil = tailSeparated ? TAIL_CEIL_SHARE * burstMaxW : runLimit;
+	for (const r of runs) {
+		// without a block above the end block level (a short final spin) the last block above the run level
+		const above = tailSeparated ? endBlockOf(s, r, hi) : null;
+		const b = above ?? endBlockOf(s, r, runLimit) ?? { from: r.endBlockFrom, to: r.endBlockTo };
+		r.endBlockFrom = b.from;
+		r.endBlockTo = b.to;
+		let min = Number.POSITIVE_INFINITY;
+		for (let i = b.from; i <= b.to; i++) {
+			if (s.valid[i] === 1) {
+				min = Math.min(min, s.last[i]);
+			}
+		}
+		r.endBlockMinW = Number.isFinite(min) ? min : 0;
+		r.progEnd = r.runEnd;
+		if (tailSeparated) {
+			// a run that never exceeds the ceiling keeps the criterion of today
+			for (let i = r.runEnd; i >= r.from; i--) {
+				if (s.valid[i] === 1 && s.last[i] > tailCeil) {
+					r.progEnd = i;
+					break;
+				}
+			}
+		}
+	}
+	return { burstMaxW, tailSeparated, tailCeil };
+}
+
+/**
  * Find runs, spikes, levels and the windows to simulate.
  *
  * @param s - Series in W (finalized)
@@ -822,17 +1003,25 @@ export function buildLayout(s: TickSeries, opts: LayoutOptions = {}): Layout {
 	}
 	const maxGap = opts.recording ? s.length : Math.floor(MAX_PAUSE_MS / step);
 	const minActive = opts.recording ? 6 : Math.ceil(MIN_ACTIVE_MS / step);
-	const scan = (): { all: Segment[]; runSpans: (Span & { active: number })[]; spikes: Span[]; dropped: number } => {
+	const maxRuns = Math.max(1, opts.maxRuns ?? MAX_WINDOWS);
+	const scan = (): {
+		all: Segment[];
+		runSpans: (Span & { active: number })[];
+		spikes: Span[];
+		dropped: number;
+		incomplete: Span[];
+	} => {
 		const found = segments(s, runLimit, maxGap, opts.recording ? 0 : minActive);
 		const usable = found.filter(x => !x.touched);
 		return {
 			all: found,
 			runSpans: usable.filter(x => x.active >= minActive),
-			spikes: usable.filter(x => x.active < minActive).slice(-MAX_WINDOWS),
+			spikes: usable.filter(x => x.active < minActive).slice(-maxRuns),
 			dropped: found.length - usable.length,
+			incomplete: found.filter(x => x.touched && x.active >= minActive).map(x => ({ from: x.from, to: x.to })),
 		};
 	};
-	let { all, runSpans, spikes, dropped: gapsDropped } = scan();
+	let { all, runSpans, spikes, dropped: gapsDropped, incomplete } = scan();
 
 	const fallbackIdle = Math.max(0, tailIdle ?? median(validValues));
 	let bounds = boundsOf(runSpans, all, s.length);
@@ -849,7 +1038,7 @@ export function buildLayout(s: TickSeries, opts: LayoutOptions = {}): Layout {
 		// shortest rest phase (two runs started one after the other without switching off)
 		rest = restFound.level;
 		runLimit = restFound.level + restBand(restFound.level);
-		({ all, runSpans, spikes, dropped: gapsDropped } = scan());
+		({ all, runSpans, spikes, dropped: gapsDropped, incomplete } = scan());
 		runSpans = splitAtRest(s, runSpans, runLimit, restFound, minActive);
 		bounds = boundsOf(runSpans, all, s.length);
 		({ runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle, opts.keepAbove));
@@ -907,13 +1096,22 @@ export function buildLayout(s: TickSeries, opts: LayoutOptions = {}): Layout {
 		return { fromIdx, toIdx, runStartIdx: span.from, runEndIdx: run === null ? null : end, run };
 	};
 	const kept: RunInfo[] = [];
-	for (const r of runs.slice(-MAX_WINDOWS)) {
+	const runWindows: Window[] = [];
+	for (const r of runs.slice(-maxRuns)) {
 		const win = make(r, r.runEnd, kept.length);
 		if (win) {
 			kept.push(r);
-			windows.push(win);
+			runWindows.push(win);
+		} else {
+			// invalid ticks inside the run: it cannot be replayed
+			incomplete.push({ from: r.from, to: r.to });
 		}
 	}
+	const tail = tailOf(s, kept, runLimit);
+	runWindows.forEach((w, k) => {
+		w.progEndIdx = kept[k].progEnd;
+		windows.push(w);
+	});
 	for (const sp of spikes) {
 		const win = make(sp, sp.to, null);
 		if (win) {
@@ -921,5 +1119,6 @@ export function buildLayout(s: TickSeries, opts: LayoutOptions = {}): Layout {
 		}
 	}
 	const lpost = kept.length > 0 ? Math.max(...kept.map(r => r.postEnd)) : idle;
-	return { runLimit, idle, lpost, runs: kept, spikes, windows, gapsDropped, rest };
+	incomplete.sort((a, b) => a.from - b.from);
+	return { runLimit, idle, lpost, runs: kept, spikes, windows, gapsDropped, rest, ...tail, incomplete };
 }

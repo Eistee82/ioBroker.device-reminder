@@ -3,7 +3,7 @@ import { FINAL_KEYS } from "../detector/types.js";
 import { BASE_KEYS, DETECTION_KEYS, detectionOf, pushChange, refreshInfo } from "../runStore.js";
 import { analyzeTicks } from "./analyze.js";
 import { margin, minEndSec } from "./optimize.js";
-import { runOkFull, simulate } from "./replay.js";
+import { endOkFull, simulate } from "./replay.js";
 import { MAX_PAUSE_MS } from "./runs.js";
 import { decodeCells, fromCells, scaled } from "./ticks.js";
 export const TIGHTEN_MIN_RUNS = 4;
@@ -158,7 +158,7 @@ async function gateOn(data, p, perturb, only) {
             run: 0,
         };
         const res = simulate(s, win, p, opts);
-        const good = r.postTruncated ? truncatedOk(s, win, res) : runOkFull(s, win, res);
+        const good = r.postTruncated ? truncatedOk(s, win, res) : endOkFull(s, win, res, null);
         const delaySec = good && res.finished.length > 0
             ? (res.finished[0] - (s.t0 + win.runEndIdx * s.stepMs)) / 1000
             : Number.NaN;

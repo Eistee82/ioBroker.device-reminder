@@ -1,6 +1,7 @@
 import { createDetector } from "../detector/index.js";
 import type { DetectionMode, DetectionSettings, TickResult } from "../detector/types.js";
 import type { Window } from "./runs.js";
+import { DENSE_MIN_MS } from "./runs.js";
 import type { TickSeries } from "./ticks.js";
 
 /** How well one detection mode recognises the runs. */
@@ -123,14 +124,50 @@ export function runOk(s: TickSeries, win: Window, r: SimResult): boolean {
  * @param r - Simulation result of the whole window (without stopAtFinish)
  */
 export function runOkFull(s: TickSeries, win: Window, r: SimResult): boolean {
-	if (win.runEndIdx === null) {
-		return r.started === 0;
-	}
-	return runOk(s, win, r) && r.finished.length === 1 && r.startedAt.every(t => t <= r.finished[0]);
+	return endOkFull(s, win, r, null);
 }
 
 /**
- * Whether the settings detect every run window (start once, no abort, end not before the end).
+ * Criterion "end not too early" (Spec B.4): one start, no abort, and the first end at or after the end
+ * of the run, or after the programme end and at most DENSE_MIN_MS before the end of the run (the end of
+ * a trailer that is too short to be found as one). Without a programme end the same as `runOk`.
+ *
+ * @param s - Series
+ * @param win - Run window
+ * @param r - Simulation result
+ * @param progEnd - Programme end (tick, `RunInfo.progEnd`), or null
+ */
+export function endOk(s: TickSeries, win: Window, r: SimResult, progEnd: number | null): boolean {
+	if (r.started !== 1 || r.aborted !== 0 || r.finished.length === 0) {
+		return false;
+	}
+	const f = r.finished[0];
+	const runEnd = s.t0 + (win.runEndIdx ?? 0) * s.stepMs;
+	if (f >= runEnd) {
+		return true;
+	}
+	return progEnd !== null && f > s.t0 + progEnd * s.stepMs && runEnd - f <= DENSE_MIN_MS;
+}
+
+/**
+ * `endOk` over the whole window: additionally exactly one end and no start after it. A spike window
+ * passes without a start.
+ *
+ * @param s - Series
+ * @param win - Window
+ * @param r - Simulation result of the whole window (without stopAtFinish)
+ * @param progEnd - Programme end (tick), or null
+ */
+export function endOkFull(s: TickSeries, win: Window, r: SimResult, progEnd: number | null): boolean {
+	if (win.runEndIdx === null) {
+		return r.started === 0;
+	}
+	return endOk(s, win, r, progEnd) && r.finished.length === 1 && r.startedAt.every(t => t <= r.finished[0]);
+}
+
+/**
+ * Whether the settings detect every run window (start once, no abort, end not too early, `endOk` with
+ * the programme end of the window).
  *
  * @param s - Series
  * @param windows - Run windows
@@ -147,7 +184,7 @@ export async function allOk(
 ): Promise<boolean> {
 	let ok = true;
 	for (const win of windows) {
-		if (!runOk(s, win, simulate(s, win, settings, opts, true))) {
+		if (!endOk(s, win, simulate(s, win, settings, opts, true), win.progEndIdx ?? null)) {
 			ok = false;
 			break;
 		}
@@ -185,7 +222,7 @@ export async function evaluate(
 			continue;
 		}
 		runs++;
-		if (runOkFull(s, win, res)) {
+		if (endOkFull(s, win, res, win.progEndIdx ?? null)) {
 			detected++;
 			const delay = (res.finished[0] - (s.t0 + win.runEndIdx * s.stepMs)) / 1000;
 			delaySum += delay;

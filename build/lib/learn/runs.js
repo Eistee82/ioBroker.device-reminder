@@ -4,6 +4,7 @@ export const MIN_ACTIVE_MS = 5 * 60_000;
 export const PAD_BEFORE_MS = 30 * 60_000;
 export const PAD_AFTER_MS = 3 * 60 * 60_000;
 export const MAX_WINDOWS = 20;
+export const LAYOUT_REV = 2;
 export const TRAILER_BURST_MS = 2 * 60_000;
 export const TRAILER_GAP_MAX_MS = 15 * 60_000;
 export function TRAILER_GAP_MIN_MS(stepMs) {
@@ -18,10 +19,14 @@ export const LEVEL_SEP_W = 0.3;
 export const REST_MIN_MS = 5 * 60_000;
 const REST_MAX_SHARE = 0.1;
 const DENSE_MIN_BURSTS = 6;
-const DENSE_MIN_MS = 5 * 60_000;
+export const DENSE_MIN_MS = 5 * 60_000;
 const DENSE_MAX_DUTY = 0.7;
 const DENSE_MAX_QUIET_SHARE = 0.25;
 const DENSE_PROBE_MS = 10 * 60_000;
+const END_BLOCK_SHARE = 1.25;
+const TAIL_CEIL_SHARE = 1.1;
+const END_BLOCK_BRIDGE_MS = 60_000;
+const END_BLOCK_REACH_MS = 60_000;
 const IDLE_SPAN_MS = 2 * 60 * 60_000;
 const SHORT_PAUSE_MS = 10 * 60_000;
 export function quantile(values, q) {
@@ -84,7 +89,7 @@ function segments(s, limit, maxGap, endIsGap) {
     }
     return out;
 }
-function blocksOf(s, span, limit) {
+export function blocksOf(s, span, limit) {
     const out = [];
     let cur = null;
     for (let i = span.from; i <= span.to; i++) {
@@ -100,7 +105,7 @@ function blocksOf(s, span, limit) {
     }
     return out;
 }
-function gapsBetween(blocks, upTo) {
+export function gapsBetween(blocks, upTo) {
     const out = [];
     for (let k = 1; k < blocks.length; k++) {
         if (blocks[k].from > upTo) {
@@ -112,7 +117,7 @@ function gapsBetween(blocks, upTo) {
     }
     return out;
 }
-function mergeBlocks(blocks, minGapTicks) {
+export function mergeBlocks(blocks, minGapTicks) {
     const out = [];
     for (const b of blocks) {
         const last = out.at(-1);
@@ -186,10 +191,42 @@ function denseTrailerOf(s, seg, runLimit) {
     }
     return { block: blocks[k], bursts, quiet, limit };
 }
+function raisedTrailerOf(s, seg, runLimit) {
+    const tail = valuesOf(s, seg.to - Math.ceil(DENSE_PROBE_MS / s.stepMs) + 1, seg.to);
+    if (tail.length === 0) {
+        return null;
+    }
+    const limit = DENSE_MAX_QUIET_SHARE * quantile(tail, 0.9);
+    if (limit <= runLimit) {
+        return null;
+    }
+    const found = trailerOf(blocksOf(s, seg, limit), s.stepMs);
+    if (!found) {
+        return null;
+    }
+    let quiet = 0;
+    let prev = found.block.to;
+    const maxima = [];
+    for (const b of found.bursts) {
+        const vals = valuesOf(s, prev + 1, b.from - 1);
+        if (vals.length > 0) {
+            quiet = Math.max(quiet, median(vals));
+        }
+        maxima.push(Math.max(...valuesOf(s, b.from, b.to)));
+        prev = b.to;
+    }
+    if (quiet > DENSE_MAX_QUIET_SHARE * median(maxima)) {
+        return null;
+    }
+    return { ...found, quiet, limit };
+}
 function coreOf(s, seg, runLimit) {
     const blocks = blocksOf(s, seg, runLimit);
-    const dense = trailerOf(blocks, s.stepMs) === null ? denseTrailerOf(s, seg, runLimit) : null;
-    const trailer = dense ?? trailerOf(blocks, s.stepMs);
+    const plain = trailerOf(blocks, s.stepMs);
+    const dense = plain === null ? denseTrailerOf(s, seg, runLimit) : null;
+    const raisedFound = dense === null ? raisedTrailerOf(s, seg, runLimit) : null;
+    const raised = raisedFound && (plain === null || raisedFound.block.to < plain.block.to) ? raisedFound : null;
+    const trailer = raised ?? dense ?? plain;
     const coreEnd = trailer ? trailer.block.to : seg.to;
     const bursts = trailer ? trailer.bursts : [];
     let burstMaxMs = 0;
@@ -206,9 +243,10 @@ function coreOf(s, seg, runLimit) {
         }
         maxima.push(m);
     });
-    const level = dense ? dense.limit : runLimit;
+    const level = dense ? dense.limit : raised ? raised.limit : runLimit;
     const coreBlocks = dense ? blocksOf(s, seg, level) : blocks;
-    const merged = mergeBlocks(coreBlocks.filter(b => b.to <= coreEnd), Math.ceil(TRAILER_GAP_MIN_MS(s.stepMs) / s.stepMs));
+    const terminalBlocks = raised ? blocksOf(s, seg, level) : coreBlocks;
+    const merged = mergeBlocks(terminalBlocks.filter(b => b.to <= coreEnd), Math.ceil(TRAILER_GAP_MIN_MS(s.stepMs) / s.stepMs));
     const terminal = [...merged].reverse().find(b => (b.to - b.from + 1) * s.stepMs >= SUSTAINED_MS) ?? merged.at(-1) ?? null;
     let blockMean = 0;
     if (terminal) {
@@ -240,7 +278,12 @@ function coreOf(s, seg, runLimit) {
         gapMinMs,
         burstP10W: maxima.length > 0 ? quantile(maxima, 0.1) : 0,
         blockMean,
-        trailerQuietW: dense ? dense.quiet : 0,
+        trailerQuietW: dense ? dense.quiet : raised ? raised.quiet : 0,
+        burstMaxW: maxima.length > 0 ? Math.max(...maxima) : 0,
+        progEnd: coreEnd,
+        endBlockFrom: terminal ? terminal.from : seg.from,
+        endBlockTo: terminal ? terminal.to : coreEnd,
+        endBlockMinW: 0,
     };
 }
 function idleOf(s, runs, bounds, fallback) {
@@ -439,6 +482,46 @@ function splitAtRest(s, spans, runLimit, rest, minActive) {
 function boundsOf(spans, all, length) {
     return spans.map(r => ({ next: all.find(x => x.from > r.to)?.from ?? length }));
 }
+function endBlockOf(s, r, level) {
+    const merged = mergeBlocks(blocksOf(s, { from: r.from, to: r.coreEnd }, level), Math.floor(END_BLOCK_BRIDGE_MS / s.stepMs) + 1);
+    return [...merged].reverse().find(b => (b.to - b.from + 1) * s.stepMs >= SUSTAINED_MS) ?? null;
+}
+function tailOf(s, runs, runLimit) {
+    const withTrailer = runs.filter(r => r.trailerFrom !== null);
+    const burstMaxW = withTrailer.length > 0 ? Math.max(...withTrailer.map(r => r.burstMaxW)) : 0;
+    const hi = END_BLOCK_SHARE * burstMaxW;
+    const reach = Math.ceil(END_BLOCK_REACH_MS / s.stepMs);
+    const tailSeparated = withTrailer.length >= 2 &&
+        burstMaxW > runLimit &&
+        withTrailer.every(r => {
+            const b = endBlockOf(s, r, hi);
+            return b !== null && r.coreEnd - b.to <= reach;
+        });
+    const tailCeil = tailSeparated ? TAIL_CEIL_SHARE * burstMaxW : runLimit;
+    for (const r of runs) {
+        const above = tailSeparated ? endBlockOf(s, r, hi) : null;
+        const b = above ?? endBlockOf(s, r, runLimit) ?? { from: r.endBlockFrom, to: r.endBlockTo };
+        r.endBlockFrom = b.from;
+        r.endBlockTo = b.to;
+        let min = Number.POSITIVE_INFINITY;
+        for (let i = b.from; i <= b.to; i++) {
+            if (s.valid[i] === 1) {
+                min = Math.min(min, s.last[i]);
+            }
+        }
+        r.endBlockMinW = Number.isFinite(min) ? min : 0;
+        r.progEnd = r.runEnd;
+        if (tailSeparated) {
+            for (let i = r.runEnd; i >= r.from; i--) {
+                if (s.valid[i] === 1 && s.last[i] > tailCeil) {
+                    r.progEnd = i;
+                    break;
+                }
+            }
+        }
+    }
+    return { burstMaxW, tailSeparated, tailCeil };
+}
 export function buildLayout(s, opts = {}) {
     const step = s.stepMs;
     const validValues = valuesOf(s, 0, s.length - 1);
@@ -453,17 +536,19 @@ export function buildLayout(s, opts = {}) {
     }
     const maxGap = opts.recording ? s.length : Math.floor(MAX_PAUSE_MS / step);
     const minActive = opts.recording ? 6 : Math.ceil(MIN_ACTIVE_MS / step);
+    const maxRuns = Math.max(1, opts.maxRuns ?? MAX_WINDOWS);
     const scan = () => {
         const found = segments(s, runLimit, maxGap, opts.recording ? 0 : minActive);
         const usable = found.filter(x => !x.touched);
         return {
             all: found,
             runSpans: usable.filter(x => x.active >= minActive),
-            spikes: usable.filter(x => x.active < minActive).slice(-MAX_WINDOWS),
+            spikes: usable.filter(x => x.active < minActive).slice(-maxRuns),
             dropped: found.length - usable.length,
+            incomplete: found.filter(x => x.touched && x.active >= minActive).map(x => ({ from: x.from, to: x.to })),
         };
     };
-    let { all, runSpans, spikes, dropped: gapsDropped } = scan();
+    let { all, runSpans, spikes, dropped: gapsDropped, incomplete } = scan();
     const fallbackIdle = Math.max(0, tailIdle ?? median(validValues));
     let bounds = boundsOf(runSpans, all, s.length);
     let { runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle, opts.keepAbove);
@@ -475,7 +560,7 @@ export function buildLayout(s, opts = {}) {
     if (restFound) {
         rest = restFound.level;
         runLimit = restFound.level + restBand(restFound.level);
-        ({ all, runSpans, spikes, dropped: gapsDropped } = scan());
+        ({ all, runSpans, spikes, dropped: gapsDropped, incomplete } = scan());
         runSpans = splitAtRest(s, runSpans, runLimit, restFound, minActive);
         bounds = boundsOf(runSpans, all, s.length);
         ({ runs, idle } = detailRuns(s, runSpans, bounds, runLimit, fallbackIdle, opts.keepAbove));
@@ -531,13 +616,22 @@ export function buildLayout(s, opts = {}) {
         return { fromIdx, toIdx, runStartIdx: span.from, runEndIdx: run === null ? null : end, run };
     };
     const kept = [];
-    for (const r of runs.slice(-MAX_WINDOWS)) {
+    const runWindows = [];
+    for (const r of runs.slice(-maxRuns)) {
         const win = make(r, r.runEnd, kept.length);
         if (win) {
             kept.push(r);
-            windows.push(win);
+            runWindows.push(win);
+        }
+        else {
+            incomplete.push({ from: r.from, to: r.to });
         }
     }
+    const tail = tailOf(s, kept, runLimit);
+    runWindows.forEach((w, k) => {
+        w.progEndIdx = kept[k].progEnd;
+        windows.push(w);
+    });
     for (const sp of spikes) {
         const win = make(sp, sp.to, null);
         if (win) {
@@ -545,6 +639,7 @@ export function buildLayout(s, opts = {}) {
         }
     }
     const lpost = kept.length > 0 ? Math.max(...kept.map(r => r.postEnd)) : idle;
-    return { runLimit, idle, lpost, runs: kept, spikes, windows, gapsDropped, rest };
+    incomplete.sort((a, b) => a.from - b.from);
+    return { runLimit, idle, lpost, runs: kept, spikes, windows, gapsDropped, rest, ...tail, incomplete };
 }
 //# sourceMappingURL=runs.js.map

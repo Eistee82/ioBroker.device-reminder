@@ -1,4 +1,5 @@
 import { createDetector } from "../detector/index.js";
+import { DENSE_MIN_MS } from "./runs.js";
 export function simulate(s, win, settings, opts, stopAtFinish = false) {
     const detector = createDetector(settings, {
         abort: opts.abort,
@@ -47,15 +48,29 @@ export function runOk(s, win, r) {
     return r.started === 1 && r.aborted === 0 && r.finished.length > 0 && r.finished[0] >= end;
 }
 export function runOkFull(s, win, r) {
+    return endOkFull(s, win, r, null);
+}
+export function endOk(s, win, r, progEnd) {
+    if (r.started !== 1 || r.aborted !== 0 || r.finished.length === 0) {
+        return false;
+    }
+    const f = r.finished[0];
+    const runEnd = s.t0 + (win.runEndIdx ?? 0) * s.stepMs;
+    if (f >= runEnd) {
+        return true;
+    }
+    return progEnd !== null && f > s.t0 + progEnd * s.stepMs && runEnd - f <= DENSE_MIN_MS;
+}
+export function endOkFull(s, win, r, progEnd) {
     if (win.runEndIdx === null) {
         return r.started === 0;
     }
-    return runOk(s, win, r) && r.finished.length === 1 && r.startedAt.every(t => t <= r.finished[0]);
+    return endOk(s, win, r, progEnd) && r.finished.length === 1 && r.startedAt.every(t => t <= r.finished[0]);
 }
 export async function allOk(s, windows, settings, opts, yieldFn) {
     let ok = true;
     for (const win of windows) {
-        if (!runOk(s, win, simulate(s, win, settings, opts, true))) {
+        if (!endOk(s, win, simulate(s, win, settings, opts, true), win.progEndIdx ?? null)) {
             ok = false;
             break;
         }
@@ -77,7 +92,7 @@ export async function evaluate(s, windows, settings, opts, yieldFn) {
             continue;
         }
         runs++;
-        if (runOkFull(s, win, res)) {
+        if (endOkFull(s, win, res, win.progEndIdx ?? null)) {
             detected++;
             const delay = (res.finished[0] - (s.t0 + win.runEndIdx * s.stepMs)) / 1000;
             delaySum += delay;

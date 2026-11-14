@@ -4,7 +4,7 @@ import type { LearningSuggestion } from "../learning.js";
 import type { GuardSettings, Plan, PlanContext, RunTable, TrailerParams } from "./optimize.js";
 import { endCandidates, planFor, runTable, suppressBursts } from "./optimize.js";
 import type { ModeEvaluation, ReplayOptions, SimResult } from "./replay.js";
-import { allOk, compare, evaluate, runOkFull, simulate } from "./replay.js";
+import { allOk, compare, endOkFull, evaluate, simulate } from "./replay.js";
 import type { Layout, RunInfo, Span, Window } from "./runs.js";
 import { buildLayout, LEVEL_SEP_W, median } from "./runs.js";
 import type { TickSeries } from "./ticks.js";
@@ -354,7 +354,7 @@ export async function analyzeTicks(
 				...(mode === "count" ? { endCount, endDurationSec: endCount * poll } : { endDurationSec: plan.Ds }),
 			};
 			const res = an.simulate(win, loo);
-			if (runOkFull(series, win, res)) {
+			if (endOkFull(series, win, res, win.progEndIdx ?? null)) {
 				looDetected++;
 			}
 			await opts.yieldFn?.();
