@@ -118,7 +118,7 @@ Jede Zahl in einem Test stammt aus einer dieser Quellen; wo ein Wert erst aus de
 
 - [x] **Step 1: §4.4 „Gerätetypen“** um den Satz ergänzen, dass 3.1.2-Typen bei der Migration als Werte in jedes Gerät kopiert werden (Verweis auf Phasen-Spec C.5).
 - [x] **Step 2: §6/§6.1/§6.2:** Tab „Gerätetypen“ entfällt (Hinweistext), Geräteformular mit Quelle (Vorlage, Archiv-Vorlage, anderes Gerät), Erkennung, Expertenwerte; neue Unterabschnitte „Schlussphase“, „Phasen“, „Laufprüfung“ mit je 3–5 Sätzen und Verweis auf die Phasen-Spec A.3, A.4–A.6, B.2.
-- [x] **Step 3: §14 Entscheidungen:** „Custom-Typen unbegrenzt“ → „Erkennungswerte im Gerät, eingebaute Vorlagen, Archiv“; „Modus pro Typ, Gerät erbt“ → „Modus pro Gerät“. Abschnitt „Vom User entschieden“ um die Entscheidungen 1–9 dieses Plans ergänzen.
+- [x] **Step 3: §13/§14 Entscheidungen:** „Custom-Typen unbegrenzt“ → „Erkennungswerte im Gerät, eingebaute Vorlagen, Archiv“; „Modus pro Typ, Gerät erbt“ → „Modus pro Gerät“. Abschnitt „Vom User entschieden“ um die Entscheidungen 1–9 dieses Plans ergänzen.
 - [x] **Step 4: Prüfen:** `grep -n "Typ" docs/superpowers/specs/2026-10-25-device-reminder-v4-design.md` zeigt „Typ“ nur noch in 3.1.2-Bezügen und Migration.
 - [x] **Step 5: Commit** `git add docs/superpowers/specs/2026-10-25-device-reminder-v4-design.md docs/superpowers/specs/2026-11-13-phasenerkennung-design.md docs/superpowers/plans/2026-11-14-phasenerkennung.md && git commit -m "docs: v4 spec follows the phase concept"`
 

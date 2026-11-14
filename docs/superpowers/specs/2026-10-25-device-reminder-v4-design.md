@@ -142,7 +142,9 @@ Aufteilung (Design-Entscheidung):
 3. **Empfänger** — Tabelle/Accordion: aktiv (#113), Name, Messenger-Typ, Instanz (Select der vorhandenen Instanzen), messenger-spezifische Felder (Abschnitt 4.3 + neue Messenger), optionales Zeitfenster, Test-Button (sendTo).
 4. **Allgemein** — Status-Texte, Abtastintervall (Default 10 s, #386), Default-Zeitfenster.
 
-#### 6.3 Schlussphase, Phasen, Laufprüfung
+Alle Labels/Hilfetexte in `admin/i18n/<lang>.json` (11 Sprachen), Hilfetexte klar formuliert. Eingabeprüfung über jsonConfig-Mittel (`validator`, `min`, Pflichtfelder) statt der alten `ctrlInput`-Logik; zusätzliche Plausibilitätsprüfung beim Adapterstart mit verständlicher Log-Meldung pro Gerät.
+
+### 6.3 Schlussphase, Phasen, Laufprüfung
 
 Diese drei Erweiterungen gehören zum Gerät, sind im Standard aus (Verhalten 3.1.2) und stehen im Geräteformular bzw. in den Dialogen des Device Managers.
 
@@ -151,8 +153,6 @@ Diese drei Erweiterungen gehören zum Gerät, sind im Standard aus (Verhalten 3.
 **Phasen** (Phasen-Spec A.4–A.6, B.5). Optionale Anzeige der aktuellen Phase eines Laufs (z. B. „Schleudern“) mit States `phase`, `phaseId`, `phaseSince`, `phases`, Ereignissen und Aktionen sowie optionalen Meldungen je Phase. Der Phasen-Tracker beobachtet nur und kann weder Start noch Ende noch eine Meldung der Erkennung ändern. Das Phasenmodell wird aus der History gelernt; Bänder und Klassen sind gerätespezifisch gelernt, nie vorgegeben.
 
 **Laufprüfung** (Phasen-Spec B.2, B.3). Jeder aufgezeichnete Lauf wird vor dem Lernen geprüft (`ok`, `limited`, `quarantine`, `unusable`, z. B. Datenlücke, Fremdlast, Testlauf, Einheitenfehler). Unverwertbare Aufzeichnungen verfälschen weder Anlernen noch Optimierung; der User sieht die Begründung und kann Läufe verwenden oder ausschließen. Zwei echte Läufe, die zu einem Lauf verschmelzen, sind kein Erkennungsfehler, solange das echte Ende des Gesamtlaufs erkannt wird.
-
-Alle Labels/Hilfetexte in `admin/i18n/<lang>.json` (11 Sprachen), Hilfetexte klar formuliert. Eingabeprüfung über jsonConfig-Mittel (`validator`, `min`, Pflichtfelder) statt der alten `ctrlInput`-Logik; zusätzliche Plausibilitätsprüfung beim Adapterstart mit verständlicher Log-Meldung pro Gerät.
 
 ## 7. Type-Detector
 
@@ -236,6 +236,11 @@ README kurz nach Checklisten-Struktur (Badges, Changelog unter `### **WORK IN PR
 - Type-Detector: Steckdose wählen → States automatisch; manuell bleibt möglich.
 - Alle Issue-Wünsche mitnehmen, aber optional; Standard = bisheriges Verhalten.
 - Repo unter Eistee82, später Transfer; npm über ioBroker-Team.
+- Checkliste in jedem Punkt verbindlich.
+- Kein notification-manager.
+- **Parität:** Erkennungszeitpunkte (Start/Betrieb/Ende/Standby/Aus) 1:1 wie 3.1.2, inklusive der Eigenheit der Abbrucherkennung (§4.1); zusätzlich eine korrigierte Abbrucherkennung als Option (Default aus). Messenger-Payload-Bugs (Telegram-Keys, Pushover prio/deviceID/ttl, Discord-Leerfelder, Alexa ohne Volume-State) und Anzeigefehler (`lastRuntime`-Überschreiben beim Start, Laufzeitstring-Zeitzonenversatz, `initialize` beim Start) werden **behoben**. Migration setzt Telegram `username`/`firstname`/`chatID` auf die passenden Felder des Telegram-Adapters um.
+- **Migrations-Testdaten:** aus dem Admin-Code von 3.1.2 abgeleitete Beispiel-Configs (keine echte Config verfügbar) — Risiko: Abweichungen realer Configs; daher defensive Migration (unbekannte/fehlende Felder → Warnung, nie Abbruch, Backup immer).
+- Visualisierung/Blockly mitnehmen, wo sinnvoll; Device Manager („Konfig-Manager“) und Geräte-Manager (`devices`) berücksichtigen.
 
 ### Vom User entschieden: Phasen, Schlussphase, Werte im Gerät, Auto-Optimierung (14.11.2026)
 
@@ -250,11 +255,6 @@ Umsetzung in `docs/superpowers/specs/2026-11-13-phasenerkennung-design.md` (gewi
 7. Jede 3.1.2-Einstellung landet an der richtigen V4-Stelle (Phasen-Spec C.5), je Zeile durch einen Test abgesichert.
 8. Saubere Erkennung hat Vorrang: Erkennt die Erkennung einen zugelassenen Lauf nicht richtig (Start fehlt, Ende zu früh, zerteilt, Ende nicht erkannt, Phantomstart), wird sofort in die sichere Richtung repariert, unabhängig von Mindestzahl, Abstand und Sperre; Läufe in Quarantäne lösen nichts aus.
 9. Verschmolzene Läufe: „zwei läufe als einen erkennen ist nicht schlimm denn dann läuft das gerät ja durchgehend. wichtig ist nur das dann auch das ende erkannt wird wenn es ein richtiges ende gibt“ – kein Erkennungsfehler, keine Reparatur; Pflicht ist nur, dass das echte Ende des Gesamtlaufs erkannt wird.
-- Checkliste in jedem Punkt verbindlich.
-- Kein notification-manager.
-- **Parität:** Erkennungszeitpunkte (Start/Betrieb/Ende/Standby/Aus) 1:1 wie 3.1.2, inklusive der Eigenheit der Abbrucherkennung (§4.1); zusätzlich eine korrigierte Abbrucherkennung als Option (Default aus). Messenger-Payload-Bugs (Telegram-Keys, Pushover prio/deviceID/ttl, Discord-Leerfelder, Alexa ohne Volume-State) und Anzeigefehler (`lastRuntime`-Überschreiben beim Start, Laufzeitstring-Zeitzonenversatz, `initialize` beim Start) werden **behoben**. Migration setzt Telegram `username`/`firstname`/`chatID` auf die passenden Felder des Telegram-Adapters um.
-- **Migrations-Testdaten:** aus dem Admin-Code von 3.1.2 abgeleitete Beispiel-Configs (keine echte Config verfügbar) — Risiko: Abweichungen realer Configs; daher defensive Migration (unbekannte/fehlende Felder → Warnung, nie Abbruch, Backup immer).
-- Visualisierung/Blockly mitnehmen, wo sinnvoll; Device Manager („Konfig-Manager“) und Geräte-Manager (`devices`) berücksichtigen.
 
 ## 14. Entscheidungen des Designs (vom User noch zu prüfen)
 
