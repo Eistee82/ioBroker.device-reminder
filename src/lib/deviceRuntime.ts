@@ -1,6 +1,13 @@
 import type { DeviceConfig, InstanceConfig } from "./config.js";
-import { createDetector, TrailerFilter } from "./detector/index.js";
-import type { DetectionSettings, Detector, TickResult } from "./detector/types.js";
+import { createDetector, finalOn, finalValuesOf, TrailerFilter } from "./detector/index.js";
+import type {
+	DetectionSettings,
+	Detector,
+	FinalExit,
+	FinalSettings,
+	FinalStats,
+	TickResult,
+} from "./detector/types.js";
 import { renderHistoryHtml } from "./historyHtml.js";
 import type { DeviceHost, MessageSink, RuntimeEvent, RuntimeListener } from "./host.js";
 import type { CaptureEvent, RunRecorder } from "./runRecorder.js";
@@ -23,6 +30,17 @@ function isTrue(val: unknown): boolean {
 	return val === true || val === 1 || val === "true" || val === "1";
 }
 
+/** Exits of the lock phase, in the order of the counters. */
+const EXITS: readonly FinalExit[] = ["a", "b", "c", "d", "e", "f", "g"];
+
+/** Auto-off after an activity exit of the lock phase that no start followed yet (Spec A.3 "AutoOff"). */
+interface AutoOffWait {
+	/** End of the check window after the exit: without a start the auto-off starts then. */
+	until: number;
+	/** Since when the power is below the rest level (rest proof), or null. */
+	restSince: number | null;
+}
+
 /**
  * Runtime of one configured device: feeds power values into the detector and turns its events
  * into states, messages, auto-off and lifecycle events.
@@ -32,7 +50,26 @@ export class DeviceRuntime {
 	private detector: Detector;
 	/** Detection mode the detector was built with (time-based modes are also fed with every new value). */
 	private detectorMode: DetectionSettings["mode"] = "count";
-	private rebuildDetectorAfterRun = false;
+	/** Final phase values the detector was built with (0 replaced, floors applied), or null without a final phase. */
+	private detectorFinal: Required<FinalSettings> | null = null;
+	/** Number of detector builds. */
+	private builds = 0;
+	/** Rebuild the detector as soon as no run and no lock phase is active. */
+	private rebuildPending = false;
+	/** Whether the detector was in the lock phase after the last step. */
+	private wasSettling = false;
+	/** Counters of the final phase when the lock phase began (to find the exit). */
+	private exitBase: FinalStats | null = null;
+	/** Last known value of the state `settlingUntil` (0 = no lock phase). */
+	private settlingUntilVal = 0;
+	/** `settlingUntil` read at the start, until `restore` decides whether the lock phase goes on. */
+	private resumeAt: number | null = null;
+	/** Between `init` and `restore` (the registry still loads the optimised values): no detection step. */
+	private restoring = false;
+	/** The auto-off of an early end waits for the exit of the lock phase. */
+	private autoOffDeferred = false;
+	/** The auto-off after an activity exit waits for a start, the end of the check window or rest. */
+	private autoOffWait: AutoOffWait | null = null;
 	private power: number | null = null;
 	private missingPower = false;
 	private switchOn: boolean | null = null;
@@ -101,7 +138,7 @@ export class DeviceRuntime {
 
 	/**
 	 * Use optimised values (null = the values of the device). The detector is rebuilt at once
-	 * when no run is in progress, otherwise after the run.
+	 * when no run and no lock phase is in progress, otherwise as soon as both are over.
 	 *
 	 * @param o - Optimised values or null
 	 */
@@ -127,13 +164,35 @@ export class DeviceRuntime {
 		this.rebuildDetector();
 	}
 
-	/** Rebuild the detector at once between two runs, otherwise after the run. */
+	/**
+	 * Rebuild the detector at once between two runs, otherwise at the first step without a run and without a lock
+	 * phase (a rebuild in the lock phase would start the detection afresh: phantom start, second end).
+	 */
 	private rebuildDetector(): void {
-		if (this.detector.started) {
-			this.rebuildDetectorAfterRun = true;
+		if (this.detector.started || this.detector.settling === true) {
+			this.rebuildPending = true;
 		} else {
 			this.detector = this.buildDetector();
+			this.rebuildPending = false;
 		}
+	}
+
+	/** Pending rebuild, as soon as no run and no lock phase is in progress. */
+	private rebuildIfDue(): void {
+		if (this.rebuildPending && !this.detector.started && this.detector.settling !== true) {
+			this.detector = this.buildDetector();
+			this.rebuildPending = false;
+		}
+	}
+
+	/** Whether the lock phase after an early end of the final phase is active. */
+	public get settling(): boolean {
+		return this.detector.settling === true;
+	}
+
+	/** Number of detector builds (tests: a change of the values rebuilds only between runs and lock phases). */
+	public get detectorRev(): number {
+		return this.builds;
 	}
 
 	/**
@@ -170,9 +229,20 @@ export class DeviceRuntime {
 		return this.missingPower;
 	}
 
-	/** Load the persisted values and reset the volatile states. */
-	public async init(): Promise<void> {
+	/**
+	 * Load the persisted values and reset the volatile states. A lock phase that was active before the restart
+	 * (`settlingUntil`) goes on (`restore`); with `restoreLater` the caller calls `restore` itself once the
+	 * optimised values are loaded, and no detection step runs until then.
+	 *
+	 * @param o - Options
+	 * @param o.restoreLater - `restore` follows (registry: the optimised values are loaded after `init`)
+	 */
+	public async init(o: { restoreLater?: boolean } = {}): Promise<void> {
 		this.detector.reset();
+		this.wasSettling = false;
+		this.exitBase = null;
+		this.autoOffDeferred = false;
+		this.autoOffWait = null;
 		await this.setState("status", this.inst.statusTexts.off);
 		await this.setState("runtime", formatDuration(0));
 		await this.setState("runtimeMs", 0);
@@ -183,19 +253,86 @@ export class DeviceRuntime {
 		this.runtimeMax = max !== null && max > 0 ? max : 0;
 		this.dnd = isTrue(await this.host.getOwnState(this.own("config.doNotDisturb")));
 		await this.refreshSwitch();
+		const until = parseNumber(await this.host.getOwnState(this.own("settlingUntil")));
+		this.settlingUntilVal = until ?? 0;
+		this.resumeAt = until !== null && until > 0 ? until : null;
+		this.restoring = o.restoreLater === true;
 
 		const common = await this.host.getForeignObjectCommonType(this.cfg.powerId);
 		if (common === null) {
 			this.missingPower = true;
 			this.host.log.warn(`Power state ${this.cfg.powerId} of device ${this.cfg.name} not found`);
+		} else {
+			this.missingPower = false;
+			const initial = parseNumber(await this.host.getForeignValue(this.cfg.powerId));
+			if (initial !== null) {
+				this.power = initial;
+				await this.setState("consumption", initial);
+			}
+		}
+		if (!this.restoring) {
+			await this.restore();
+		}
+	}
+
+	/**
+	 * After the start: set the optimised values and the suspension of the final phase, then continue a lock phase
+	 * that was active before the restart (Spec A.3 "Neustart"): only while `settlingUntil` lies in the future and the
+	 * final phase is on with the values in use (not suspended), at most `finalLockSec` from now. The detector is
+	 * built once before the first step. Otherwise `settlingUntil` goes to 0.
+	 *
+	 * @param o - Optimised values and suspension (missing: unchanged)
+	 * @param o.override - Optimised values (null = none)
+	 * @param o.suspended - Final phase suspended
+	 */
+	public async restore(o: { override?: Partial<DetectionSettings> | null; suspended?: boolean } = {}): Promise<void> {
+		if (o.override !== undefined) {
+			this.override = o.override;
+		}
+		if (o.suspended !== undefined) {
+			this.finalSuspended = o.suspended;
+		}
+		const until = this.resumeAt;
+		this.resumeAt = null;
+		this.restoring = false;
+		const act = this.active;
+		const now = this.host.now();
+		if (until !== null && until > now && finalOn(act) && !this.detector.started && !this.disposed) {
+			const lockMs = finalValuesOf(act, this.inst.pollIntervalSec).finalLockSec * 1000;
+			const lockAt = Math.min(until, now + lockMs) - lockMs;
+			this.detector = this.buildDetector(lockAt);
+			this.rebuildPending = false;
+			this.enterSettling();
+			// a restart counts like the early end: the auto-off waits for the exit
+			this.autoOffDeferred = true;
+			await this.writeSettling(lockAt + lockMs);
 			return;
 		}
-		this.missingPower = false;
-		const initial = parseNumber(await this.host.getForeignValue(this.cfg.powerId));
-		if (initial !== null) {
-			this.power = initial;
-			await this.setState("consumption", initial);
+		if (o.override !== undefined || o.suspended !== undefined) {
+			this.rebuildDetector();
 		}
+		if (until !== null) {
+			await this.writeSettling(0);
+		}
+	}
+
+	/**
+	 * End a lock phase for good (power state changed, device disabled or not run any more): the detection starts
+	 * afresh and `settlingUntil` goes to 0, so that a restart does not continue it.
+	 */
+	public async dropSettling(): Promise<void> {
+		await this.enqueue(async () => {
+			this.resumeAt = null;
+			if (this.detector.settling === true) {
+				this.detector = this.buildDetector();
+				this.rebuildPending = false;
+			}
+			this.wasSettling = false;
+			this.exitBase = null;
+			this.autoOffDeferred = false;
+			this.autoOffWait = null;
+			await this.writeSettling(0);
+		});
 	}
 
 	/**
@@ -216,6 +353,9 @@ export class DeviceRuntime {
 			return;
 		}
 		await this.enqueue(async () => {
+			if (this.restoring) {
+				return;
+			}
 			const res = this.detector.feed?.(parsed, this.host.now());
 			if (res) {
 				await this.apply(res, parsed);
@@ -273,11 +413,12 @@ export class DeviceRuntime {
 	public async tick(): Promise<void> {
 		await this.enqueue(async () => {
 			const power = this.power;
-			if (power === null) {
+			if (power === null || this.restoring) {
 				return;
 			}
 			this.recorder?.sample(power, this.host.now());
 			await this.apply(this.detector.tick(power, this.host.now(), { switchOff: this.switchOn === false }), power);
+			await this.checkAutoOffWait(power);
 		});
 	}
 
@@ -313,7 +454,7 @@ export class DeviceRuntime {
 
 	/**
 	 * Apply a changed configuration without resetting the cycle. Changed detection values or abort options
-	 * rebuild the detector at once between two runs, otherwise after the run.
+	 * rebuild the detector at once between two runs, otherwise after the run and after the lock phase.
 	 *
 	 * @param next - New device configuration (must pass `canKeepStateFor`)
 	 */
@@ -357,13 +498,21 @@ export class DeviceRuntime {
 		await this.host.setOwnState(this.own(rel), val);
 	}
 
-	private buildDetector(): Detector {
+	/**
+	 * Build the detector with the active values.
+	 *
+	 * @param resumeLockAt - Start in the lock phase that began at this time (restart during the lock phase)
+	 */
+	private buildDetector(resumeLockAt?: number): Detector {
 		const settings = this.active;
 		this.detectorMode = settings.mode;
+		this.detectorFinal = finalOn(settings) ? finalValuesOf(settings, this.inst.pollIntervalSec) : null;
+		this.builds++;
 		return createDetector(settings, {
 			abort: this.cfg.abort,
 			abortFixed: this.cfg.abortFixed,
 			pollSec: this.inst.pollIntervalSec,
+			...(resumeLockAt !== undefined ? { resumeLockAt } : {}),
 		});
 	}
 
@@ -411,6 +560,7 @@ export class DeviceRuntime {
 		}
 		await this.setState("consumption", power);
 
+		let started = false;
 		for (let k = 0; k < res.events.length; k++) {
 			if (this.disposed) {
 				return;
@@ -418,6 +568,7 @@ export class DeviceRuntime {
 			const at = res.times?.[k] ?? this.host.now();
 			switch (res.events[k]) {
 				case "started":
+					started = true;
 					await this.onStarted(at);
 					break;
 				case "running":
@@ -431,21 +582,112 @@ export class DeviceRuntime {
 					break;
 			}
 		}
+		await this.followSettling(started);
 		const inTrailer = this.detector instanceof TrailerFilter && this.detector.inTrailer;
 		if (inTrailer !== this.antiCrease) {
 			this.antiCrease = inTrailer;
 			await this.setState("antiCrease", inTrailer);
 		}
+		this.rebuildIfDue();
 	}
 
-	private record(ev: CaptureEvent, at: number): void {
-		this.recorder?.onEvent(ev, at);
+	/** Remember the start of a lock phase (counters to find its exit later). */
+	private enterSettling(): void {
+		this.wasSettling = true;
+		this.exitBase = this.detector.stats ?? null;
+	}
+
+	/**
+	 * Follow the lock phase of the final phase after a step: its begin writes `settlingUntil` (early end +
+	 * `finalLockSec`), every exit writes 0. The deferred auto-off starts at an exit showing rest or an end (a, b, e);
+	 * after an activity exit (c, d, f, g) it follows the end of the new run, or starts once no start came within
+	 * `finalCheckSec` (or at rest before).
+	 *
+	 * @param started - The step reported a start
+	 */
+	private async followSettling(started: boolean): Promise<void> {
+		const settling = this.detector.settling === true;
+		if (settling && !this.wasSettling) {
+			this.enterSettling();
+			const lockMs = (this.detectorFinal?.finalLockSec ?? 0) * 1000;
+			await this.writeSettling((this.detector.lockAt ?? this.host.now()) + lockMs);
+			return;
+		}
+		if (settling || !this.wasSettling) {
+			return;
+		}
+		this.wasSettling = false;
+		const exit = this.exitTaken();
+		this.exitBase = null;
+		await this.writeSettling(0);
+		const deferred = this.autoOffDeferred;
+		this.autoOffDeferred = false;
+		if (!deferred || started || this.detector.started) {
+			return;
+		}
+		if (exit === "c" || exit === "d" || exit === "f" || exit === "g") {
+			const checkMs = (this.detectorFinal?.finalCheckSec ?? 0) * 1000;
+			this.autoOffWait = { until: this.host.now() + checkMs, restSince: null };
+			return;
+		}
+		await this.startAutoOff();
+	}
+
+	/** Exit of the lock phase that just ended (from the counters of the final phase), or null if unknown. */
+	private exitTaken(): FinalExit | null {
+		const now = this.detector.stats;
+		if (!now) {
+			return null;
+		}
+		return EXITS.find(k => now[k] > (this.exitBase?.[k] ?? 0)) ?? null;
+	}
+
+	/**
+	 * Auto-off after an activity exit without a start: once the check window is over, or at once with a rest proof
+	 * (below `finalRestVal` for `finalRestSec`).
+	 *
+	 * @param power - Power of this step
+	 */
+	private async checkAutoOffWait(power: number): Promise<void> {
+		const wait = this.autoOffWait;
+		if (!wait || this.detector.started) {
+			return;
+		}
+		const now = this.host.now();
+		const restVal = this.detectorFinal?.finalRestVal ?? this.active.standby;
+		const restMs = (this.detectorFinal?.finalRestSec ?? 0) * 1000;
+		wait.restSince = power < restVal ? (wait.restSince ?? now) : null;
+		if (now >= wait.until || (wait.restSince !== null && now - wait.restSince >= restMs)) {
+			this.autoOffWait = null;
+			await this.startAutoOff();
+		}
+	}
+
+	/**
+	 * Write `settlingUntil` when it changes; only while the state exists (final phase on with the values in use).
+	 *
+	 * @param val - End of the lock phase in ms, or 0
+	 */
+	private async writeSettling(val: number): Promise<void> {
+		if (val === this.settlingUntilVal) {
+			return;
+		}
+		this.settlingUntilVal = val;
+		if (finalOn(this.effective)) {
+			await this.setState("settlingUntil", val);
+		}
+	}
+
+	private record(ev: CaptureEvent, at: number, afterFinal?: FinalExit | null): void {
+		this.recorder?.onEvent(ev, at, afterFinal);
 	}
 
 	private async onStarted(at: number): Promise<void> {
 		this.startedAt = at;
-		this.record("s", at);
+		this.record("s", at, this.detector.finalExit ?? null);
 		this.cancelAutoOff();
+		this.autoOffDeferred = false;
+		this.autoOffWait = null;
 		await this.setState("running", true);
 		await this.setState("finished", false);
 		await this.setState("runtime", formatDuration(0));
@@ -483,8 +725,13 @@ export class DeviceRuntime {
 		await this.setState("running", false);
 		await this.setState("finished", true);
 		await this.setState("lastFinished", now);
-		this.afterRun();
-		await this.startAutoOff();
+		if (this.detector.settling === true) {
+			// early end of the final phase: the auto-off waits for the exit of the lock phase
+			this.cancelAutoOff();
+			this.autoOffDeferred = true;
+		} else {
+			await this.startAutoOff();
+		}
 		this.emit("end");
 	}
 
@@ -492,16 +739,8 @@ export class DeviceRuntime {
 		this.record("a", at);
 		await this.setState("running", false);
 		await this.setState("alertRuntime", false);
-		this.afterRun();
 		await this.startAutoOff();
 		this.emit("abort");
-	}
-
-	private afterRun(): void {
-		if (this.rebuildDetectorAfterRun) {
-			this.rebuildDetectorAfterRun = false;
-			this.detector = this.buildDetector();
-		}
 	}
 
 	private emit(ev: RuntimeEvent): void {

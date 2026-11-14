@@ -284,7 +284,8 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 native: { ...cfg },
             });
         }
-        await ensureDeviceObjects(this.objectWriter(), id, cfg, this.adapter.instanceConfig);
+        const override = this.adapter.registry.get(id)?.currentOverride ?? null;
+        await ensureDeviceObjects(this.objectWriter(), id, cfg, this.adapter.instanceConfig, override);
     }
     async readOperations(id) {
         const raw = (await this.adapter.getStateAsync(`${id}.lastOperations`))?.val;

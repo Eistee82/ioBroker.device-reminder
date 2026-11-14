@@ -17,6 +17,9 @@ export class DeviceSync {
             if (deleted) {
                 await this.registry.removeLearningData(deviceId);
             }
+            else {
+                await this.registry.clearSettling(deviceId);
+            }
             if (this.registry.get(deviceId)) {
                 this.registry.remove(deviceId);
                 this.log.info(`Device ${deviceId} removed`);
@@ -30,7 +33,8 @@ export class DeviceSync {
         this.applied.set(deviceId, key);
         const current = this.registry.get(deviceId);
         if (!current) {
-            await ensureDeviceObjects(this.writer, deviceId, cfg, this.getConfig());
+            const override = await this.registry.storedOverride(deviceId, cfg);
+            await ensureDeviceObjects(this.writer, deviceId, cfg, this.getConfig(), override);
             await this.registry.upsert(deviceId, cfg);
             if (this.registry.get(deviceId)) {
                 this.log.info(`Device ${cfg.name} added`);

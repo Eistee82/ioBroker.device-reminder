@@ -1,3 +1,4 @@
+import { finalOn } from "./detector/index.js";
 function t(...texts) {
     const [en, de, ru, pt, nl, fr, it, es, pl, uk, zh] = texts;
     return { en, de, ru, pt, nl, fr, it, es, pl, uk, "zh-cn": zh };
@@ -203,6 +204,16 @@ export const DEVICE_STATES = [
         def: false,
     },
     {
+        id: "settlingUntil",
+        name: t("Lock phase until", "Sperrphase bis", "Фаза блокировки до", "Fase de bloqueio até", "Blokkeerfase tot", "Phase de blocage jusqu'à", "Fase di blocco fino a", "Fase de bloqueo hasta", "Faza blokady do", "Фаза блокування до", "锁定阶段结束时间"),
+        type: "number",
+        role: "date",
+        read: true,
+        write: false,
+        def: 0,
+        when: "final",
+    },
+    {
         id: "learning.optimized",
         name: t("Optimised values active", "Optimierte Werte aktiv", "Оптимизированные значения активны", "Valores otimizados ativos", "Geoptimaliseerde waarden actief", "Valeurs optimisées actives", "Valori ottimizzati attivi", "Valores optimizados activos", "Zoptymalizowane wartości aktywne", "Оптимізовані значення активні", "优化值已启用"),
         type: "boolean",
@@ -284,6 +295,18 @@ export const DEVICE_STATES = [
         when: "historyHtml",
     },
 ];
+export function stateWanted(def, cfg, inst, override) {
+    switch (def.when) {
+        case "historyHtml":
+            return inst.historyHtml;
+        case "phases":
+            return cfg.phases?.enabled === true;
+        case "final":
+            return finalOn({ ...cfg.detection, ...(override ?? {}) });
+        default:
+            return true;
+    }
+}
 export function buildStateCommon(def) {
     const common = {
         name: def.name,

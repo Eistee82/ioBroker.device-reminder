@@ -1,4 +1,4 @@
-import { FinalPhaseFilter } from "./finalPhase.js";
+import { FinalPhaseFilter, finalFloors } from "./finalPhase.js";
 import { LegacyDetector } from "./legacy.js";
 import { TimedDetector } from "./timed.js";
 import { TrailerFilter } from "./trailer.js";
@@ -95,6 +95,17 @@ export function createDetector(s: DetectionSettings, o: DetectorOptions): Detect
 		standby: s.standby,
 		pollSec,
 	});
+}
+
+/**
+ * Values of the final phase the filter works with: 0 replaced by the default, the floors per poll applied
+ * (`finalFloors`). Times in s, levels in the unit of the state.
+ *
+ * @param s - Detection settings
+ * @param pollSec - Poll interval in s
+ */
+export function finalValuesOf(s: DetectionSettings, pollSec: number): Required<FinalSettings> {
+	return finalFloors(finalSettingsOf(s), Math.max(1, pollSec), s.standby);
 }
 
 /**

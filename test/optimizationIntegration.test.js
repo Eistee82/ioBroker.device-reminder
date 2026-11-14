@@ -1,12 +1,14 @@
 import assert from "node:assert";
-import { formatDate } from "../build/lib/deviceRegistry.js";
 import { DeviceSync } from "../build/lib/deviceSync.js";
 import { fill, TEXT } from "../build/lib/dmTexts.js";
 import { emptyStore, saveStore, typeHash } from "../build/lib/runStore.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { memoryFiles } from "./helpers/files.js";
 import { washingMachine } from "./helpers/curves.js";
-import { drain, DRYER, feed, P, registrySetup, WASHER } from "./helpers/devices.js";
+import { Notifier } from "../build/lib/notifier.js";
+import { DeviceRegistry, formatDate } from "../build/lib/deviceRegistry.js";
+import { deviceConfig, drain, DRYER, feed, instanceConfig, P, registrySetup, WASHER } from "./helpers/devices.js";
+import { syntheticRun, WM_FINAL } from "./helpers/final.js";
 import { historyOf } from "./helpers/history.js";
 import { runOf } from "./helpers/programmes.js";
 
@@ -356,6 +358,50 @@ describe("base, effective and active values at runtime", function () {
 		const p = JSON.parse(ctx.host.own("dev.learning.parameters"));
 		assert.deepStrictEqual(Object.keys(p), ["base", "override", "effective", "active"]);
 		assert.deepStrictEqual([p.base.finalMinVal, p.effective.finalMinVal, p.active.finalMinVal], [150, 150, 0]);
+	});
+
+	it("DeviceSync keeps settlingUntil of a final phase that only the stored optimised values switch on", async () => {
+		const files = memoryFiles();
+		const stored = emptyStore("dev", "", typeHash(WASHER), STEP, 1);
+		stored.override = { ...WM_FINAL };
+		await saveStore(files, stored);
+		const host = createFakeHost({ objects: { [P]: "number" } });
+		const inst = instanceConfig();
+		const reg = new DeviceRegistry(host, new Notifier(host, () => inst.recipients), () => inst, files);
+		const made = [];
+		const deleted = [];
+		const writer = {
+			extendObject: async id => made.push(id),
+			setObjectNotExists: async () => {},
+			delObject: async id => deleted.push(id),
+		};
+		const sync = new DeviceSync(reg, writer, () => inst, host.log);
+		await sync.apply("dev", deviceConfig({ autoOptimize: true }));
+		assert.ok(made.includes("dev.settlingUntil"), "created with the stored override");
+		assert.ok(!deleted.includes("dev.settlingUntil"));
+		made.length = 0;
+		const plain = new DeviceSync(
+			new DeviceRegistry(host, new Notifier(host, () => inst.recipients), () => inst, files),
+			writer,
+			() => inst,
+			host.log,
+		);
+		await plain.apply("dev", deviceConfig());
+		assert.ok(
+			deleted.includes("dev.settlingUntil"),
+			"without the automatic optimisation the override does not count",
+		);
+	});
+
+	it("an unusable configuration ends the lock phase: settlingUntil 0, the device stops", async () => {
+		const ctx = await registrySetup({ autoOptimize: false, detection: { ...WASHER, ...WM_FINAL } });
+		await play(ctx, syntheticRun().values.slice(0, syntheticRun().coreEnd + 14));
+		assert.ok(ctx.host.own("dev.settlingUntil") > ctx.host.now());
+		const writer = { extendObject: async () => {}, setObjectNotExists: async () => {}, delObject: async () => {} };
+		const sync = new DeviceSync(ctx.reg, writer, () => ctx.inst, ctx.host.log);
+		await sync.apply("dev", null);
+		assert.strictEqual(ctx.host.own("dev.settlingUntil"), 0);
+		assert.strictEqual(ctx.reg.get("dev"), undefined);
 	});
 });
 

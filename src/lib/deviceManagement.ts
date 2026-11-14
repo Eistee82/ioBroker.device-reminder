@@ -427,7 +427,9 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 				native: { ...cfg },
 			} as ioBroker.Object);
 		}
-		await ensureDeviceObjects(this.objectWriter(), id, cfg, this.adapter.instanceConfig);
+		// a final phase switched on only by the optimisation keeps its states
+		const override = this.adapter.registry.get(id)?.currentOverride ?? null;
+		await ensureDeviceObjects(this.objectWriter(), id, cfg, this.adapter.instanceConfig, override);
 	}
 
 	private async readOperations(id: Id): Promise<Record<string, unknown>[]> {

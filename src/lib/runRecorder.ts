@@ -1,3 +1,4 @@
+import type { FinalExit } from "./detector/types.js";
 import { MAX_PAUSE_MS, MIN_ACTIVE_MS, PAD_AFTER_MS, PAD_BEFORE_MS } from "./learn/runs.js";
 import type { TickCell } from "./learn/ticks.js";
 
@@ -5,6 +6,12 @@ export type { TickCell } from "./learn/ticks.js";
 
 /** Event of the runtime in a capture: start, finish, abort. */
 export type CaptureEvent = "s" | "f" | "a";
+
+/**
+ * One event of a capture: time, event and, only at the first start after a lock phase of the final phase, the
+ * exit of that lock phase (mark `afterFinal`, Spec A.3).
+ */
+export type CaptureEntry = [number, CaptureEvent] | [number, CaptureEvent, FinalExit];
 
 /** Longest capture. */
 export const CAPTURE_MAX_MS = 12 * 60 * 60_000;
@@ -25,8 +32,8 @@ export interface Capture {
 	unitFactor: number;
 	/** One cell per poll. */
 	cells: TickCell[];
-	/** Events of the runtime with their time. */
-	ev: [number, CaptureEvent][];
+	/** Events of the runtime with their time (and the mark `afterFinal`). */
+	ev: CaptureEntry[];
 	/** Whether the time after the end is cut short (restart). */
 	postTruncated: boolean;
 	/**
@@ -209,8 +216,9 @@ export class RunRecorder {
 	 *
 	 * @param ev - Start, finish or abort
 	 * @param now - Time of the event in ms
+	 * @param afterFinal - First start after a lock phase of the final phase: the exit of that lock phase
 	 */
-	public onEvent(ev: CaptureEvent, now: number): void {
+	public onEvent(ev: CaptureEvent, now: number, afterFinal?: FinalExit | null): void {
 		let open = this.open;
 		if (!open) {
 			if (ev !== "s") {
@@ -218,7 +226,7 @@ export class RunRecorder {
 			}
 			open = this.openCapture(now);
 		}
-		open.ev.push([now, ev]);
+		open.ev.push(ev === "s" && afterFinal ? [now, ev, afterFinal] : [now, ev]);
 	}
 
 	/**

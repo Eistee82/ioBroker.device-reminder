@@ -3,7 +3,10 @@ import { ChannelDetector } from "@iobroker/type-detector";
 import { normalizeDeviceConfig, normalizeInstanceConfig } from "../build/lib/config.js";
 import { ensureDeviceObjects } from "../build/lib/deviceObjects.js";
 import { DEVICE_STATES } from "../build/lib/stateDefinitions.js";
-import { WASHER } from "./helpers/devices.js";
+import { deviceConfig, instanceConfig, WASHER } from "./helpers/devices.js";
+import { WM_FINAL } from "./helpers/final.js";
+
+const FIN = { ...WASHER, ...WM_FINAL };
 
 function makeWriter() {
 	const objects = {};
@@ -28,6 +31,30 @@ const cfg = normalizeDeviceConfig({ name: "Waschmaschine", detection: WASHER, po
 const inst = normalizeInstanceConfig({}).config;
 
 describe("deviceObjects", () => {
+	it("creates settlingUntil only with an active final phase, also when only the override has one", async () => {
+		const ids = [];
+		const del = [];
+		const w = {
+			extendObject: async id => ids.push(id),
+			setObjectNotExists: async () => {},
+			delObject: async id => del.push(id),
+		};
+		await ensureDeviceObjects(w, "wm", deviceConfig(), instanceConfig());
+		assert.ok(del.includes("wm.settlingUntil"));
+		ids.length = 0;
+		del.length = 0;
+		await ensureDeviceObjects(w, "wm", deviceConfig({ detection: FIN }), instanceConfig());
+		assert.ok(ids.includes("wm.settlingUntil"));
+		assert.ok(!del.includes("wm.settlingUntil"));
+		ids.length = 0;
+		await ensureDeviceObjects(w, "wm", deviceConfig(), instanceConfig(), { ...WM_FINAL });
+		assert.ok(ids.includes("wm.settlingUntil"), "final phase switched on by the optimisation");
+		ids.length = 0;
+		del.length = 0;
+		await ensureDeviceObjects(w, "wm", deviceConfig({ detection: FIN }), instanceConfig(), { finalMinVal: 0 });
+		assert.ok(del.includes("wm.settlingUntil"), "final phase switched off by the optimisation");
+	});
+
 	it("creates device, channels and states", async () => {
 		const w = makeWriter();
 		await ensureDeviceObjects(w, "waschmaschine", cfg, { ...inst, historyHtml: false });
@@ -35,7 +62,7 @@ describe("deviceObjects", () => {
 		assert.strictEqual(w.objects.waschmaschine.native.powerId, "x.0.power");
 		assert.strictEqual(w.objects["waschmaschine.config"].type, "channel");
 		assert.strictEqual(w.objects["waschmaschine.learning"].type, "channel");
-		for (const def of DEVICE_STATES.filter(d => d.when !== "historyHtml")) {
+		for (const def of DEVICE_STATES.filter(d => d.when !== "historyHtml" && d.when !== "final")) {
 			const obj = w.objects[`waschmaschine.${def.id}`];
 			assert.strictEqual(obj?.type, "state", def.id);
 			assert.strictEqual(obj.common.role, def.role);
@@ -45,12 +72,12 @@ describe("deviceObjects", () => {
 	it("removes lastOperationsHtml when historyHtml is off and creates it when on", async () => {
 		const off = makeWriter();
 		await ensureDeviceObjects(off, "d", cfg, { ...inst, historyHtml: false });
-		assert.deepStrictEqual(off.deleted, ["d.lastOperationsHtml"]);
+		assert.deepStrictEqual(off.deleted, ["d.settlingUntil", "d.lastOperationsHtml"]);
 		assert.strictEqual(off.objects["d.lastOperationsHtml"], undefined);
 
 		const on = makeWriter();
 		await ensureDeviceObjects(on, "d", cfg, { ...inst, historyHtml: true });
-		assert.deepStrictEqual(on.deleted, []);
+		assert.deepStrictEqual(on.deleted, ["d.settlingUntil"]);
 		assert.strictEqual(on.objects["d.lastOperationsHtml"].common.role, "html");
 	});
 

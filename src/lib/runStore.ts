@@ -11,7 +11,7 @@ import type { Layout, RunInfo, TailPart } from "./learn/runs.js";
 import { applyTail, buildLayout, LAYOUT_REV, MAX_PAUSE_MS, median, tailRule } from "./learn/runs.js";
 import type { TickCell, TickSeries } from "./learn/ticks.js";
 import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
-import type { Capture, CaptureEvent } from "./runRecorder.js";
+import type { Capture, CaptureEntry } from "./runRecorder.js";
 import { errorMessage } from "./utils.js";
 
 /** Version of the store format. */
@@ -61,7 +61,7 @@ export interface StoredRun {
 	/** Encoded cells (unit of the state); missing: only the metadata are kept (no room). */
 	data?: string;
 	/** Runtime events with their time. */
-	ev: [number, CaptureEvent][];
+	ev: CaptureEntry[];
 	/** Classification. */
 	label: RunLabel;
 	/** Origin. */

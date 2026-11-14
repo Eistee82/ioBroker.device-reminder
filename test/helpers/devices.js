@@ -109,7 +109,8 @@ export async function play(ctx, values) {
  * Play timed points on a runtime: the clock jumps to every point, a poll runs every `stepMs`.
  *
  * @param {ReturnType<typeof runtimeSetup>} ctx context
- * @param {[number, number][]} points `[ts, value]`, ascending
+ * @param {([number, number] | { ts: number, val: number })[]} points `[ts, value]` or `{ ts, val }` (fixtures),
+ * ascending
  * @param {number} [stepMs] poll interval
  * @param {(ctx: object) => boolean} [stop] stops as soon as it returns true
  * @returns {Promise<number>} index of the next point
@@ -118,10 +119,11 @@ export async function playPoints(ctx, points, stepMs = STEP, stop) {
 	if (points.length === 0) {
 		return 0;
 	}
+	const at = k => (Array.isArray(points[k]) ? points[k] : [points[k].ts, points[k].val]);
 	let i = 0;
-	let nextPoll = points[0][0];
+	let nextPoll = at(0)[0];
 	while (i < points.length) {
-		const [ts, v] = points[i];
+		const [ts, v] = at(i);
 		while (nextPoll <= ts) {
 			await advanceTo(ctx.host, nextPoll);
 			await ctx.rt.tick();

@@ -1,4 +1,4 @@
-import { FinalPhaseFilter } from "./finalPhase.js";
+import { FinalPhaseFilter, finalFloors } from "./finalPhase.js";
 import { LegacyDetector } from "./legacy.js";
 import { TimedDetector } from "./timed.js";
 import { TrailerFilter } from "./trailer.js";
@@ -38,6 +38,9 @@ export function createDetector(s, o) {
         standby: s.standby,
         pollSec,
     });
+}
+export function finalValuesOf(s, pollSec) {
+    return finalFloors(finalSettingsOf(s), Math.max(1, pollSec), s.standby);
 }
 function finalSettingsOf(s) {
     const out = {};

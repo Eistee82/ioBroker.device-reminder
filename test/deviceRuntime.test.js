@@ -1,7 +1,22 @@
 import assert from "node:assert";
 import { renderHistoryHtml } from "../build/lib/historyHtml.js";
 import { washingMachine } from "./helpers/curves.js";
-import { deviceConfig, P as POWER, play, runtimeSetup, SW as SWITCH, STEP, WASHER } from "./helpers/devices.js";
+import { saveStore } from "../build/lib/runStore.js";
+import { createFakeHost } from "./helpers/fakeHost.js";
+import { syntheticRun, WM_FINAL } from "./helpers/final.js";
+import { layoutOf, loadSeries } from "./helpers/fixtures.js";
+import {
+	deviceConfig,
+	feed,
+	P as POWER,
+	play,
+	playPoints,
+	registrySetup,
+	runtimeSetup,
+	SW as SWITCH,
+	STEP,
+	WASHER,
+} from "./helpers/devices.js";
 import { runOf } from "./helpers/programmes.js";
 
 const ID = "washer";
@@ -414,5 +429,195 @@ describe("DeviceRuntime", () => {
 		);
 		ctx.rt.setFinalSuspended(false);
 		assert.strictEqual(ctx.rt.active.finalMinVal, 150);
+	});
+});
+
+const FIN = { ...WASHER, ...WM_FINAL };
+const fill = (v, n) => new Array(n).fill(v);
+const { values: synth, coreEnd: synthEnd } = syntheticRun();
+// up to and including the early end (core end + 13)
+const pre = synth.slice(0, synthEnd + 14);
+const switchWrites = ctx => ctx.host.writes.filter(w => w.id === SWITCH);
+
+describe("runtime with a final phase", function () {
+	this.timeout(600_000);
+	for (const [exit, after, off] of [
+		["a", fill(6, 80), true],
+		["b", fill(0.8, 10), true],
+		["e", fill(20, 280), true],
+		["c", [...fill(2000, 7), ...fill(20, 20)], false],
+		["d", [...fill(20, 245), ...fill(300, 3)], false],
+		["f", fill(20, 40), false],
+		["g", [...fill(300, 12), ...fill(20, 20)], false],
+	]) {
+		it(`AutoOff with 0 minutes ${off ? "switches off after" : "waits for the new run after"} exit ${exit}`, async () => {
+			const noF = exit === "d" || exit === "e" ? { finalActVal: 0, finalActShare: 0 } : {};
+			const ctx = runtimeSetup({
+				cfg: { detection: { ...FIN, ...noF }, switchId: SWITCH, autoOff: true, autoOffMinutes: 0 },
+			});
+			await ctx.rt.init();
+			ctx.rt.onSwitch(true);
+			await play(ctx, pre);
+			assert.deepStrictEqual(switchWrites(ctx), [], "not at the early end");
+			await play(ctx, after);
+			assert.strictEqual(switchWrites(ctx).length, off ? 1 : 0, exit);
+		});
+	}
+	it("AutoOff after an activity exit without a new run switches off after finalCheckSec", async () => {
+		const ctx = runtimeSetup({ cfg: { detection: FIN, switchId: SWITCH, autoOff: true, autoOffMinutes: 0 } });
+		await ctx.rt.init();
+		ctx.rt.onSwitch(true);
+		await play(ctx, [...pre, ...fill(20, 40)]); // exit f, 20 W < startVal 30: no start
+		assert.deepStrictEqual(switchWrites(ctx), []);
+		await play(ctx, fill(20, WM_FINAL.finalCheckSec / 10 + 2));
+		assert.strictEqual(switchWrites(ctx).length, 1);
+		assert.deepStrictEqual(ctx.events, ["washer:start", "washer:end"]);
+	});
+	it("AutoOff after an activity exit without a new run switches off at once with a rest proof", async () => {
+		const ctx = runtimeSetup({ cfg: { detection: FIN, switchId: SWITCH, autoOff: true, autoOffMinutes: 0 } });
+		await ctx.rt.init();
+		ctx.rt.onSwitch(true);
+		await play(ctx, [...pre, ...fill(2000, 7), ...fill(20, 5)]); // exit c, no start
+		assert.strictEqual(ctx.rt.settling, false);
+		assert.deepStrictEqual(switchWrites(ctx), []);
+		await play(ctx, fill(0.8, WM_FINAL.finalRestSec / 10));
+		assert.deepStrictEqual(switchWrites(ctx), [], "rest not proven yet");
+		await play(ctx, fill(0.8, 2));
+		assert.strictEqual(switchWrites(ctx).length, 1);
+		assert.deepStrictEqual(ctx.events, ["washer:start", "washer:end"]);
+	});
+	it("AutoOff after an activity exit with a new run switches off only after that run", async () => {
+		const ctx = runtimeSetup({ cfg: { detection: FIN, switchId: SWITCH, autoOff: true, autoOffMinutes: 0 } });
+		await ctx.rt.init();
+		ctx.rt.onSwitch(true);
+		await play(ctx, [...pre, ...fill(2000, 7), ...synth.slice(0, 300)]); // exit c, new run under way
+		assert.deepStrictEqual(switchWrites(ctx), []);
+		await play(ctx, [...synth.slice(300), ...fill(0.5, 300)]);
+		assert.strictEqual(switchWrites(ctx).length, 1);
+		assert.strictEqual(ctx.events.filter(e => e === "washer:end").length, 2);
+	});
+	it("restart 0–10 min after each early end on washer30d → 0 phantom starts, 0 second ends (P5)", async () => {
+		const W = loadSeries("washer30d");
+		const { L, s } = layoutOf(W);
+		for (const k of [0, 2, 4, 5, 6, 7, 8, 9, 10, 11]) {
+			const r = L.runs[k];
+			for (const m of [0, 1, 2, 3, 5, 10]) {
+				const host = createFakeHost({ objects: [POWER, SWITCH], now: s.t0 + (r.from - 180) * s.stepMs });
+				const a = runtimeSetup({ host, cfg: { detection: FIN } });
+				await a.rt.init();
+				// up to 3 h after the run, but before the next run of the recording (its start is no phantom start)
+				const last = Math.min(r.runEnd + 1080, (L.runs[k + 1]?.from ?? Infinity) - 1);
+				const win = W.filter(p => p.ts >= host.now() && p.ts <= s.t0 + last * s.stepMs);
+				const stop = await playPoints(a, win, 10_000, c => c.events.includes("washer:end"));
+				assert.strictEqual(a.rt.settling, true, `run ${k}: early end`);
+				const cut = win[stop].ts + m * 60_000;
+				await playPoints(
+					a,
+					win.slice(stop).filter(p => p.ts < cut),
+				);
+				assert.deepStrictEqual(a.events, ["washer:start", "washer:end"], `run ${k} +${m}`);
+				a.rt.dispose();
+				const b = runtimeSetup({ host, cfg: { detection: FIN } });
+				await b.rt.init();
+				await playPoints(
+					b,
+					win.filter(p => p.ts >= cut),
+				);
+				assert.deepStrictEqual(b.events, [], `run ${k} restart +${m}: ${b.events}`);
+			}
+		}
+	});
+	it("a run after an early end is an ordinary run with its own messages, operations and back-dated runtime", async () => {
+		const ctx = runtimeSetup({ cfg: { detection: FIN } });
+		await ctx.rt.init();
+		await play(ctx, [...pre, ...fill(2000, 7), ...synth.slice(0, 200)]);
+		assert.deepStrictEqual(ctx.events.slice(0, 3), ["washer:start", "washer:end", "washer:start"]);
+		assert.deepStrictEqual(ctx.messages.map(m => m.text).slice(0, 3), ["Started", "Finished", "Started"]);
+		await play(ctx, synth.slice(200));
+		assert.strictEqual(JSON.parse(ctx.host.own("washer.lastOperations")).length, 2);
+		assert.ok(!ctx.events.some(e => e.includes("resume")));
+	});
+	it("a config change during settling rebuilds nothing until the lock ends (Review Focus 1)", async () => {
+		const ctx = runtimeSetup({ cfg: { detection: FIN } });
+		await ctx.rt.init();
+		await play(ctx, pre);
+		const rev = ctx.rt.detectorRev;
+		ctx.rt.updateConfig(
+			deviceConfig({ endText: "Fertig!", recipients: ["tg"], abort: true, detection: { ...FIN, endCount: 60 } }),
+		);
+		await play(ctx, fill(6, 30));
+		assert.strictEqual(ctx.rt.detectorRev, rev, "not rebuilt while settling");
+		assert.deepStrictEqual(ctx.events, ["washer:start", "washer:end"]);
+		await play(ctx, fill(6, 60));
+		assert.ok(ctx.rt.detectorRev > rev, "rebuilt after the lock");
+		assert.deepStrictEqual(ctx.events, ["washer:start", "washer:end"], "no phantom start, no second end");
+	});
+	it("power state change or disabling while settling clears settlingUntil (Review Focus 2)", async () => {
+		const ctx = await registrySetup({ autoOptimize: false, detection: FIN });
+		await feed(ctx, pre);
+		assert.ok(ctx.host.own("dev.settlingUntil") > ctx.host.now());
+		await ctx.reg.upsert("dev", { ...ctx.cfg, powerId: "plug.1.power" });
+		assert.strictEqual(ctx.host.own("dev.settlingUntil"), 0);
+		const ctx2 = await registrySetup({ autoOptimize: false, detection: FIN });
+		await feed(ctx2, pre);
+		await ctx2.reg.upsert("dev", { ...ctx2.cfg, enabled: false });
+		assert.strictEqual(ctx2.host.own("dev.settlingUntil"), 0);
+	});
+	it("final phase only in the override (switched on by the optimisation): restart 1 min after the early end → no phantom start", async () => {
+		const ctx = await registrySetup({ detection: WASHER });
+		const store = ctx.reg.learningData("dev");
+		store.override = { ...WM_FINAL };
+		store.final = { state: "on", splits: [], suspendedAt: 0 };
+		await ctx.reg.upsert("dev", ctx.cfg); // restore: override applied, settlingUntil created (stateWanted with override)
+		await feed(ctx, pre);
+		assert.ok(
+			ctx.host.own("dev.settlingUntil") > ctx.host.now(),
+			"settlingUntil exists without final values in the base",
+		);
+		await saveStore(ctx.files, store);
+		ctx.reg.disposeAll();
+		ctx.host.tickClock(60_000);
+		const again = await registrySetup({ host: ctx.host, files: ctx.files, detection: WASHER });
+		assert.strictEqual(again.reg.get("dev").settling, true, "lock phase continued after the restart");
+		const n = again.host.ownWrites.length;
+		await feed(again, fill(6, 120));
+		assert.ok(
+			!again.host.ownWrites.slice(n).some(w => w.id === "dev.running" && w.val === true),
+			"no phantom start",
+		);
+		assert.strictEqual(again.reg.get("dev").currentOverride.finalMinVal, 150);
+	});
+	it("an acknowledged run (finished = false) still resumes the lock after a restart", async () => {
+		const now0 = new Date(2026, 0, 5, 12, 0).getTime(); // default clock of createFakeHost
+		const host = createFakeHost({
+			objects: [POWER, SWITCH],
+			own: { "washer.finished": false, "washer.settlingUntil": now0 + 600_000 },
+		});
+		const ctx = runtimeSetup({ host, cfg: { detection: FIN } });
+		await ctx.rt.init();
+		await play(ctx, fill(6, 30));
+		assert.deepStrictEqual(ctx.events, []);
+		assert.strictEqual(ctx.rt.settling, true);
+	});
+	it("settlingUntil far in the future → the lock ends at most finalLockSec after the restart (Review Focus 3)", async () => {
+		const now0 = new Date(2026, 0, 5, 12, 0).getTime(); // default clock of createFakeHost
+		const host = createFakeHost({
+			objects: [POWER, SWITCH],
+			own: { "washer.finished": true, "washer.settlingUntil": now0 + 10 * 3_600_000 },
+		});
+		const ctx = runtimeSetup({ host, cfg: { detection: { ...FIN, finalActVal: 0, finalActShare: 0 } } });
+		await ctx.rt.init();
+		await play(ctx, fill(20, 271));
+		assert.strictEqual(ctx.host.own("washer.settlingUntil"), 0);
+		assert.deepStrictEqual(ctx.events, []);
+	});
+	it("the first start after a lock carries afterFinal in the capture", async () => {
+		const ctx = await registrySetup({ detection: FIN });
+		await feed(ctx, [...pre, ...fill(2000, 7), ...synth.slice(0, 50)]);
+		const pend = ctx.reg.get("dev").runRecorder.snapshot() ?? ctx.reg.learningData("dev").pending;
+		assert.ok(
+			pend.ev.some(e => e[1] === "s" && e[2] === "c"),
+			JSON.stringify(pend.ev),
+		);
 	});
 });

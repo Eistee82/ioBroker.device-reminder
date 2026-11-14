@@ -1,5 +1,5 @@
-import { buildStateCommon, DEVICE_CHANNELS, DEVICE_STATES } from "./stateDefinitions.js";
-export async function ensureDeviceObjects(w, deviceId, cfg, inst) {
+import { buildStateCommon, DEVICE_CHANNELS, DEVICE_STATES, stateWanted } from "./stateDefinitions.js";
+export async function ensureDeviceObjects(w, deviceId, cfg, inst, override) {
     await w.extendObject(deviceId, {
         type: "device",
         common: { name: cfg.name },
@@ -14,7 +14,7 @@ export async function ensureDeviceObjects(w, deviceId, cfg, inst) {
     }
     for (const def of DEVICE_STATES) {
         const id = `${deviceId}.${def.id}`;
-        if (def.when === "historyHtml" && !inst.historyHtml) {
+        if (!stateWanted(def, cfg, inst, override)) {
             await w.delObject(id);
             continue;
         }

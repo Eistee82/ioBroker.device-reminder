@@ -1,5 +1,6 @@
 import type { DeviceConfig, InstanceConfig } from "./config.js";
-import { buildStateCommon, DEVICE_CHANNELS, DEVICE_STATES } from "./stateDefinitions.js";
+import type { DetectionSettings } from "./detector/types.js";
+import { buildStateCommon, DEVICE_CHANNELS, DEVICE_STATES, stateWanted } from "./stateDefinitions.js";
 
 /** Minimal object API needed to create device objects (implemented by the adapter). */
 export interface ObjectWriter {
@@ -12,19 +13,22 @@ export interface ObjectWriter {
 }
 
 /**
- * Create or update the device object with its channels and states.
- * `lastOperationsHtml` exists only if enabled in the instance settings, otherwise it is removed.
+ * Create or update the device object with its channels and states. A state with a condition (`when`) exists only
+ * while it applies, otherwise it is removed: `lastOperationsHtml` if enabled in the instance settings,
+ * `settlingUntil` with an active final phase (also one switched on only by the automatic optimisation).
  *
  * @param w - Object writer
  * @param deviceId - Stable device ID (already sanitized)
  * @param cfg - Device configuration, stored in `native`
  * @param inst - Instance configuration
+ * @param override - Optimised values in use (null or missing: none)
  */
 export async function ensureDeviceObjects(
 	w: ObjectWriter,
 	deviceId: string,
 	cfg: DeviceConfig,
 	inst: InstanceConfig,
+	override?: Partial<DetectionSettings> | null,
 ): Promise<void> {
 	await w.extendObject(deviceId, {
 		type: "device",
@@ -40,7 +44,7 @@ export async function ensureDeviceObjects(
 	}
 	for (const def of DEVICE_STATES) {
 		const id = `${deviceId}.${def.id}`;
-		if (def.when === "historyHtml" && !inst.historyHtml) {
+		if (!stateWanted(def, cfg, inst, override)) {
 			await w.delObject(id);
 			continue;
 		}

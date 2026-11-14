@@ -48,6 +48,8 @@ interface Entry {
 	lastMessage: string;
 	/** Automatic optimisation (null = off). */
 	opt: OptEntry | null;
+	/** The stored optimised values failed the check at load: not used until the optimisation ran again. */
+	holdOverride?: boolean;
 }
 
 interface OptEntry {
@@ -114,6 +116,7 @@ export class DeviceRegistry implements RuntimeListener {
 		const existing = this.devices.get(deviceId);
 		if (cfg.needsReview && !cfg.enabled) {
 			if (existing) {
+				await existing.runtime.dropSettling();
 				this.disposeEntry(existing);
 				this.devices.delete(deviceId);
 			}
@@ -124,14 +127,21 @@ export class DeviceRegistry implements RuntimeListener {
 		}
 		if (existing) {
 			if (existing.runtime.canKeepStateFor(cfg)) {
+				if (!cfg.enabled) {
+					// a disabled device does not continue a lock phase (also not after a restart)
+					await existing.runtime.dropSettling();
+				}
 				const oldBase = existing.runtime.baseDetection;
 				existing.runtime.updateConfig(cfg);
 				await this.reconcileRuntime(existing, oldBase);
 				await this.syncOptimize(deviceId, existing);
+				this.applyStoredState(existing);
 				await this.writeOptStates(deviceId, existing);
 				return;
 			}
 			this.host.log.info(`Device ${cfg.name} reset: power state changed`);
+			// the lock phase belonged to the old sensor
+			await existing.runtime.dropSettling();
 			this.disposeEntry(existing);
 			this.devices.delete(deviceId);
 		}
@@ -162,9 +172,79 @@ export class DeviceRegistry implements RuntimeListener {
 			})),
 		};
 		this.devices.set(deviceId, entry);
-		await runtime.init();
-		await this.host.setOwnState(`${deviceId}.learning.active`, false);
-		await this.syncOptimize(deviceId, entry);
+		// the optimised values and the suspension of the final phase come with the learning data: a lock phase
+		// active before the restart is continued only after they are loaded (no detection step until then)
+		await runtime.init({ restoreLater: true });
+		try {
+			await this.host.setOwnState(`${deviceId}.learning.active`, false);
+			await this.syncOptimize(deviceId, entry);
+		} finally {
+			await runtime.restore({ suspended: this.suspendedOf(entry) });
+		}
+	}
+
+	/**
+	 * Whether the final phase of a device is suspended according to its learning data (undefined: the learning
+	 * data say nothing about it, the runtime keeps its state).
+	 *
+	 * @param entry - Entry
+	 */
+	private suspendedOf(entry: Entry): boolean | undefined {
+		const final = entry.opt?.store.final;
+		return final ? final.state === "suspended" : undefined;
+	}
+
+	/**
+	 * Use the optimised values and the suspension of the final phase of the learning data (also when they were
+	 * changed while the device kept running). The detector is rebuilt between two runs and lock phases.
+	 *
+	 * @param entry - Entry
+	 */
+	private applyStoredState(entry: Entry): void {
+		const store = entry.opt?.store;
+		if (!store) {
+			return;
+		}
+		if (!entry.holdOverride) {
+			entry.runtime.setOverride(store.override);
+		}
+		const suspended = this.suspendedOf(entry);
+		if (suspended !== undefined) {
+			entry.runtime.setFinalSuspended(suspended);
+		}
+	}
+
+	/**
+	 * Optimised values of a device as far as known before it runs (from its learning data), so that the states of
+	 * a final phase switched on only by the optimisation are not removed when the objects are created.
+	 *
+	 * @param deviceId - Device id
+	 * @param cfg - Device configuration
+	 */
+	public async storedOverride(deviceId: string, cfg: DeviceConfig): Promise<Partial<DetectionSettings> | null> {
+		const entry = this.devices.get(deviceId);
+		if (entry) {
+			return entry.runtime.currentOverride;
+		}
+		if (cfg.autoOptimize !== true || !this.files) {
+			return null;
+		}
+		try {
+			// read once more when the device starts: its messages come from there
+			const quiet = { warn: (m: string) => this.host.log.debug(m), debug: (m: string) => this.host.log.debug(m) };
+			return (await loadStore(this.files, deviceId, quiet))?.override ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * End a lock phase of a device for good (its configuration became unusable): `settlingUntil` goes to 0.
+	 *
+	 * @param deviceId - Device id
+	 */
+	public async clearSettling(deviceId: string): Promise<void> {
+		await this.devices.get(deviceId)?.runtime.dropSettling();
 	}
 
 	/**
@@ -737,12 +817,14 @@ export class DeviceRegistry implements RuntimeListener {
 		}
 		const recorder = new RunRecorder(step, unitFactor);
 		entry.opt = { store, recorder };
+		entry.holdOverride = false;
 		entry.runtime.attachRecorder(recorder);
 		if (store.override) {
 			const g = await gate(store, effectiveOf(type, store.override), this.optimizeContext(entry));
 			if (g.ok) {
 				entry.runtime.setOverride(store.override);
 			} else {
+				entry.holdOverride = true;
 				this.host.log.info(`${cfg.name}: optimised values no longer pass all stored runs, checking again`);
 				this.enqueueOptimize(deviceId);
 			}
@@ -1044,6 +1126,7 @@ export class DeviceRegistry implements RuntimeListener {
 			return;
 		}
 		mergeFork(store, fork);
+		entry.holdOverride = false;
 		entry.runtime.setOverride(store.override);
 		await this.saveOpt(entry);
 		await this.writeOptStates(deviceId, entry);

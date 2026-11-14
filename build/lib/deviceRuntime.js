@@ -1,4 +1,4 @@
-import { createDetector, TrailerFilter } from "./detector/index.js";
+import { createDetector, finalOn, finalValuesOf, TrailerFilter } from "./detector/index.js";
 import { renderHistoryHtml } from "./historyHtml.js";
 import { detectionOf, typeHash } from "./runStore.js";
 import { errorMessage, formatDuration, formatTimestamp, parseNumber } from "./utils.js";
@@ -7,6 +7,7 @@ const MAX_OPERATIONS = 14;
 function isTrue(val) {
     return val === true || val === 1 || val === "true" || val === "1";
 }
+const EXITS = ["a", "b", "c", "d", "e", "f", "g"];
 export class DeviceRuntime {
     host;
     deviceId;
@@ -16,7 +17,16 @@ export class DeviceRuntime {
     cfg;
     detector;
     detectorMode = "count";
-    rebuildDetectorAfterRun = false;
+    detectorFinal = null;
+    builds = 0;
+    rebuildPending = false;
+    wasSettling = false;
+    exitBase = null;
+    settlingUntilVal = 0;
+    resumeAt = null;
+    restoring = false;
+    autoOffDeferred = false;
+    autoOffWait = null;
     power = null;
     missingPower = false;
     switchOn = null;
@@ -70,12 +80,25 @@ export class DeviceRuntime {
         this.rebuildDetector();
     }
     rebuildDetector() {
-        if (this.detector.started) {
-            this.rebuildDetectorAfterRun = true;
+        if (this.detector.started || this.detector.settling === true) {
+            this.rebuildPending = true;
         }
         else {
             this.detector = this.buildDetector();
+            this.rebuildPending = false;
         }
+    }
+    rebuildIfDue() {
+        if (this.rebuildPending && !this.detector.started && this.detector.settling !== true) {
+            this.detector = this.buildDetector();
+            this.rebuildPending = false;
+        }
+    }
+    get settling() {
+        return this.detector.settling === true;
+    }
+    get detectorRev() {
+        return this.builds;
     }
     attachRecorder(r) {
         this.recorder = r;
@@ -95,8 +118,12 @@ export class DeviceRuntime {
     get powerMissing() {
         return this.missingPower;
     }
-    async init() {
+    async init(o = {}) {
         this.detector.reset();
+        this.wasSettling = false;
+        this.exitBase = null;
+        this.autoOffDeferred = false;
+        this.autoOffWait = null;
         await this.setState("status", this.inst.statusTexts.off);
         await this.setState("runtime", formatDuration(0));
         await this.setState("runtimeMs", 0);
@@ -106,18 +133,69 @@ export class DeviceRuntime {
         this.runtimeMax = max !== null && max > 0 ? max : 0;
         this.dnd = isTrue(await this.host.getOwnState(this.own("config.doNotDisturb")));
         await this.refreshSwitch();
+        const until = parseNumber(await this.host.getOwnState(this.own("settlingUntil")));
+        this.settlingUntilVal = until ?? 0;
+        this.resumeAt = until !== null && until > 0 ? until : null;
+        this.restoring = o.restoreLater === true;
         const common = await this.host.getForeignObjectCommonType(this.cfg.powerId);
         if (common === null) {
             this.missingPower = true;
             this.host.log.warn(`Power state ${this.cfg.powerId} of device ${this.cfg.name} not found`);
+        }
+        else {
+            this.missingPower = false;
+            const initial = parseNumber(await this.host.getForeignValue(this.cfg.powerId));
+            if (initial !== null) {
+                this.power = initial;
+                await this.setState("consumption", initial);
+            }
+        }
+        if (!this.restoring) {
+            await this.restore();
+        }
+    }
+    async restore(o = {}) {
+        if (o.override !== undefined) {
+            this.override = o.override;
+        }
+        if (o.suspended !== undefined) {
+            this.finalSuspended = o.suspended;
+        }
+        const until = this.resumeAt;
+        this.resumeAt = null;
+        this.restoring = false;
+        const act = this.active;
+        const now = this.host.now();
+        if (until !== null && until > now && finalOn(act) && !this.detector.started && !this.disposed) {
+            const lockMs = finalValuesOf(act, this.inst.pollIntervalSec).finalLockSec * 1000;
+            const lockAt = Math.min(until, now + lockMs) - lockMs;
+            this.detector = this.buildDetector(lockAt);
+            this.rebuildPending = false;
+            this.enterSettling();
+            this.autoOffDeferred = true;
+            await this.writeSettling(lockAt + lockMs);
             return;
         }
-        this.missingPower = false;
-        const initial = parseNumber(await this.host.getForeignValue(this.cfg.powerId));
-        if (initial !== null) {
-            this.power = initial;
-            await this.setState("consumption", initial);
+        if (o.override !== undefined || o.suspended !== undefined) {
+            this.rebuildDetector();
         }
+        if (until !== null) {
+            await this.writeSettling(0);
+        }
+    }
+    async dropSettling() {
+        await this.enqueue(async () => {
+            this.resumeAt = null;
+            if (this.detector.settling === true) {
+                this.detector = this.buildDetector();
+                this.rebuildPending = false;
+            }
+            this.wasSettling = false;
+            this.exitBase = null;
+            this.autoOffDeferred = false;
+            this.autoOffWait = null;
+            await this.writeSettling(0);
+        });
     }
     async onPower(val) {
         const parsed = parseNumber(val);
@@ -132,6 +210,9 @@ export class DeviceRuntime {
             return;
         }
         await this.enqueue(async () => {
+            if (this.restoring) {
+                return;
+            }
             const res = this.detector.feed?.(parsed, this.host.now());
             if (res) {
                 await this.apply(res, parsed);
@@ -173,11 +254,12 @@ export class DeviceRuntime {
     async tick() {
         await this.enqueue(async () => {
             const power = this.power;
-            if (power === null) {
+            if (power === null || this.restoring) {
                 return;
             }
             this.recorder?.sample(power, this.host.now());
             await this.apply(this.detector.tick(power, this.host.now(), { switchOff: this.switchOn === false }), power);
+            await this.checkAutoOffWait(power);
         });
     }
     async resolveText(text) {
@@ -233,13 +315,16 @@ export class DeviceRuntime {
         }
         await this.host.setOwnState(this.own(rel), val);
     }
-    buildDetector() {
+    buildDetector(resumeLockAt) {
         const settings = this.active;
         this.detectorMode = settings.mode;
+        this.detectorFinal = finalOn(settings) ? finalValuesOf(settings, this.inst.pollIntervalSec) : null;
+        this.builds++;
         return createDetector(settings, {
             abort: this.cfg.abort,
             abortFixed: this.cfg.abortFixed,
             pollSec: this.inst.pollIntervalSec,
+            ...(resumeLockAt !== undefined ? { resumeLockAt } : {}),
         });
     }
     enqueue(step) {
@@ -273,6 +358,7 @@ export class DeviceRuntime {
             await this.setState("averageConsumption", res.average);
         }
         await this.setState("consumption", power);
+        let started = false;
         for (let k = 0; k < res.events.length; k++) {
             if (this.disposed) {
                 return;
@@ -280,6 +366,7 @@ export class DeviceRuntime {
             const at = res.times?.[k] ?? this.host.now();
             switch (res.events[k]) {
                 case "started":
+                    started = true;
                     await this.onStarted(at);
                     break;
                 case "running":
@@ -293,19 +380,84 @@ export class DeviceRuntime {
                     break;
             }
         }
+        await this.followSettling(started);
         const inTrailer = this.detector instanceof TrailerFilter && this.detector.inTrailer;
         if (inTrailer !== this.antiCrease) {
             this.antiCrease = inTrailer;
             await this.setState("antiCrease", inTrailer);
         }
+        this.rebuildIfDue();
     }
-    record(ev, at) {
-        this.recorder?.onEvent(ev, at);
+    enterSettling() {
+        this.wasSettling = true;
+        this.exitBase = this.detector.stats ?? null;
+    }
+    async followSettling(started) {
+        const settling = this.detector.settling === true;
+        if (settling && !this.wasSettling) {
+            this.enterSettling();
+            const lockMs = (this.detectorFinal?.finalLockSec ?? 0) * 1000;
+            await this.writeSettling((this.detector.lockAt ?? this.host.now()) + lockMs);
+            return;
+        }
+        if (settling || !this.wasSettling) {
+            return;
+        }
+        this.wasSettling = false;
+        const exit = this.exitTaken();
+        this.exitBase = null;
+        await this.writeSettling(0);
+        const deferred = this.autoOffDeferred;
+        this.autoOffDeferred = false;
+        if (!deferred || started || this.detector.started) {
+            return;
+        }
+        if (exit === "c" || exit === "d" || exit === "f" || exit === "g") {
+            const checkMs = (this.detectorFinal?.finalCheckSec ?? 0) * 1000;
+            this.autoOffWait = { until: this.host.now() + checkMs, restSince: null };
+            return;
+        }
+        await this.startAutoOff();
+    }
+    exitTaken() {
+        const now = this.detector.stats;
+        if (!now) {
+            return null;
+        }
+        return EXITS.find(k => now[k] > (this.exitBase?.[k] ?? 0)) ?? null;
+    }
+    async checkAutoOffWait(power) {
+        const wait = this.autoOffWait;
+        if (!wait || this.detector.started) {
+            return;
+        }
+        const now = this.host.now();
+        const restVal = this.detectorFinal?.finalRestVal ?? this.active.standby;
+        const restMs = (this.detectorFinal?.finalRestSec ?? 0) * 1000;
+        wait.restSince = power < restVal ? (wait.restSince ?? now) : null;
+        if (now >= wait.until || (wait.restSince !== null && now - wait.restSince >= restMs)) {
+            this.autoOffWait = null;
+            await this.startAutoOff();
+        }
+    }
+    async writeSettling(val) {
+        if (val === this.settlingUntilVal) {
+            return;
+        }
+        this.settlingUntilVal = val;
+        if (finalOn(this.effective)) {
+            await this.setState("settlingUntil", val);
+        }
+    }
+    record(ev, at, afterFinal) {
+        this.recorder?.onEvent(ev, at, afterFinal);
     }
     async onStarted(at) {
         this.startedAt = at;
-        this.record("s", at);
+        this.record("s", at, this.detector.finalExit ?? null);
         this.cancelAutoOff();
+        this.autoOffDeferred = false;
+        this.autoOffWait = null;
         await this.setState("running", true);
         await this.setState("finished", false);
         await this.setState("runtime", formatDuration(0));
@@ -341,23 +493,21 @@ export class DeviceRuntime {
         await this.setState("running", false);
         await this.setState("finished", true);
         await this.setState("lastFinished", now);
-        this.afterRun();
-        await this.startAutoOff();
+        if (this.detector.settling === true) {
+            this.cancelAutoOff();
+            this.autoOffDeferred = true;
+        }
+        else {
+            await this.startAutoOff();
+        }
         this.emit("end");
     }
     async onAborted(at) {
         this.record("a", at);
         await this.setState("running", false);
         await this.setState("alertRuntime", false);
-        this.afterRun();
         await this.startAutoOff();
         this.emit("abort");
-    }
-    afterRun() {
-        if (this.rebuildDetectorAfterRun) {
-            this.rebuildDetectorAfterRun = false;
-            this.detector = this.buildDetector();
-        }
     }
     emit(ev) {
         if (this.disposed) {

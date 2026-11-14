@@ -38,6 +38,7 @@ export class DeviceRegistry {
         const existing = this.devices.get(deviceId);
         if (cfg.needsReview && !cfg.enabled) {
             if (existing) {
+                await existing.runtime.dropSettling();
                 this.disposeEntry(existing);
                 this.devices.delete(deviceId);
             }
@@ -46,14 +47,19 @@ export class DeviceRegistry {
         }
         if (existing) {
             if (existing.runtime.canKeepStateFor(cfg)) {
+                if (!cfg.enabled) {
+                    await existing.runtime.dropSettling();
+                }
                 const oldBase = existing.runtime.baseDetection;
                 existing.runtime.updateConfig(cfg);
                 await this.reconcileRuntime(existing, oldBase);
                 await this.syncOptimize(deviceId, existing);
+                this.applyStoredState(existing);
                 await this.writeOptStates(deviceId, existing);
                 return;
             }
             this.host.log.info(`Device ${cfg.name} reset: power state changed`);
+            await existing.runtime.dropSettling();
             this.disposeEntry(existing);
             this.devices.delete(deviceId);
         }
@@ -83,9 +89,50 @@ export class DeviceRegistry {
             })),
         };
         this.devices.set(deviceId, entry);
-        await runtime.init();
-        await this.host.setOwnState(`${deviceId}.learning.active`, false);
-        await this.syncOptimize(deviceId, entry);
+        await runtime.init({ restoreLater: true });
+        try {
+            await this.host.setOwnState(`${deviceId}.learning.active`, false);
+            await this.syncOptimize(deviceId, entry);
+        }
+        finally {
+            await runtime.restore({ suspended: this.suspendedOf(entry) });
+        }
+    }
+    suspendedOf(entry) {
+        const final = entry.opt?.store.final;
+        return final ? final.state === "suspended" : undefined;
+    }
+    applyStoredState(entry) {
+        const store = entry.opt?.store;
+        if (!store) {
+            return;
+        }
+        if (!entry.holdOverride) {
+            entry.runtime.setOverride(store.override);
+        }
+        const suspended = this.suspendedOf(entry);
+        if (suspended !== undefined) {
+            entry.runtime.setFinalSuspended(suspended);
+        }
+    }
+    async storedOverride(deviceId, cfg) {
+        const entry = this.devices.get(deviceId);
+        if (entry) {
+            return entry.runtime.currentOverride;
+        }
+        if (cfg.autoOptimize !== true || !this.files) {
+            return null;
+        }
+        try {
+            const quiet = { warn: (m) => this.host.log.debug(m), debug: (m) => this.host.log.debug(m) };
+            return (await loadStore(this.files, deviceId, quiet))?.override ?? null;
+        }
+        catch {
+            return null;
+        }
+    }
+    async clearSettling(deviceId) {
+        await this.devices.get(deviceId)?.runtime.dropSettling();
     }
     remove(deviceId) {
         const entry = this.devices.get(deviceId);
@@ -492,6 +539,7 @@ export class DeviceRegistry {
         }
         const recorder = new RunRecorder(step, unitFactor);
         entry.opt = { store, recorder };
+        entry.holdOverride = false;
         entry.runtime.attachRecorder(recorder);
         if (store.override) {
             const g = await gate(store, effectiveOf(type, store.override), this.optimizeContext(entry));
@@ -499,6 +547,7 @@ export class DeviceRegistry {
                 entry.runtime.setOverride(store.override);
             }
             else {
+                entry.holdOverride = true;
                 this.host.log.info(`${cfg.name}: optimised values no longer pass all stored runs, checking again`);
                 this.enqueueOptimize(deviceId);
             }
@@ -725,6 +774,7 @@ export class DeviceRegistry {
             return;
         }
         mergeFork(store, fork);
+        entry.holdOverride = false;
         entry.runtime.setOverride(store.override);
         await this.saveOpt(entry);
         await this.writeOptStates(deviceId, entry);

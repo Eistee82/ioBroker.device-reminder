@@ -1,3 +1,7 @@
+import type { DeviceConfig, InstanceConfig } from "./config.js";
+import { finalOn } from "./detector/index.js";
+import type { DetectionSettings } from "./detector/types.js";
+
 /** Definition of one device state, relative to the device object. */
 export interface StateDef {
 	/** State ID below the device (channel prefix with `.`). */
@@ -18,8 +22,11 @@ export interface StateDef {
 	def: ioBroker.StateValue;
 	/** Minimum. */
 	min?: number;
-	/** Condition: `learning` is always created, `historyHtml` only if enabled in the instance settings. */
-	when?: "learning" | "historyHtml";
+	/**
+	 * Condition: `learning` is always created, `historyHtml` only if enabled in the instance settings, `phases` only
+	 * with enabled phases, `final` only with an active final phase (values of the device or optimised values).
+	 */
+	when?: "learning" | "historyHtml" | "phases" | "final";
 }
 
 /**
@@ -500,6 +507,28 @@ export const DEVICE_STATES: StateDef[] = [
 		def: false,
 	},
 	{
+		id: "settlingUntil",
+		name: t(
+			"Lock phase until",
+			"Sperrphase bis",
+			"Фаза блокировки до",
+			"Fase de bloqueio até",
+			"Blokkeerfase tot",
+			"Phase de blocage jusqu'à",
+			"Fase di blocco fino a",
+			"Fase de bloqueo hasta",
+			"Faza blokady do",
+			"Фаза блокування до",
+			"锁定阶段结束时间",
+		),
+		type: "number",
+		role: "date",
+		read: true,
+		write: false,
+		def: 0,
+		when: "final",
+	},
+	{
 		id: "learning.optimized",
 		name: t(
 			"Optimised values active",
@@ -677,6 +706,33 @@ export const DEVICE_STATES: StateDef[] = [
 		when: "historyHtml",
 	},
 ];
+
+/**
+ * Whether a state of the device exists with this configuration (`when`, Spec 7.1). The final phase counts with the
+ * optimised values, so that a final phase switched on only by the automatic optimisation has its states too.
+ *
+ * @param def - State definition
+ * @param cfg - Device configuration
+ * @param inst - Instance configuration
+ * @param override - Optimised values in use (null or missing: none)
+ */
+export function stateWanted(
+	def: StateDef,
+	cfg: DeviceConfig,
+	inst: InstanceConfig,
+	override?: Partial<DetectionSettings> | null,
+): boolean {
+	switch (def.when) {
+		case "historyHtml":
+			return inst.historyHtml;
+		case "phases":
+			return (cfg as { phases?: { enabled?: unknown } }).phases?.enabled === true;
+		case "final":
+			return finalOn({ ...cfg.detection, ...(override ?? {}) });
+		default:
+			return true;
+	}
+}
 
 /**
  * Build the `common` part of a state object.

@@ -120,7 +120,7 @@ export class RunRecorder {
         }
         open.rep?.push(now - open.t0);
     }
-    onEvent(ev, now) {
+    onEvent(ev, now, afterFinal) {
         let open = this.open;
         if (!open) {
             if (ev !== "s") {
@@ -128,7 +128,7 @@ export class RunRecorder {
             }
             open = this.openCapture(now);
         }
-        open.ev.push([now, ev]);
+        open.ev.push(ev === "s" && afterFinal ? [now, ev, afterFinal] : [now, ev]);
     }
     closeIfDue(now, endVal) {
         const open = this.open;
