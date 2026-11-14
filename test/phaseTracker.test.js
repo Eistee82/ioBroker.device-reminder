@@ -248,6 +248,12 @@ describe("phase model (Spec A.4)", () => {
 				...BOILER_PHASES,
 				phases: [{ ...BOILER_PHASES.phases[3], trigger: { confirm: ["oven"], confirmSec: 10, tailSec: 60 } }],
 			},
+			{ ...WM_PHASES, v: 2 },
+			{ ...WM_PHASES, scope: "always" },
+			{ ...WM_PHASES, bands: [] },
+			{ ...WM_PHASES, bands: [{ ...WM_PHASES.bands[0], id: "idle" }, ...WM_PHASES.bands.slice(1)] },
+			{ ...WM_PHASES, bands: [WM_PHASES.bands[0], { ...WM_PHASES.bands[1], id: "wash" }, WM_PHASES.bands[2]] },
+			{ ...WM_PHASES, phases: { p1: WM_PHASES.phases[0] } },
 			"x",
 		];
 		for (const m of bad) {
@@ -258,6 +264,15 @@ describe("phase model (Spec A.4)", () => {
 		}
 		assert.strictEqual(normalizePhases(undefined, w, "D"), undefined);
 		assert.deepStrictEqual(w, [], "no phases: no warning");
+		// a fault that is not a reason of the model is not hidden behind a warning
+		const broken = {
+			...WM_PHASES,
+			get bands() {
+				throw new RangeError("read failed");
+			},
+		};
+		assert.throws(() => normalizePhases(broken, w, "D"), RangeError);
+		assert.deepStrictEqual(w, []);
 	});
 	it("the device config keeps a usable model and drops one that cannot be used", () => {
 		const base = { name: "WM", powerId: "x.power", detection: { ...WM_312_LIKE } };
