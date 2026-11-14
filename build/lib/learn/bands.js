@@ -12,6 +12,7 @@ const HOLD_MIN_N = 30;
 const SUSPECT_MIN_SEC = 600;
 const SUSPECT_FACTOR = 5;
 const CHANGE_SHARE = 0.5;
+const ALTERNATE_SHARE = 0.25;
 export const DEFAULT_BAND_OPTIONS = { mode: "median60", dipSec: 60 };
 function lowerBound(points, ts) {
     let lo = 0;
@@ -298,7 +299,17 @@ function changeWithin(st, k) {
     const side = rare === k ? 1 : 0;
     const n = count(rare);
     const direct = st.direct[rare][side];
-    return (n > 0 && !recurring(st, rare) && direct >= CHANGE_SHARE * n && st.enclosed[rare][side] < CHANGE_SHARE * direct);
+    if (n === 0 || st.enclosed[rare][side] >= CHANGE_SHARE * direct) {
+        return false;
+    }
+    const lowDirect = st.direct[k][1];
+    const highDirect = st.direct[k + 1][0];
+    const mutual = lowDirect >= CHANGE_SHARE * count(k) && highDirect >= CHANGE_SHARE * count(k + 1);
+    const turns = st.enclosed[k][1] + st.enclosed[k + 1][0];
+    if (mutual && turns >= ALTERNATE_SHARE * Math.min(lowDirect, highDirect)) {
+        return true;
+    }
+    return !recurring(st, rare) && direct >= CHANGE_SHARE * n;
 }
 export function learnBands(units, runLimit, opts) {
     if (!(runLimit > 0)) {

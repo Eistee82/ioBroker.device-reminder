@@ -53,6 +53,28 @@ describe("base bands and hold time profile (Spec B.1a)", () => {
 		assert.ok(top.min > 290 && top.segments >= 9, JSON.stringify(top));
 		assert.ok(suspectLimitOf(bb, 254) > 52.2 * 60, String(suspectLimitOf(bb, 254)));
 	});
+	it("boiler: the burner stages that go back and forth are one band; no real hold is suspicious, also for a left-out day", () => {
+		const D = days(loadSeries("boiler4d"));
+		const opts = { mode: "raw", dipSec: 5 };
+		for (let i = -1; i < D.length; i++) {
+			const bb = baseBandsOf(
+				D.filter((_, j) => j !== i),
+				35,
+				opts,
+			);
+			const shape = JSON.stringify(bb.bands.map(x => [x.min, x.max]));
+			assert.strictEqual(bandOf(bb, 177).id, bandOf(bb, 265).id, `burner 177–265 W in one band: ${shape}`);
+			assert.ok(bandOf(bb, 300).id !== bandOf(bb, 265).id, `ignition peak stays apart: ${shape}`);
+			assert.ok(bandOf(bb, 87).id !== bandOf(bb, 177).id, `start/after-run stays apart: ${shape}`);
+			for (const d of i < 0 ? D : [D[i]]) {
+				d.points.forEach((p, j) => {
+					const lim = suspectLimitOf(bb, p.val);
+					const hold = j + 1 < d.points.length ? (d.points[j + 1].ts - p.ts) / 1000 : 0;
+					assert.ok(lim === null || hold <= lim, `real hold of ${hold} s at ${p.val} W over ${lim} s`);
+				});
+			}
+		}
+	});
 	it("kW state: the same bands divided by 1000 (Review Focus 4)", () => {
 		const w = units(W);
 		const kw = units(asKw(W), 1000);

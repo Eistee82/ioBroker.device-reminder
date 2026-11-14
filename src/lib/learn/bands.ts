@@ -29,6 +29,8 @@ const SUSPECT_MIN_SEC = 600;
 const SUSPECT_FACTOR = 5;
 /** Share of the own segments of the rarer of two neighbouring bands that border on the other band: one band. */
 const CHANGE_SHARE = 0.5;
+/** Share of the contacts of two neighbouring bands with a back-and-forth change (a-b-a or b-a-b): one band. */
+const ALTERNATE_SHARE = 0.25;
 
 /** Stored values of one run or one day section. */
 export interface Unit {
@@ -515,9 +517,14 @@ function recurring(st: BandStats, k: number): boolean {
 }
 
 /**
- * Whether the bands k and k+1 change into each other within a block: most own segments of the rarer
- * band (that does not recur on its own) border directly on the other band, and it is not an excursion
- * of the other band (the other band on both sides).
+ * Whether the bands k and k+1 change into each other within a block. The rarer band must not be an
+ * excursion of the other band (the other band on both sides in at least half of its contacts), and
+ * either
+ * - the rarer band does not recur on its own and most of its own segments border directly on the
+ *   other band, or
+ * - both bands border on each other with most of their own segments and the values go back and forth
+ *   (a-b-a or b-a-b in at least a quarter of the contacts; boiler: burner stages 177/249 W are one
+ *   band, while the short ignition peak before the burner and start/after-run below it stay apart).
  *
  * @param st - Statistics
  * @param k - Lower band of the pair
@@ -528,9 +535,17 @@ function changeWithin(st: BandStats, k: number): boolean {
 	const side = rare === k ? 1 : 0;
 	const n = count(rare);
 	const direct = st.direct[rare][side];
-	return (
-		n > 0 && !recurring(st, rare) && direct >= CHANGE_SHARE * n && st.enclosed[rare][side] < CHANGE_SHARE * direct
-	);
+	if (n === 0 || st.enclosed[rare][side] >= CHANGE_SHARE * direct) {
+		return false;
+	}
+	const lowDirect = st.direct[k][1];
+	const highDirect = st.direct[k + 1][0];
+	const mutual = lowDirect >= CHANGE_SHARE * count(k) && highDirect >= CHANGE_SHARE * count(k + 1);
+	const turns = st.enclosed[k][1] + st.enclosed[k + 1][0];
+	if (mutual && turns >= ALTERNATE_SHARE * Math.min(lowDirect, highDirect)) {
+		return true;
+	}
+	return !recurring(st, rare) && direct >= CHANGE_SHARE * n;
 }
 
 /**
