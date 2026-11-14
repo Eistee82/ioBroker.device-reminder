@@ -1,5 +1,6 @@
 import { FINAL_KEYS } from "./detector/types.js";
 import { defaultInstance, fixedTextState, kindFromInstance } from "./messenger/adapters.js";
+import { normalizePhases } from "./phases/model.js";
 import { detectionOf } from "./runStore.js";
 import { parseNumber } from "./utils.js";
 export const TRAILER_BOUNDS = {
@@ -525,6 +526,10 @@ export function normalizeDeviceConfig(native, legacyTypes) {
     }
     if (bool(src.learned, false)) {
         config.learned = true;
+    }
+    const phases = normalizePhases(src.phases, warnings, name);
+    if (phases) {
+        config.phases = phases;
     }
     if (needsReview) {
         config.needsReview = true;

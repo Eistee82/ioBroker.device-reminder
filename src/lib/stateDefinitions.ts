@@ -726,7 +726,7 @@ export function stateWanted(
 		case "historyHtml":
 			return inst.historyHtml;
 		case "phases":
-			return (cfg as { phases?: { enabled?: unknown } }).phases?.enabled === true;
+			return cfg.phases?.enabled === true;
 		case "final":
 			return finalOn({ ...cfg.detection, ...(override ?? {}) });
 		default:

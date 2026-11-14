@@ -2,6 +2,8 @@ import { FINAL_KEYS } from "./detector/types.js";
 import type { DetectionMode, DetectionSettings, FinalKey, FinalSettings } from "./detector/types.js";
 import type { DeviceTypeConfig } from "./legacyTypes.js";
 import { defaultInstance, fixedTextState, kindFromInstance } from "./messenger/adapters.js";
+import { normalizePhases } from "./phases/model.js";
+import type { PhaseModel } from "./phases/model.js";
 import { detectionOf } from "./runStore.js";
 import { parseNumber } from "./utils.js";
 
@@ -408,6 +410,8 @@ export interface DeviceConfig {
 	autoOptimize?: boolean;
 	/** Report changes of the automatic optimisation as a message (set only when on). */
 	optimizeNotify?: boolean;
+	/** Phase model (missing = phases off; set only when the stored model can be used). */
+	phases?: PhaseModel;
 }
 
 const MESSENGER_KINDS: readonly MessengerKind[] = [
@@ -847,6 +851,10 @@ export function normalizeDeviceConfig(
 	}
 	if (bool(src.learned, false)) {
 		config.learned = true;
+	}
+	const phases = normalizePhases(src.phases, warnings, name);
+	if (phases) {
+		config.phases = phases;
 	}
 	if (needsReview) {
 		config.needsReview = true;

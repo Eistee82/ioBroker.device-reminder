@@ -265,5 +265,10 @@
 	"finalCheckSec": "Final phase: check window (s)",
 	"finalCheckSecTooltip": "Time after an early end in which the final band decides whether a new run started. 0 = 30 minutes.",
 	"finalLockSec": "Final phase: lock time (s)",
-	"finalLockSecTooltip": "Longest lock phase after an early end (600 to 14400). 0 = 4 hours."
+	"finalLockSecTooltip": "Longest lock phase after an early end (600 to 14400). 0 = 4 hours.",
+	"phase_antiCrease": "Anti-crease",
+	"phase_afterRun": "After the run",
+	"phase_rest": "Rest",
+	"phase_unknown": "Unknown",
+	"phase_neutral": "Level {n} · ≈ {w} W · {min}–{max} min"
 }
