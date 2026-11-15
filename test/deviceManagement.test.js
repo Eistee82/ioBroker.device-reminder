@@ -1238,7 +1238,7 @@ describe("deviceManagement", () => {
 			it("lists every run with its check; sparse w04 marked, use column defaults to auto", async () => {
 				const { action } = await open([{ source: "history", instance: "history.0" }]);
 				const rows = action.forms[1].options.data.runs;
-				assert.ok(rows.length >= 12, `${rows.length} rows`);
+				assert.strictEqual(rows.length, 14, `${rows.length} rows`);
 				assert.ok(rows.every(r => r.use === "auto"));
 				assert.ok(rows.some(r => /sparse|gestört/i.test(r.check)));
 				assert.ok(
