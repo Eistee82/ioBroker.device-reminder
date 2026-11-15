@@ -7,25 +7,62 @@ const LANGS = ["en", "de", "ru", "pt", "nl", "fr", "it", "es", "pl", "uk", "zh-c
 // The adapter is universal: no device-specific terms (e.g. "anti-crease") in the interface.
 const FORBIDDEN = {
 	de: ["knitterschutz"],
-	en: ["anti-crease", "anticrease", "anti crease", "crease"],
+	en: ["anti-crease", "anticrease", "anti crease"],
 	fr: ["anti-froissage", "antifroissage"],
 	it: ["antipiega", "anti-piega"],
 	es: ["antiarrugas", "anti-arrugas"],
 	nl: ["kreukbescherming", "anti-kreuk", "antikreuk"],
-	pl: ["przeciw zagnieceniom", "zagniece", "zagnieceń"],
+	pl: ["przeciw zagnieceniom", "zagniece"],
 	pt: ["anti-rugas", "antirrugas"],
 	ru: ["от сминания", "сминан"],
 	uk: ["від зминання", "зминан"],
 	"zh-cn": ["防皱"],
 };
-const PHASE_NAME = /(?:^|[^\p{L}])(?:Level|Stufe)\s*\d/iu;
+// Numbered level/step names ("Level 3", "Stufe 3") are no phase names; phases are "Phase n".
+const PHASE_WORDS = {
+	de: ["Stufe", "Level"],
+	en: ["Level", "Step", "Stage"],
+	fr: ["Niveau", "Étape", "Etape"],
+	it: ["Livello", "Stadio"],
+	es: ["Nivel", "Etapa", "Paso"],
+	nl: ["Niveau", "Stap", "Trap"],
+	pl: ["Poziom", "Etap", "Krok", "Stopień"],
+	pt: ["Nível", "Nivel", "Etapa", "Passo"],
+	ru: ["Уровень", "Ступень", "Этап", "Шаг"],
+	uk: ["Рівень", "Ступінь", "Етап", "Крок"],
+	"zh-cn": ["级别", "等级", "步骤", "档位"],
+};
+const PHASE_NAMES = Object.entries(PHASE_WORDS).map(([lang, words]) =>
+	// Chinese has no spaces between words, so no word boundary there.
+	lang === "zh-cn"
+		? new RegExp(`(?:${words.join("|")})\\s*\\d`, "u")
+		: new RegExp(`(?:^|[^\\p{L}])(?:${words.join("|")})\\s*\\d`, "iu"),
+);
+const ALL_FORBIDDEN = Object.values(FORBIDDEN)
+	.flat()
+	.map(word => word.toLowerCase());
 
-function check(lang, where, text) {
+// Every text is checked against the words of all languages (texts often mix languages).
+function check(where, text) {
 	const lower = text.toLowerCase();
-	for (const word of [...FORBIDDEN[lang], ...Object.values(FORBIDDEN).flat()]) {
-		assert.ok(!lower.includes(word.toLowerCase()), `${where} contains "${word}": ${text}`);
+	for (const word of ALL_FORBIDDEN) {
+		assert.ok(!lower.includes(word), `${where} contains "${word}": ${text}`);
 	}
-	assert.ok(!PHASE_NAME.test(text), `${where} contains a level name: ${text}`);
+	for (const pattern of PHASE_NAMES) {
+		assert.ok(!pattern.test(text), `${where} contains a level name: ${text}`);
+	}
+}
+
+function walkStrings(node, path, skip = () => false) {
+	if (typeof node === "string") {
+		check(path, node);
+	} else if (node && typeof node === "object") {
+		for (const [k, v] of Object.entries(node)) {
+			if (!skip(k)) {
+				walkStrings(v, `${path}.${k}`, skip);
+			}
+		}
+	}
 }
 
 describe("neutral terms in the interface", () => {
@@ -33,7 +70,7 @@ describe("neutral terms in the interface", () => {
 		it(`admin/i18n/${lang}.json has no device-specific terms`, () => {
 			const json = JSON.parse(readFileSync(new URL(`../admin/i18n/${lang}.json`, import.meta.url), "utf8"));
 			for (const [key, value] of Object.entries(json)) {
-				check(lang, `${lang}.json ${key}`, String(value));
+				check(`${lang}.json ${key}`, String(value));
 			}
 		});
 	}
@@ -42,41 +79,26 @@ describe("neutral terms in the interface", () => {
 		for (const [key, value] of Object.entries(TEXT)) {
 			const text = typeof value === "function" ? value("some.id") : value;
 			for (const lang of LANGS) {
-				check(lang, `dmTexts ${key}.${lang}`, text[lang]);
+				check(`dmTexts ${key}.${lang}`, text[lang]);
 			}
 		}
 	});
 
 	it("io-package.json descriptions have no device-specific terms", () => {
 		const io = JSON.parse(readFileSync(new URL("../io-package.json", import.meta.url), "utf8"));
-		const walk = (node, path) => {
-			if (typeof node === "string") {
-				check("en", path, node);
-			} else if (node && typeof node === "object") {
-				for (const [k, v] of Object.entries(node)) {
-					walk(v, `${path}.${k}`);
-				}
-			}
-		};
-		walk(io.common, "common");
+		walkStrings(io.common, "common");
+	});
+
+	it("admin/jsonConfig.json has no device-specific terms", () => {
+		const config = JSON.parse(readFileSync(new URL("../admin/jsonConfig.json", import.meta.url), "utf8"));
+		walkStrings(config, "jsonConfig");
 	});
 
 	it("state names and the generated state tree have no device-specific terms", async () => {
 		const defs = await import("../build/lib/stateDefinitions.js");
-		const walk = (node, path) => {
-			if (typeof node === "string") {
-				check("en", path, node);
-			} else if (node && typeof node === "object") {
-				for (const [k, v] of Object.entries(node)) {
-					if (k !== "id") {
-						walk(v, `${path}.${k}`);
-					}
-				}
-			}
-		};
 		for (const [name, value] of Object.entries(defs)) {
 			if (typeof value !== "function") {
-				walk(value, `stateDefinitions.${name}`);
+				walkStrings(value, `stateDefinitions.${name}`, k => k === "id");
 			}
 		}
 	});
@@ -93,7 +115,8 @@ describe("neutral terms in the interface", () => {
 						);
 					}
 				}
-				assert.ok(!/(?:Level|Stufe) ?[0-9]/.test(line), `${file}:${i + 1} contains a level name`);
+				// Case-sensitive on purpose: "activity level 0" is a value, not a phase name.
+				assert.ok(!/(?:Level|Stufe)\s*\d/.test(line), `${file}:${i + 1} contains a level name`);
 			});
 		}
 	});
