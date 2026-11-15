@@ -12,7 +12,12 @@ function read(rel) {
 }
 
 /** Terms both documentation languages have to mention (Spec 7.5). */
-const TERMS = [
+const TERMS = {
+	de: ["Startverzögerung", "Restrisiko", "8 Läufe", "10 zugelassenen Läufe", "2 Läufe je Programmgruppe"],
+	en: ["Start delay", "Remaining risk", "8 runs", "10 admitted runs", "2 runs per programme group"],
+};
+
+const COMMON_TERMS = [
 	"keepCurrentLevel",
 	"settlingUntil",
 	"learning.parameters",
@@ -27,7 +32,7 @@ describe("documentation completeness", () => {
 	for (const lang of ["en", "de"]) {
 		it(`${lang} documentation mentions every required term`, () => {
 			const text = read(`docs/${lang}/README.md`);
-			for (const term of TERMS) {
+			for (const term of [...COMMON_TERMS, ...TERMS[lang]]) {
 				assert.ok(text.includes(term), `${lang}: ${term} missing`);
 			}
 		});

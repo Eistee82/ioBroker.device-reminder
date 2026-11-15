@@ -3650,7 +3650,8 @@ Die Tasks 4–25 haben ihre Doku- und Changelog-Anteile schon im eigenen Commit 
 - [x] **Step 5: Commit** `docs: templates, phases, final phase, run check and migration notes`
 
 **Umsetzungsnotizen (Task 26):**
-- Der Gesamtabgleich fand in de/en nur drei Lücken: Feldbereiche der Schlussphase (Spec A.2 „Bereich“), „nur angeboten, wo die Daten trennen und ein Nachlauf existiert“ und das Restrisiko „erstes Auftreten eines unbekannten Programms“. Alle drei stehen jetzt im Abschnitt „Schlussphase“ / „Final phase“, dazu `keepCurrentLevel` im Anlern-Abschnitt und der Satz „das Anlernen im Dialog folgt“ ist durch einen Verweis auf den Anlern-Dialog ersetzt.
+- Abweichung vom Plan: Das „neue Kapitel Phasen“ ist als Unterkapitel von §8 umgesetzt (stabile §-Nummern); README.md blieb unverändert, weil der Changelog schon passt (6 Zeilen).
+- Der Gesamtabgleich fand in de/en vier Lücken (die vierte: die Startverzögerung nach dem Ausräumen, im Review nachgetragen): Feldbereiche der Schlussphase (Spec A.2 „Bereich“), „nur angeboten, wo die Daten trennen und ein Nachlauf existiert“ und das Restrisiko „erstes Auftreten eines unbekannten Programms“. Alle drei stehen jetzt im Abschnitt „Schlussphase“ / „Final phase“, dazu `keepCurrentLevel` im Anlern-Abschnitt und der Satz „das Anlernen im Dialog folgt“ ist durch einen Verweis auf den Anlern-Dialog ersetzt.
 - „Phasen“ bleibt ein Unterkapitel von §8 (Entscheidung aus Task 20, damit die §-Nummern stabil bleiben).
 - Release-Notes: Typen → Vorlagen/Archiv, neue Zeilen zu Werten im Gerät, Phasen/Schlussphase, Laufprüfung, Optimierung; Altbegriffe „device type“ bereinigt.
 - Changelog: schon in Task 4–25 laufend umformuliert, weiterhin genau 6 Zeilen; keine Änderung nötig.
