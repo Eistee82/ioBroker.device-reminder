@@ -20,6 +20,8 @@ import { FINAL_KEYS } from "../build/lib/detector/types.js";
 import { recordingChecks } from "../build/lib/learning.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import {
+	afterRunChanged,
+	afterRunData,
 	buildLearnSchema,
 	changedValues,
 	oldValuesOf,
@@ -30,6 +32,7 @@ import {
 	parseLearnForm,
 	ReminderDeviceManagement,
 	suggestionOf,
+	trailerValuesOf,
 } from "../build/lib/deviceManagement.js";
 import { ensureDeviceObjects } from "../build/lib/deviceObjects.js";
 import * as I18n from "@iobroker/adapter-core/i18n";
@@ -1207,22 +1210,84 @@ describe("deviceManagement", () => {
 				startDurationSec: 1,
 				endDurationSec: 1,
 			};
-			const plainType = parseLearnForm({ ...form, trailerBurstSec: 0, trailerGapSec: 40 }).values;
-			assert.ok(!("trailerBurstSec" in plainType) && !("trailerGapSec" in plainType), "off: no trailer fields");
-			const withFilter = parseLearnForm({
-				...form,
-				trailerBurstSec: "45",
+			// the answer never carries the after-run filter: its values come from the suggestion
+			const parsed = parseLearnForm({ ...form, trailerBurstSec: 45, trailerGapSec: 40 }).values;
+			assert.ok(!("trailerBurstSec" in parsed) && !("trailerGapSec" in parsed), "not read from the answer");
+			assert.deepStrictEqual(trailerValuesOf({ trailerBurstSec: 0, trailerGapSec: 40 }), {}, "off: 3.1.2");
+			const suggested = { trailerBurstSec: 45, trailerGapSec: 40, trailerMaxSec: 7200 };
+			assert.deepStrictEqual(trailerValuesOf(suggested), {
+				trailerBurstSec: 45,
 				trailerGapSec: 40,
 				trailerAfterSec: 0,
 				trailerBlockVal: 0,
 				trailerMaxSec: 7200,
-			}).values;
+			});
+			// before | new in "Details", read-only, only when the device or the suggestion uses the filter
+			const plain = { mode: "count", trailerGapSec: 99 };
+			assert.deepStrictEqual(afterRunData(plain, {}), {});
+			assert.strictEqual(afterRunChanged(plain, {}), undefined);
+			assert.strictEqual(buildLearnSchema({}).items.details?.items.afterRun_new_trailerBurstSec, undefined);
+			const next = trailerValuesOf(suggested);
+			const changed = afterRunChanged(plain, next);
+			assert.deepStrictEqual([...changed], ["trailerBurstSec", "trailerGapSec", "trailerMaxSec"]);
+			const data = afterRunData(plain, next, "W");
 			assert.deepStrictEqual(
-				[withFilter.trailerBurstSec, withFilter.trailerGapSec, withFilter.trailerMaxSec],
-				[45, 40, 7200],
+				[data.afterRun_old_trailerGapSec, data.afterRun_new_trailerGapSec, data.afterRun_new_trailerBlockVal],
+				["0 s", "40 s", "0 W"],
+				"an old value of a filter that is off counts as 0",
 			);
-			assert.ok(parseLearnForm({ ...form, trailerBurstSec: 45, trailerGapSec: -1 }).error);
-			assert.ok(parseLearnForm({ ...form, trailerBurstSec: -1 }).error);
+			const rows = buildLearnSchema({ afterRun: changed }).items.details.items;
+			for (const key of [
+				"trailerBurstSec",
+				"trailerGapSec",
+				"trailerAfterSec",
+				"trailerBlockVal",
+				"trailerMaxSec",
+			]) {
+				assert.ok(rows[`afterRun_old_${key}`].disabled && rows[`afterRun_new_${key}`].disabled, key);
+			}
+			assert.match(rows.afterRun_lbl_trailerBurstSec.text.en, /^≠ After-run: longest burst$/);
+			assert.doesNotMatch(rows.afterRun_lbl_trailerAfterSec.text.en, /≠/);
+			assert.deepStrictEqual([...afterRunChanged({ ...plain, ...next }, next)], [], "unchanged");
+		});
+
+		it("saves the after-run filter of the suggestion when the answer holds only the fields of the form", async () => {
+			const ctx = setup();
+			await addDevice(ctx, "trockner");
+			const suggestion = {
+				thresholds: { startVal: 20, endVal: 3, standby: 1, startCount: 2, endCount: 4 },
+				startDurationSec: 1,
+				endDurationSec: 1,
+				durationSec: 3600,
+				samples: 100,
+				pauseHoldSec: 0,
+				pauseUntilSec: 0,
+				pauseBelowVal: 0,
+				trailerBurstSec: 45,
+				trailerGapSec: 40,
+				trailerMaxSec: 7200,
+			};
+			const fields = [
+				"mode",
+				"startVal",
+				"endVal",
+				"standby",
+				"startCount",
+				"endCount",
+				"startDurationSec",
+			].concat(["endDurationSec", "pauseHoldSec", "pauseUntilSec", "pauseBelowVal"]);
+			const action = fakeAction({
+				// like a form that returns only its fields: the data keys without a field are left out
+				forms: [(schema, options) => Object.fromEntries(fields.map(k => [k, options.data[k]]))],
+			});
+			await load(ctx);
+			await ctx.dm.applyLearned("trockner", suggestion, action);
+			const d = ctx.adapter.objects.get(`${NS}.trockner`).native.detection;
+			assert.deepStrictEqual([d.trailerBurstSec, d.trailerGapSec, d.trailerMaxSec], [45, 40, 7200]);
+			const { schema, options } = action.forms[0];
+			assert.strictEqual(schema.items.trailerBurstSec, undefined, "no field of its own");
+			assert.strictEqual(options.data.afterRun_new_trailerBurstSec, "45 s");
+			assert.ok(schema.items.details.items.afterRun_old_trailerBurstSec.disabled, "before | new in Details");
 		});
 
 		it("records a new run when chosen instead of the history", async () => {
@@ -1300,6 +1365,16 @@ describe("deviceManagement", () => {
 		describe("learning dialog with the run check (Spec B.7)", function () {
 			this.timeout(600_000);
 			const WPTS = loadSeries("washer30d");
+			// the poll grid of the loaded history starts at "now - 30 days": a clock that runs on while a test learns
+			// twice (slow under coverage) would shift the grid and with it the learned values between the two dialogs
+			const realNow = Date.now;
+			beforeEach(() => {
+				const now = realNow();
+				Date.now = () => now;
+			});
+			afterEach(() => {
+				Date.now = realNow;
+			});
 
 			async function open(answers, cfg = {}) {
 				const ctx = setup({ files: memoryFiles() });
@@ -1499,13 +1574,18 @@ describe("deviceManagement", () => {
 			});
 
 			it("finished from standby: no final phase, the phases are still saved and shown; decisions are stored", async () => {
-				const { ctx } = await open([
+				const { ctx, action } = await open([
 					{ source: "history", instance: "history.0", reviewRuns: true },
 					{ runs: [{ use: "exclude" }] },
 					{ finishAt: "standby" },
 				]);
 				const native = ctx.adapter.objects.get(`${NS}.wm`).native;
 				assert.ok(!native.detection.finalMinVal, "no final phase");
+				// the answers above hold only fields of the form: the after-run filter comes from the suggestion
+				const shown = action.forms.at(-1).options.data;
+				const burst = native.detection.trailerBurstSec ?? 0;
+				assert.strictEqual(shown.afterRun_new_trailerBurstSec ?? "0 s", `${burst} s`, "as shown in Details");
+				assert.strictEqual(shown.trailerBurstSec, undefined, "not in the form data");
 				assert.strictEqual(native.phases?.enabled, true, "a learned model is always saved and switched on");
 				assert.ok(native.phases.phases.every(p => !p.final));
 				assert.ok(native.phases.phases.at(-1).trailer, "the after-run is the last phase");

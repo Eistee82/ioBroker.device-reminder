@@ -276,7 +276,7 @@
 	"modeCombined": "Łączny",
 	"modeCount": "Liczyć",
 	"modeTimed": "Czas trwania",
-	"phase_afterRun": "Po zakończeniu",
+	"phase_afterRun": "Gotowe, wycisza się",
 	"phase_antiCrease": "Po programie",
 	"phase_neutral": "Faza {n}",
 	"phase_rest": "Spoczynek",

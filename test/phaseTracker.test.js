@@ -338,7 +338,7 @@ describe("phase model (Spec A.4)", () => {
 		const en = systemPhaseNames(key => I18n.translate(key));
 		assert.deepStrictEqual(en, {
 			antiCrease: "After-run",
-			afterRun: "After the end",
+			afterRun: "Finished, settling",
 			rest: "Rest",
 			unknown: "Unknown",
 		});

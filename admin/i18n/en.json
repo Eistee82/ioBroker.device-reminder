@@ -265,7 +265,7 @@
 	"finalLockSec": "Final phase: lock time (s)",
 	"finalLockSecTooltip": "Longest lock phase after an early end (600 to 14400). 0 = 4 hours.",
 	"phase_antiCrease": "After-run",
-	"phase_afterRun": "After the end",
+	"phase_afterRun": "Finished, settling",
 	"phase_rest": "Rest",
 	"phase_unknown": "Unknown",
 	"phase_neutral": "Phase {n}",

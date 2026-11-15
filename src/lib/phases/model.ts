@@ -32,7 +32,7 @@ export const SYSTEM_PHASE_KEYS = {
 /** English names of the system phases (used when the caller passes no translated names). */
 export const DEFAULT_PHASE_NAMES: Readonly<Record<string, string>> = {
 	antiCrease: "After-run",
-	afterRun: "After the end",
+	afterRun: "Finished, settling",
 	rest: "Rest",
 	unknown: "Unknown",
 };

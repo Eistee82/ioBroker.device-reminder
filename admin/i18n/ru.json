@@ -276,7 +276,7 @@
 	"modeCombined": "Комбинированный",
 	"modeCount": "Считать",
 	"modeTimed": "Продолжительность",
-	"phase_afterRun": "После окончания",
+	"phase_afterRun": "Готово, затихает",
 	"phase_antiCrease": "После программы",
 	"phase_neutral": "Фаза {n}",
 	"phase_rest": "Покой",

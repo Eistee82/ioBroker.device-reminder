@@ -14,7 +14,7 @@ export const SYSTEM_PHASE_KEYS = {
 };
 export const DEFAULT_PHASE_NAMES = {
     antiCrease: "After-run",
-    afterRun: "After the end",
+    afterRun: "Finished, settling",
     rest: "Rest",
     unknown: "Unknown",
 };

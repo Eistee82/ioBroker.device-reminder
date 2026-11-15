@@ -1103,7 +1103,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             await ctx.showMessage(TEXT.notFound);
             return;
         }
-        const withTrailer = (suggestion.trailerBurstSec ?? 0) > 0;
+        const afterRun = trailerValuesOf(suggestion);
         const before = detectionOf(cfg.detection);
         const oldFinish = { active: finalOn(before), ...(cfg.phases ? { model: cfg.phases } : {}) };
         const model = extras?.model ?? null;
@@ -1130,22 +1130,13 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 ? { longestPauseMin: Math.round(suggestion.longestPauseSec / 60) }
                 : {}),
             ...(suggestion.current ? { eval_current: evaluationText(suggestion.current) } : {}),
-            ...(withTrailer
-                ? {
-                    trailerBurstSec: suggestion.trailerBurstSec,
-                    trailerGapSec: suggestion.trailerGapSec ?? 0,
-                    trailerAfterSec: suggestion.trailerAfterSec ?? 0,
-                    trailerBlockVal: suggestion.trailerBlockVal ?? 0,
-                    trailerMaxSec: suggestion.trailerMaxSec ?? 0,
-                }
-                : {}),
             ...(suggestion.checks && suggestion.checks.length > 0
                 ? { checksText: suggestion.checks.map(code => checkLabel(code)).join(", ") }
                 : {}),
             ...(extras ? finishData(model, finalCandidate, oldFinish) : {}),
             ...(model ? phaseData(model, cfg.phases) : {}),
         };
-        data = { ...data, ...oldValuesOf(before, unit) };
+        data = { ...data, ...oldValuesOf(before, unit), ...afterRunData(before, afterRun, unit) };
         const fromHistory = suggestion.looDetected !== undefined;
         const base = buildLearnSchema({
             fromHistory,
@@ -1155,6 +1146,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             notSeparable: suggestion.trailer === "notSeparable",
             withSamples: suggestion.samples > 0,
             changed: changedValues(before, data),
+            afterRun: afterRunChanged(before, afterRun),
         });
         const schema = {
             ...base,
@@ -1205,7 +1197,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
                         ? (before[key] ?? 0)
                         : 0;
             }
-            next = normalizeDetection({ ...final, ...parsed.values }, [], cfg.name);
+            next = normalizeDetection({ ...final, ...parsed.values, ...afterRun }, [], cfg.name);
         }
         const useFinal = choice.useFinal;
         const changes = describeChange(before, next) || "-";
@@ -1580,6 +1572,44 @@ export function buildLearnSourceSchema() {
         },
     };
 }
+const AFTER_RUN_ROWS = [
+    { key: "trailerBurstSec", label: "dm_learnTrailerBurst", unit: "s" },
+    { key: "trailerGapSec", label: "dm_learnTrailerGap", unit: "s" },
+    { key: "trailerAfterSec", label: "dm_learnTrailerAfter", unit: "s" },
+    { key: "trailerBlockVal", label: "dm_learnTrailerBlock", unit: "power" },
+    { key: "trailerMaxSec", label: "dm_learnTrailerMax", unit: "s" },
+];
+export function trailerValuesOf(s) {
+    if ((s.trailerBurstSec ?? 0) <= 0) {
+        return {};
+    }
+    return {
+        trailerBurstSec: s.trailerBurstSec,
+        trailerGapSec: s.trailerGapSec ?? 0,
+        trailerAfterSec: s.trailerAfterSec ?? 0,
+        trailerBlockVal: s.trailerBlockVal ?? 0,
+        trailerMaxSec: s.trailerMaxSec ?? 0,
+    };
+}
+export function afterRunData(before, next, unit = "W") {
+    if ((before.trailerBurstSec ?? 0) <= 0 && (next.trailerBurstSec ?? 0) <= 0) {
+        return {};
+    }
+    const data = {};
+    for (const row of AFTER_RUN_ROWS) {
+        const u = row.unit === "power" ? unit : row.unit;
+        data[`afterRun_old_${row.key}`] = `${(before.trailerBurstSec ?? 0) > 0 ? (before[row.key] ?? 0) : 0} ${u}`;
+        data[`afterRun_new_${row.key}`] = `${next[row.key] ?? 0} ${u}`;
+    }
+    return data;
+}
+export function afterRunChanged(before, next) {
+    const on = (before.trailerBurstSec ?? 0) > 0;
+    if (!on && (next.trailerBurstSec ?? 0) <= 0) {
+        return undefined;
+    }
+    return new Set(AFTER_RUN_ROWS.filter(r => Math.abs((on ? (before[r.key] ?? 0) : 0) - (next[r.key] ?? 0)) > 1e-9).map(r => r.key));
+}
 const LEARN_ROWS = [
     { key: "startVal", label: "dm_learnStartVal", step: 0.05, min: 0, unit: "power" },
     { key: "endVal", label: "dm_learnEndVal", step: 0.05, min: 0, unit: "power" },
@@ -1694,6 +1724,7 @@ export function buildLearnSchema(opts = {}) {
             }
             : {}),
         ...(withEval ? historyItems(fromHistory, opts.withCurrent ?? false) : {}),
+        ...(opts.afterRun ? afterRunItems(opts.afterRun, before, after) : {}),
     };
     if (Object.keys(details).length > 0) {
         items.details = {
@@ -1706,6 +1737,22 @@ export function buildLearnSchema(opts = {}) {
         };
     }
     return { type: "panel", items };
+}
+function afterRunItems(changed, before, after) {
+    const items = {};
+    for (const r of AFTER_RUN_ROWS) {
+        const label = I18n.getTranslatedObject(r.label);
+        items[`afterRun_lbl_${r.key}`] = {
+            type: "staticText",
+            text: changed.has(r.key) ? marked(label) : label,
+            newLine: true,
+            xs: 12,
+            sm: 4,
+        };
+        items[`afterRun_old_${r.key}`] = { type: "text", label: before, disabled: true, xs: 6, sm: 4 };
+        items[`afterRun_new_${r.key}`] = { type: "text", label: after, disabled: true, xs: 6, sm: 4 };
+    }
+    return items;
 }
 function historyItems(fromHistory, withCurrent) {
     const items = {};
@@ -1751,13 +1798,6 @@ function historyItems(fromHistory, withCurrent) {
     }
     return items;
 }
-const TRAILER_FIELDS = [
-    "trailerBurstSec",
-    "trailerGapSec",
-    "trailerAfterSec",
-    "trailerBlockVal",
-    "trailerMaxSec",
-];
 export function parseLearnForm(data) {
     const n = (key) => parseNumber(data[key]) ?? Number.NaN;
     const optional = (key) => (data[key] === undefined || data[key] === "" ? 0 : n(key));
@@ -1779,20 +1819,7 @@ export function parseLearnForm(data) {
         };
     }
     const mode = DETECTION_MODES.find(m => m === data.mode) ?? "count";
-    const values = { mode, ...parsed };
-    if (optional("trailerBurstSec") > 0) {
-        for (const key of TRAILER_FIELDS) {
-            const v = optional(key);
-            if (!Number.isFinite(v) || v < 0) {
-                return { error: TEXT.typeValuesInvalid };
-            }
-            values[key] = v;
-        }
-    }
-    else if (!Number.isFinite(optional("trailerBurstSec")) || optional("trailerBurstSec") < 0) {
-        return { error: TEXT.typeValuesInvalid };
-    }
-    return { values };
+    return { values: { mode, ...parsed } };
 }
 export { buildRunTable, RUN_TABLE_MODE } from "./learnDialog.js";
 //# sourceMappingURL=deviceManagement.js.map

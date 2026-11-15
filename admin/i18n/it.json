@@ -276,7 +276,7 @@
 	"modeCombined": "Combinato",
 	"modeCount": "Contare",
 	"modeTimed": "Durata",
-	"phase_afterRun": "Dopo la fine",
+	"phase_afterRun": "Finito, in assestamento",
 	"phase_antiCrease": "Post-programma",
 	"phase_neutral": "Fase {n}",
 	"phase_rest": "Riposo",

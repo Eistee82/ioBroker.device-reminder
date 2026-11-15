@@ -1522,7 +1522,8 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			await ctx.showMessage(TEXT.notFound);
 			return;
 		}
-		const withTrailer = (suggestion.trailerBurstSec ?? 0) > 0;
+		// the after-run filter has no fields in the dialog: its values come from the suggestion, not from the answer
+		const afterRun = trailerValuesOf(suggestion);
 		const before = detectionOf(cfg.detection);
 		const oldFinish = { active: finalOn(before), ...(cfg.phases ? { model: cfg.phases } : {}) };
 		const model = extras?.model ?? null;
@@ -1549,22 +1550,13 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 				? { longestPauseMin: Math.round(suggestion.longestPauseSec / 60) }
 				: {}),
 			...(suggestion.current ? { eval_current: evaluationText(suggestion.current) } : {}),
-			...(withTrailer
-				? {
-						trailerBurstSec: suggestion.trailerBurstSec,
-						trailerGapSec: suggestion.trailerGapSec ?? 0,
-						trailerAfterSec: suggestion.trailerAfterSec ?? 0,
-						trailerBlockVal: suggestion.trailerBlockVal ?? 0,
-						trailerMaxSec: suggestion.trailerMaxSec ?? 0,
-					}
-				: {}),
 			...(suggestion.checks && suggestion.checks.length > 0
 				? { checksText: suggestion.checks.map(code => checkLabel(code)).join(", ") }
 				: {}),
 			...(extras ? finishData(model, finalCandidate, oldFinish) : {}),
 			...(model ? phaseData(model, cfg.phases) : {}),
 		};
-		data = { ...data, ...oldValuesOf(before, unit) };
+		data = { ...data, ...oldValuesOf(before, unit), ...afterRunData(before, afterRun, unit) };
 		const fromHistory = suggestion.looDetected !== undefined;
 		const base = buildLearnSchema({
 			fromHistory,
@@ -1574,6 +1566,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			notSeparable: suggestion.trailer === "notSeparable",
 			withSamples: suggestion.samples > 0,
 			changed: changedValues(before, data),
+			afterRun: afterRunChanged(before, afterRun),
 		});
 		const schema: JsonFormSchema = {
 			...base,
@@ -1628,7 +1621,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 						? (before[key] ?? 0)
 						: 0;
 			}
-			next = normalizeDetection({ ...final, ...parsed.values }, [], cfg.name);
+			next = normalizeDetection({ ...final, ...parsed.values, ...afterRun }, [], cfg.name);
 		}
 		const useFinal = choice.useFinal;
 		const changes = describeChange(before, next) || "-";
@@ -2142,10 +2135,84 @@ export function buildLearnSourceSchema(): JsonFormSchema {
 	};
 }
 
+/** Values of the after-run filter (taken over from the suggestion, without fields in the dialog). */
+export type AfterRunValues = Pick<
+	DetectionSettings,
+	"trailerBurstSec" | "trailerGapSec" | "trailerAfterSec" | "trailerBlockVal" | "trailerMaxSec"
+>;
+
+/** The values of the after-run filter with the i18n key of their label and their unit, in the order of the dialog. */
+const AFTER_RUN_ROWS: readonly { key: keyof AfterRunValues; label: string; unit: "power" | "s" }[] = [
+	{ key: "trailerBurstSec", label: "dm_learnTrailerBurst", unit: "s" },
+	{ key: "trailerGapSec", label: "dm_learnTrailerGap", unit: "s" },
+	{ key: "trailerAfterSec", label: "dm_learnTrailerAfter", unit: "s" },
+	{ key: "trailerBlockVal", label: "dm_learnTrailerBlock", unit: "power" },
+	{ key: "trailerMaxSec", label: "dm_learnTrailerMax", unit: "s" },
+];
+
+/**
+ * Values of the after-run filter the dialog takes over: those of the suggestion when it uses the filter, otherwise
+ * none (filter off, 3.1.2 behaviour).
+ *
+ * @param s - Suggestion
+ */
+export function trailerValuesOf(s: LearningSuggestion): AfterRunValues {
+	if ((s.trailerBurstSec ?? 0) <= 0) {
+		return {};
+	}
+	return {
+		trailerBurstSec: s.trailerBurstSec,
+		trailerGapSec: s.trailerGapSec ?? 0,
+		trailerAfterSec: s.trailerAfterSec ?? 0,
+		trailerBlockVal: s.trailerBlockVal ?? 0,
+		trailerMaxSec: s.trailerMaxSec ?? 0,
+	};
+}
+
+/**
+ * Data of the read-only rows of the after-run filter in "Details" (`afterRun_old_<field>`, `afterRun_new_<field>`):
+ * the values of the device and the ones taken over, with their unit. Empty when neither uses the filter.
+ *
+ * @param before - Detection values of the device
+ * @param next - Values of the after-run filter taken over
+ * @param unit - Unit of the power state
+ */
+export function afterRunData(before: DetectionSettings, next: AfterRunValues, unit = "W"): JsonFormData {
+	if ((before.trailerBurstSec ?? 0) <= 0 && (next.trailerBurstSec ?? 0) <= 0) {
+		return {};
+	}
+	const data: JsonFormData = {};
+	for (const row of AFTER_RUN_ROWS) {
+		const u = row.unit === "power" ? unit : row.unit;
+		data[`afterRun_old_${row.key}`] = `${(before.trailerBurstSec ?? 0) > 0 ? (before[row.key] ?? 0) : 0} ${u}`;
+		data[`afterRun_new_${row.key}`] = `${next[row.key] ?? 0} ${u}`;
+	}
+	return data;
+}
+
+/**
+ * Fields of the after-run filter that change (marked with "≠"), or undefined when neither the device nor the
+ * suggestion uses the filter (no rows).
+ *
+ * @param before - Detection values of the device
+ * @param next - Values of the after-run filter taken over
+ */
+export function afterRunChanged(before: DetectionSettings, next: AfterRunValues): Set<string> | undefined {
+	const on = (before.trailerBurstSec ?? 0) > 0;
+	if (!on && (next.trailerBurstSec ?? 0) <= 0) {
+		return undefined;
+	}
+	return new Set(
+		AFTER_RUN_ROWS.filter(r => Math.abs((on ? (before[r.key] ?? 0) : 0) - (next[r.key] ?? 0)) > 1e-9).map(
+			r => r.key,
+		),
+	);
+}
+
 /** A detection value of the learn dialog: a row "label | before | new" (Spec B.7 step 2.2). */
 interface LearnRow {
 	/** Field of the value (`DetectionSettings`). */
-	key: Exclude<keyof LearnedValues, "mode" | `trailer${string}`>;
+	key: Exclude<keyof LearnedValues, "mode">;
 	/** i18n key of the label. */
 	label: string;
 	/** Step of the number field. */
@@ -2222,12 +2289,15 @@ export interface LearnSchemaOptions {
 	withSamples?: boolean;
 	/** Fields whose suggestion differs from the value of the device. */
 	changed?: ReadonlySet<string>;
+	/** Read-only rows of the after-run filter in "Details", with the fields that change; none when undefined. */
+	afterRun?: ReadonlySet<string>;
 }
 
 /**
  * Schema of the dialog that shows the learned values (Spec B.7 step 2): every detection value as a row "label |
  * before | new" (a changed one marked with "≠"), the figures behind the suggestion in a collapsible "Details" panel.
- * The values of the after-run filter are taken over without fields of their own.
+ * The values of the after-run filter are taken over without fields of their own; "Details" shows them read-only as
+ * "label | before | new".
  *
  * @param opts - What to show
  */
@@ -2311,6 +2381,7 @@ export function buildLearnSchema(opts: LearnSchemaOptions = {}): JsonFormSchema 
 				}
 			: {}),
 		...(withEval ? historyItems(fromHistory, opts.withCurrent ?? false) : {}),
+		...(opts.afterRun ? afterRunItems(opts.afterRun, before, after) : {}),
 	};
 	if (Object.keys(details).length > 0) {
 		// no colour: a coloured panel is hard to read in the dark theme of the Admin
@@ -2324,6 +2395,34 @@ export function buildLearnSchema(opts: LearnSchemaOptions = {}): JsonFormSchema 
 		};
 	}
 	return { type: "panel", items };
+}
+
+/**
+ * Read-only rows "label | before | new" of the after-run filter (in "Details"), a changed one marked with "≠".
+ *
+ * @param changed - Fields that change
+ * @param before - Label of the column "before"
+ * @param after - Label of the column "new"
+ */
+function afterRunItems(
+	changed: ReadonlySet<string>,
+	before: ioBroker.StringOrTranslated,
+	after: ioBroker.StringOrTranslated,
+): PanelItems {
+	const items: PanelItems = {};
+	for (const r of AFTER_RUN_ROWS) {
+		const label = I18n.getTranslatedObject(r.label);
+		items[`afterRun_lbl_${r.key}`] = {
+			type: "staticText",
+			text: changed.has(r.key) ? marked(label) : label,
+			newLine: true,
+			xs: 12,
+			sm: 4,
+		};
+		items[`afterRun_old_${r.key}`] = { type: "text", label: before, disabled: true, xs: 6, sm: 4 };
+		items[`afterRun_new_${r.key}`] = { type: "text", label: after, disabled: true, xs: 6, sm: 4 };
+	}
+	return items;
 }
 
 /**
@@ -2378,7 +2477,7 @@ function historyItems(fromHistory: boolean, withCurrent: boolean): PanelItems {
 	return items;
 }
 
-/** Detection values taken from the learn dialog (after-run filter values only when the filter is on). */
+/** Detection values taken from the fields of the learn dialog (the after-run filter has no fields there). */
 type LearnedValues = Pick<
 	DetectionSettings,
 	| "mode"
@@ -2392,20 +2491,7 @@ type LearnedValues = Pick<
 	| "pauseHoldSec"
 	| "pauseUntilSec"
 	| "pauseBelowVal"
-	| "trailerBurstSec"
-	| "trailerGapSec"
-	| "trailerAfterSec"
-	| "trailerBlockVal"
-	| "trailerMaxSec"
 >;
-
-const TRAILER_FIELDS = [
-	"trailerBurstSec",
-	"trailerGapSec",
-	"trailerAfterSec",
-	"trailerBlockVal",
-	"trailerMaxSec",
-] as const;
 
 /**
  * Validate the learn dialog.
@@ -2436,20 +2522,7 @@ export function parseLearnForm(
 		};
 	}
 	const mode = DETECTION_MODES.find(m => m === data.mode) ?? "count";
-	const values: LearnedValues = { mode, ...parsed };
-	// the fields of the after-run filter are stored only when the filter is on (3.1.2 behaviour otherwise)
-	if (optional("trailerBurstSec") > 0) {
-		for (const key of TRAILER_FIELDS) {
-			const v = optional(key);
-			if (!Number.isFinite(v) || v < 0) {
-				return { error: TEXT.typeValuesInvalid };
-			}
-			values[key] = v;
-		}
-	} else if (!Number.isFinite(optional("trailerBurstSec")) || optional("trailerBurstSec") < 0) {
-		return { error: TEXT.typeValuesInvalid };
-	}
-	return { values };
+	return { values: { mode, ...parsed } };
 }
 
 export { buildRunTable, RUN_TABLE_MODE } from "./learnDialog.js";
