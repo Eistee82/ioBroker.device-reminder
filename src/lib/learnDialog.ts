@@ -513,7 +513,7 @@ function reasonText(r: FinalRejectReason, lang: string): string {
 }
 
 /**
- * Key figures of the proposed final phase (Spec B.7 step 2), followed by the reasons when it cannot be offered.
+ * Key figures of the proposed final phase (Spec B.7 step 2.4), followed by the reasons when it cannot be offered.
  * Without any replayed run only the reasons are shown.
  *
  * @param c - Result of `learnFinal`
@@ -535,7 +535,7 @@ export function finalText(c: FinalCandidate): ioBroker.Translated {
 			// (Spec risk 3)
 			out[lang] =
 				c.values.finalActVal > 0 && c.values.finalActShare > 0
-					? figures
+					? `${figures}.`
 					: `${figures}. ${fill(TEXT.finalNoActivity, lang, { lock: Math.round((c.values.finalLockSec > 0 ? c.values.finalLockSec : LOCK_DEFAULT_SEC) / 60) })}`;
 		} else {
 			out[lang] = c.endRuns === 0 ? reasons : `${figures} – ${reasons}`;
@@ -544,59 +544,21 @@ export function finalText(c: FinalCandidate): ioBroker.Translated {
 	return out as ioBroker.Translated;
 }
 
-/**
- * Items of the final phase in the dialog: the key figures and the checkbox "use" (off by default; not offered when a
- * release check failed).
- *
- * @param c - Result of `learnFinal`
- */
-export function finalItems(c: FinalCandidate): PanelItems {
-	return {
-		finalHeader: {
-			type: "header",
-			text: I18n.getTranslatedObject("dm_learnFinalHeader"),
-			size: 4,
-			newLine: true,
-			xs: 12,
-		},
-		final_text: {
-			type: "text",
-			label: I18n.getTranslatedObject("dm_learnFinalText"),
-			disabled: true,
-			newLine: true,
-			xs: 12,
-		},
-		final_apply: {
-			type: "checkbox",
-			label: I18n.getTranslatedObject("dm_learnFinalApply"),
-			help: I18n.getTranslatedObject("dm_learnFinalHelp"),
-			disabled: !c.ok,
-			newLine: true,
-			xs: 12,
-		},
-	};
-}
-
-/**
- * Name of a form field of a phase.
- *
- * @param id - Phase id
- * @param field - Field
- */
-export function phaseKey(id: string, field: "name" | "show" | "notifyStart" | "notifyEnd" | "final" | "info"): string {
-	return `phase_${id}_${field}`;
-}
+/** "Finished from": the end at standby as in 3.1.2 (no final phase). */
+export const FINISH_STANDBY = "standby";
+/** "Finished from": the final phase of the device stays as it is (offered only when the device has one). */
+export const FINISH_KEEP = "keep";
 
 /**
  * Whether "finished afterwards" can be offered for a phase: its band lies in the final band of the released final
- * phase (from P up to the hot value).
+ * phase (from P up to the hot value). The after-run is never such a phase (it is not read from the bands).
  *
  * @param model - Phase model
  * @param p - Phase
  * @param final - Released final phase, or null
  */
 export function finalAllowed(model: PhaseModel, p: PhaseDef, final: FinalCandidate | null): boolean {
-	if (!final?.ok) {
+	if (!final?.ok || p.trailer) {
 		return false;
 	}
 	const band = model.bands.find(b => b.id === p.band);
@@ -609,7 +571,213 @@ export function finalAllowed(model: PhaseModel, p: PhaseDef, final: FinalCandida
 }
 
 /**
- * Hint on the phases of the previous model that fall away (Spec B.5 step 8): their names and, if actions use them, how
+ * The phase whose end "finished from" reports (Spec B.7 step 2.4): the last phase in the final band in the order of
+ * the run. There is one learned candidate (the last block in the final band), so earlier phases in the band are not
+ * offered: they would promise an earlier end than the final phase filter gives.
+ *
+ * @param model - Phase model (phases in the order of the run)
+ * @param final - Released final phase, or null
+ */
+export function finalPhaseOf(model: PhaseModel, final: FinalCandidate | null): PhaseDef | null {
+	return model.phases.filter(p => finalAllowed(model, p, final)).at(-1) ?? null;
+}
+
+/**
+ * Name of a phase with its number in the order of the run ("Phase 3 – Heating"; only "Phase 3" for a neutral name).
+ *
+ * @param model - Phase model
+ * @param p - Phase
+ */
+export function phaseLabel(model: PhaseModel, p: PhaseDef): string {
+	const neutral = neutralName(model.phases.indexOf(p) + 1);
+	return p.name === neutral ? p.name : `${neutral} – ${p.name}`;
+}
+
+/**
+ * Label of the choice "finished from" for the end of a phase: the phase that follows it, or "after <phase>" when it
+ * is the last one.
+ *
+ * @param model - Phase model
+ * @param p - Phase in the final band
+ */
+export function finishLabel(model: PhaseModel, p: PhaseDef): string {
+	const next = model.phases[model.phases.indexOf(p) + 1];
+	return next ? phaseLabel(model, next) : tr("dm_learnFinishAfter").replace("{phase}", phaseLabel(model, p));
+}
+
+/** Old state of the final phase of the device for the dialog. */
+export interface OldFinish {
+	/** Whether the device has an active final phase (`finalOn` of its values). */
+	active: boolean;
+	/** Phase model of the device before learning, or undefined. */
+	model?: PhaseModel;
+}
+
+/**
+ * Text of the choice of the device before learning.
+ *
+ * @param old - Old state
+ */
+function oldFinishText(old: OldFinish): string {
+	if (!old.active) {
+		return tr("dm_learnFinishStandby");
+	}
+	const p = old.model?.phases.find(x => x.final === true);
+	return old.model && p ? finishLabel(old.model, p) : tr("dm_learnFinishDevice");
+}
+
+/**
+ * Choices of "finished from": standby, the end of the phase in the final band (released only) and, with a final
+ * phase in the device, "keep it".
+ *
+ * @param model - Learned model, or null
+ * @param final - Result of `learnFinal`, or null
+ * @param old - Old state
+ */
+export function finishOptions(
+	model: PhaseModel | null,
+	final: FinalCandidate | null,
+	old: OldFinish,
+): { label: string; value: string }[] {
+	const out = [{ label: tr("dm_learnFinishStandby"), value: FINISH_STANDBY }];
+	const p = model ? finalPhaseOf(model, final) : null;
+	if (model && p) {
+		out.push({ label: finishLabel(model, p), value: p.id });
+	}
+	if (old.active) {
+		out.push({ label: tr("dm_learnFinishKeep"), value: FINISH_KEEP });
+	}
+	return out;
+}
+
+/**
+ * Preset of "finished from": the end of the phase in the final band when the device already ends there (the phase
+ * kept its `final` on relearning), "keep" for another final phase of the device, otherwise standby.
+ *
+ * @param model - Learned model, or null
+ * @param final - Result of `learnFinal`, or null
+ * @param old - Old state
+ */
+export function finishPreset(model: PhaseModel | null, final: FinalCandidate | null, old: OldFinish): string {
+	if (!old.active) {
+		return FINISH_STANDBY;
+	}
+	const p = model ? finalPhaseOf(model, final) : null;
+	return p?.final === true ? p.id : FINISH_KEEP;
+}
+
+/**
+ * A field label marked as changed ("≠ Start threshold").
+ *
+ * @param label - Label
+ */
+export function marked(label: ioBroker.StringOrTranslated): ioBroker.StringOrTranslated {
+	if (typeof label === "string") {
+		return `≠ ${label}`;
+	}
+	return Object.fromEntries(Object.entries(label).map(([lang, t]) => [lang, `≠ ${t}`])) as ioBroker.Translated;
+}
+
+/**
+ * Items of "finished from" (Spec B.7 step 2.4): a row "label | before | new" and the key figures below it.
+ *
+ * @param model - Learned model, or null
+ * @param final - Result of `learnFinal`, or null
+ * @param old - Old state
+ */
+export function finishItems(model: PhaseModel | null, final: FinalCandidate | null, old: OldFinish): PanelItems {
+	const options = finishOptions(model, final, old);
+	const preset = finishPreset(model, final, old);
+	const label = I18n.getTranslatedObject("dm_learnFinishAt");
+	const changed = oldFinishText(old) !== options.find(o => o.value === preset)?.label;
+	const items: PanelItems = {
+		finalHeader: {
+			type: "header",
+			text: I18n.getTranslatedObject("dm_learnFinalHeader"),
+			size: 4,
+			newLine: true,
+			xs: 12,
+		},
+		lbl_finishAt: { type: "staticText", text: changed ? marked(label) : label, newLine: true, xs: 12, sm: 4 },
+		old_finishAt: {
+			type: "text",
+			label: I18n.getTranslatedObject("dm_learnColOld"),
+			disabled: true,
+			xs: 6,
+			sm: 4,
+		},
+		finishAt: {
+			type: "select",
+			label: I18n.getTranslatedObject("dm_learnColNew"),
+			help: I18n.getTranslatedObject("dm_learnFinishHelp"),
+			options,
+			xs: 6,
+			sm: 4,
+		},
+	};
+	if (final) {
+		items.final_text = { type: "staticText", text: finalText(final), newLine: true, xs: 12 };
+	}
+	return items;
+}
+
+/**
+ * Data of "finished from".
+ *
+ * @param model - Learned model, or null
+ * @param final - Result of `learnFinal`, or null
+ * @param old - Old state
+ */
+export function finishData(model: PhaseModel | null, final: FinalCandidate | null, old: OldFinish): JsonFormData {
+	return { old_finishAt: oldFinishText(old), finishAt: finishPreset(model, final, old) };
+}
+
+/** What the answer of "finished from" means for the device. */
+export interface FinishChoice {
+	/** Take the learned final values (a phase was chosen). */
+	useFinal: boolean;
+	/** Keep the final values of the device (and the `final` marks of the phases). */
+	keep: boolean;
+	/** Phase that carries `final` (the phase in the final band), or null. */
+	finalId: string | null;
+}
+
+/**
+ * Meaning of the answer of "finished from"; an unknown value (or a phase no longer offered) is standby.
+ *
+ * @param value - Answer
+ * @param model - Learned model, or null
+ * @param final - Result of `learnFinal`, or null
+ * @param old - Old state
+ */
+export function finishChoiceOf(
+	value: unknown,
+	model: PhaseModel | null,
+	final: FinalCandidate | null,
+	old: OldFinish,
+): FinishChoice {
+	const p = model ? finalPhaseOf(model, final) : null;
+	if (p && value === p.id) {
+		return { useFinal: true, keep: false, finalId: p.id };
+	}
+	if (old.active && value === FINISH_KEEP) {
+		return { useFinal: false, keep: true, finalId: null };
+	}
+	return { useFinal: false, keep: false, finalId: null };
+}
+
+/**
+ * Name of a form field of a phase.
+ *
+ * @param id - Phase id
+ * @param field - Field
+ */
+export function phaseKey(id: string, field: "no" | "name" | "power" | "duration" | "old" | "retro"): string {
+	return `phase_${id}_${field}`;
+}
+
+/**
+ * Hint on the phases of the previous model that fall away (Spec B.5 step 9): their names and, if actions use them, how
  * many actions no longer fire.
  *
  * @param dropped - Phases of the old model that fall away
@@ -626,21 +794,50 @@ export function droppedText(dropped: readonly { id: string; name: string; action
 }
 
 /**
- * Items of the phases step: the checkbox "show phases" and, below it, one block per phase (name, shown, messages,
- * finished afterwards); all hidden while phases are off.
+ * Power of a phase for the dialog: "≈ 2165 W", for the after-run "short bursts ≈ 110 W"; without a typical value the
+ * name of its band.
+ *
+ * @param model - Phase model
+ * @param p - Phase
+ */
+export function powerText(model: PhaseModel, p: PhaseDef): string {
+	const w = p.stats.watts;
+	if (w === undefined) {
+		return model.bands.find(b => b.id === p.band)?.name ?? p.band;
+	}
+	return p.trailer ? tr("dm_learnPhaseBursts").replace("{w}", String(w)) : `≈ ${w} W`;
+}
+
+/**
+ * Time per run in a phase: shortest to longest ("3–14 min"); without these facts the duration range of the phase.
+ *
+ * @param p - Phase
+ */
+export function durationText(p: PhaseDef): string {
+	const lo = p.stats.shortSec ?? p.minSec;
+	const hi = p.stats.longSec ?? p.maxSec;
+	const a = Math.round(lo / 60);
+	if (hi <= 0) {
+		return `≥ ${a} min`;
+	}
+	const b = Math.round(hi / 60);
+	return a === b ? `${a} min` : `${a}–${b} min`;
+}
+
+/**
+ * Items of the phases (Spec B.7 step 2.3): a row per phase in the order of the run with number, name (editable),
+ * power, duration and the phase of the old model with the same id ("new" for a new one). No table: a form table is
+ * not checked in the Device Manager of a real system.
  *
  * @param model - Learned model
- * @param final - Released final phase, or null
  * @param retro - Event phases that only appear in the timeline
  * @param dropped - Phases of the old model that fall away
  */
 export function phaseItems(
 	model: PhaseModel,
-	final: FinalCandidate | null,
 	retro: readonly string[],
 	dropped: readonly { id: string; name: string; actions: number }[],
 ): PanelItems {
-	const hidden = "!data.showPhases";
 	const items: PanelItems = {
 		phasesHeader: {
 			type: "header",
@@ -649,10 +846,9 @@ export function phaseItems(
 			newLine: true,
 			xs: 12,
 		},
-		showPhases: {
-			type: "checkbox",
-			label: I18n.getTranslatedObject("dm_learnShowPhases"),
-			help: I18n.getTranslatedObject("dm_learnPhasesHelp"),
+		phasesInfo: {
+			type: "staticText",
+			text: I18n.getTranslatedObject("dm_learnPhasesInfo"),
 			newLine: true,
 			xs: 12,
 		},
@@ -662,130 +858,91 @@ export function phaseItems(
 			type: "infoBox",
 			boxType: dropped.some(d => d.actions > 0) ? "warning" : "info",
 			text: droppedText(dropped),
-			hidden,
 			newLine: true,
 			xs: 12,
 		};
 	}
-	for (const p of model.phases) {
-		items[phaseKey(p.id, "info")] = {
-			type: "text",
-			label: p.name,
-			disabled: true,
-			hidden,
-			newLine: true,
-			xs: 12,
-			sm: 4,
-		};
+	model.phases.forEach((p, k) => {
+		items[phaseKey(p.id, "no")] = { type: "staticText", text: `${k + 1}.`, newLine: true, xs: 2, sm: 1 };
 		items[phaseKey(p.id, "name")] = {
 			type: "text",
 			label: I18n.getTranslatedObject("dm_learnPhaseName"),
-			hidden,
+			xs: 10,
+			sm: 3,
+		};
+		items[phaseKey(p.id, "power")] = {
+			type: "text",
+			label: I18n.getTranslatedObject("dm_learnPhasePower"),
+			disabled: true,
+			xs: 6,
+			sm: 2,
+		};
+		items[phaseKey(p.id, "duration")] = {
+			type: "text",
+			label: I18n.getTranslatedObject("dm_learnPhaseDuration"),
+			disabled: true,
+			xs: 6,
+			sm: 2,
+		};
+		items[phaseKey(p.id, "old")] = {
+			type: "text",
+			label: I18n.getTranslatedObject("dm_learnColOld"),
+			disabled: true,
 			xs: 12,
 			sm: 4,
 		};
-		items[phaseKey(p.id, "show")] = {
-			type: "checkbox",
-			label: I18n.getTranslatedObject("dm_learnPhaseShow"),
-			hidden,
-			xs: 6,
-			sm: 1,
-		};
-		items[phaseKey(p.id, "notifyStart")] = {
-			type: "checkbox",
-			label: I18n.getTranslatedObject("dm_learnPhaseNotifyStart"),
-			hidden,
-			xs: 6,
-			sm: 1,
-		};
-		items[phaseKey(p.id, "notifyEnd")] = {
-			type: "checkbox",
-			label: I18n.getTranslatedObject("dm_learnPhaseNotifyEnd"),
-			hidden,
-			xs: 6,
-			sm: 1,
-		};
-		if (finalAllowed(model, p, final)) {
-			items[phaseKey(p.id, "final")] = {
-				type: "checkbox",
-				label: I18n.getTranslatedObject("dm_learnPhaseFinal"),
-				hidden,
-				xs: 6,
-				sm: 1,
-			};
-		}
 		if (retro.includes(p.id)) {
-			items[`phase_${p.id}_retro`] = {
+			items[phaseKey(p.id, "retro")] = {
 				type: "staticText",
 				text: I18n.getTranslatedObject("dm_learnPhaseRetro"),
-				hidden,
 				newLine: true,
 				xs: 12,
 			};
 		}
-	}
+	});
 	return items;
 }
 
 /**
- * Data of the phases step.
+ * Data of the phases.
  *
  * @param model - Learned model
- * @param final - Released final phase, or null
- * @param showPhases - Preset of "show phases"
+ * @param previous - Model of the device before learning, or undefined
  */
-export function phaseData(model: PhaseModel, final: FinalCandidate | null, showPhases: boolean): JsonFormData {
-	const data: JsonFormData = { showPhases };
-	const bandName = (id: string): string => model.bands.find(b => b.id === id)?.name ?? id;
+export function phaseData(model: PhaseModel, previous?: PhaseModel): JsonFormData {
+	const data: JsonFormData = {};
 	for (const p of model.phases) {
-		const dur = `${Math.round(p.minSec / 60)}–${p.maxSec > 0 ? Math.round(p.maxSec / 60) : "∞"} min`;
-		const after = (p.after ?? []).map(a => model.phases.find(x => x.id === a)?.name ?? a);
-		const pre = `${after.slice(0, 3).join(", ")}${after.length > 3 ? ", …" : ""}`;
-		data[phaseKey(p.id, "info")] =
-			`${bandName(p.band)} · ${dur}${pre ? ` · ← ${pre}` : ""} · ${Math.round(p.stats.agreement * 100)} %`;
+		const old = previous?.phases.find(o => o.id === p.id);
 		data[phaseKey(p.id, "name")] = p.name;
-		data[phaseKey(p.id, "show")] = p.show;
-		data[phaseKey(p.id, "notifyStart")] = p.notify?.start === true;
-		data[phaseKey(p.id, "notifyEnd")] = p.notify?.end === true;
-		if (finalAllowed(model, p, final)) {
-			data[phaseKey(p.id, "final")] = p.final === true;
-		}
+		data[phaseKey(p.id, "power")] = powerText(model, p);
+		data[phaseKey(p.id, "duration")] = durationText(p);
+		data[phaseKey(p.id, "old")] =
+			old && previous
+				? `${old.name} · ${powerText(previous, old)} · ${durationText(old)}`
+				: tr("dm_learnPhaseNew");
 	}
 	return data;
 }
 
 /**
- * The model with the edits of the phases step (names, shown, messages, finished afterwards).
+ * The model to save (Spec B.7): phases on, the names of the form and `final` at the phase whose end "finished from"
+ * reports (with "keep" the marks of the model stay). `show` and `notify` stay as learned (kept from the old model);
+ * messages of phases are set with the actions of the device.
  *
  * @param model - Learned model
  * @param data - Form data
- * @param final - Released final phase, or null
- * @param enabled - Whether phases are switched on
+ * @param choice - Meaning of "finished from"
  */
-export function phasesFromForm(
-	model: PhaseModel,
-	data: JsonFormData,
-	final: FinalCandidate | null,
-	enabled: boolean,
-): PhaseModel {
+export function phasesFromForm(model: PhaseModel, data: JsonFormData, choice: FinishChoice): PhaseModel {
 	const phases = model.phases.map(p => {
 		const typed = data[phaseKey(p.id, "name")];
 		const name = typeof typed === "string" ? typed.trim() : "";
-		const start = data[phaseKey(p.id, "notifyStart")] === true;
-		const end = data[phaseKey(p.id, "notifyEnd")] === true;
-		const { notify: oldNotify, final: _final, ...rest } = p;
-		const next: PhaseDef = { ...rest, name: name || p.name, show: data[phaseKey(p.id, "show")] !== false };
-		if (start || end) {
-			next.notify = {
-				...(oldNotify?.text ? { text: oldNotify.text } : {}),
-				...(start ? { start } : {}),
-				...(end ? { end } : {}),
-			};
-		}
-		if (finalAllowed(model, p, final) && data[phaseKey(p.id, "final")] === true) {
+		const { final: oldFinal, ...rest } = p;
+		const next: PhaseDef = { ...rest, name: name || p.name };
+		if (choice.keep ? oldFinal === true : p.id === choice.finalId) {
 			next.final = true;
 		}
 		return next;
 	});
-	return { ...model, enabled, phases };
+	return { ...model, enabled: true, phases };
 }

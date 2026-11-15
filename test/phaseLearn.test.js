@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
 import { learnPhases, scopeOf, tunePhases } from "../build/lib/phases/learn.js";
 import { checkRuns, daySamples } from "../build/lib/learn/quality.js";
 import { baseBandsOf } from "../build/lib/learn/bands.js";
@@ -53,14 +54,16 @@ function blockRun(k, sec, verdict = OK) {
 
 describe("learn phases (Spec B.5)", function () {
 	this.timeout(600_000);
-	it("washer: few phases in run order, the after-run last; cross-check ≥ 95 %, a boundary between spin (≤ 839 W) and heating (≥ 2047 W)", () => {
+	// Spec B.5 step 7 and 8.3: the cross-check of the learned phases agrees in ≥ 99 % outside the transition zones
+	// (washer30d and dryer agree in 100 %, boiler4d in more than 99 %)
+	it("washer30d: 4–6 phases in run order, one per band and position, the after-run last; cross-check ≥ 99 %, a boundary between spin (≤ 839 W) and heating (≥ 2047 W)", () => {
 		const { units, runLimit } = phaseInput(W);
 		const r = learnPhases(units, { runLimitW: runLimit, unitFactor: 1, pollSec: 10 });
 		assert.strictEqual(r.model.scope, "run");
-		assert.ok(r.looAgreement >= 0.95, String(r.looAgreement));
+		assert.ok(r.looAgreement >= 0.99, String(r.looAgreement));
 		assert.ok(r.model.bands.some(b => b.min > 839 && b.min < 2047));
 		const ph = r.model.phases;
-		assert.ok(ph.length >= 3 && ph.length <= 6, ph.map(p => `${p.name} ${p.band}`).join());
+		assert.ok(ph.length >= 4 && ph.length <= 6, ph.map(p => `${p.name} ${p.band}`).join());
 		assert.ok(
 			ph.every(p => p.stats.runs >= 3 && p.show === true && p.notify === undefined && p.decided === "live"),
 			"a phase needs ≥ 3 runs",
@@ -79,6 +82,11 @@ describe("learn phases (Spec B.5)", function () {
 		assert.strictEqual(ph.filter(p => p.trailer).length, 1);
 		assert.ok(tail.stats.runs >= 3 && tail.stats.watts > 50 && tail.stats.watts < 150, JSON.stringify(tail.stats));
 		assert.ok(tail.stats.shortSec >= 1200 && tail.stats.longSec <= 2400, JSON.stringify(tail.stats));
+		assert.strictEqual(tail.stats.agreement, 0, "the after-run is not cross-checked, so it claims no agreement");
+		assert.ok(
+			own.every(p => p.stats.agreement >= 0.99),
+			"every phase read from the bands passes the cross-check",
+		);
 		for (const p of own) {
 			assert.ok(p.stats.watts > 0 && p.stats.shortSec > 0 && p.stats.longSec >= p.stats.shortSec, p.name);
 		}
@@ -92,7 +100,7 @@ describe("learn phases (Spec B.5)", function () {
 		const r = learnPhases(units, { runLimitW: runLimit, unitFactor: 1, pollSec: 10, now: 0 });
 		assert.strictEqual(r.model.scope, "run");
 		assert.strictEqual(r.model.quality.runsUsed, 7);
-		assert.ok(r.looAgreement >= 0.95, String(r.looAgreement));
+		assert.ok(r.looAgreement >= 0.99, String(r.looAgreement));
 		assert.ok(
 			r.model.bands.every(b => b.smoothing !== "level" && b.windowSec === 0),
 			"no rhythm: the bands are read over the raw values",
@@ -135,16 +143,21 @@ describe("learn phases (Spec B.5)", function () {
 			!ign || ign.stats.agreement >= 0.99 || r.retroOnly.includes(ign.id),
 			"ignition live only when it passes the cross-check",
 		);
-		assert.ok(r.looAgreement >= 0.95, String(r.looAgreement));
+		assert.ok(r.looAgreement >= 0.99, String(r.looAgreement));
 		assert.ok(
 			r.model.phases.every((p, i) => p.name === `Phase ${i + 1}` && !p.trailer),
 			"no after-run without runs",
 		);
 		const startUp = r.model.phases.findIndex(p => p.after?.includes("idle"));
 		assert.ok(startUp >= 0, "start-up told apart by the predecessor");
+		const ids = new Set([...r.model.phases.map(p => p.id), "idle", "start"]);
 		assert.ok(
-			r.model.phases.every(p => !p.after || p.after.includes("idle") || p.after.length > 0),
-			"every predecessor list is usable",
+			r.model.phases.every(p => !p.after || (p.after.length > 0 && p.after.every(a => ids.has(a)))),
+			"every predecessor is a phase of the model, the begin of the run or rest",
+		);
+		assert.ok(
+			r.model.phases.some(p => p.after && !p.after.includes("idle")),
+			"the rest of the band follows other phases",
 		);
 	});
 	it("relearning keeps ids, names and notify; unmatched phases are reported with their actions", () => {
@@ -223,6 +236,70 @@ describe("learn phases (Spec B.5)", function () {
 		);
 		assert.strictEqual(again.model.bands[0].name, first.bands[0].name, "an old generated band name is replaced");
 		assert.deepStrictEqual(again.dropped, []);
+	});
+	it("the after-run never carries 'finished afterwards' from the old model, but keeps its id, messages and name (Spec B.5 step 8)", () => {
+		const { units, runLimit } = phaseInput(W);
+		const ctx = { runLimitW: runLimit, unitFactor: 1, pollSec: 10, now: 0 };
+		const first = learnPhases(units, ctx).model;
+		const tailId = first.phases.at(-1).id;
+		const previous = {
+			...first,
+			phases: first.phases.map(p =>
+				p.trailer ? { ...p, name: "Rest of the run", final: true, notify: { start: true } } : p,
+			),
+		};
+		const again = learnPhases(units, { ...ctx, previous }).model;
+		const tail = again.phases.at(-1);
+		assert.deepStrictEqual(
+			[tail.trailer, tail.id, tail.name, tail.final, tail.notify],
+			[true, tailId, "Rest of the run", undefined, { start: true }],
+		);
+		const own = first.phases.find(p => !p.trailer);
+		const marked = learnPhases(units, {
+			...ctx,
+			previous: { ...first, phases: first.phases.map(p => (p.id === own.id ? { ...p, final: true } : p)) },
+		}).model;
+		assert.strictEqual(marked.phases.find(p => p.id === own.id).final, true, "a phase of the bands keeps it");
+	});
+	it("a name generated in another language of the instance is given anew; without the templates it would stay", () => {
+		const { units, runLimit } = phaseInput(W);
+		const ctx = { runLimitW: runLimit, unitFactor: 1, pollSec: 10, now: 0 };
+		const first = learnPhases(units, ctx).model;
+		const templates = ["en", "de", "ru", "pt", "nl", "fr", "it", "es", "pl", "uk", "zh-cn"].map(
+			lang =>
+				JSON.parse(readFileSync(new URL(`../admin/i18n/${lang}.json`, import.meta.url), "utf8")).phase_neutral,
+		);
+		const foreign = ["Fase 2", "Фаза 1", "阶段 3", "Faza 4"];
+		const previous = {
+			...first,
+			phases: first.phases.map((p, i) => (i < foreign.length ? { ...p, name: foreign[i] } : p)),
+		};
+		const again = learnPhases(units, { ...ctx, previous, neutralTemplates: templates }).model;
+		assert.deepStrictEqual(
+			again.phases.map(p => p.name),
+			first.phases.map((_, i) => `Phase ${i + 1}`),
+		);
+		const without = learnPhases(units, { ...ctx, previous }).model;
+		assert.strictEqual(without.phases[0].name, "Fase 2", "only the templates tell a generated name apart");
+	});
+	it("without a previous model, or one without an after-run, the after-run gets a new id of its own", () => {
+		const { units, runLimit } = phaseInput(W);
+		const ctx = { runLimitW: runLimit, unitFactor: 1, pollSec: 10, now: 0 };
+		const first = learnPhases(units, ctx);
+		const ids = first.model.phases.map(p => p.id);
+		assert.strictEqual(new Set(ids).size, ids.length);
+		assert.ok(first.model.phases.at(-1).trailer && /^p\d+$/.test(ids.at(-1)), ids.join());
+		assert.deepStrictEqual(first.dropped, []);
+		const previous = { ...first.model, phases: first.model.phases.filter(p => !p.trailer) };
+		const again = learnPhases(units, { ...ctx, previous }).model;
+		const tail = again.phases.at(-1);
+		assert.ok(tail.trailer);
+		assert.ok(!previous.phases.some(p => p.id === tail.id), `${tail.id} is new`);
+		assert.deepStrictEqual(
+			again.phases.slice(0, -1).map(p => p.id),
+			previous.phases.map(p => p.id),
+			"the other phases keep their ids",
+		);
 	});
 	it("segments of one band are one phase whatever their duration; excluded runs are not used", () => {
 		const ctx = { runLimitW: 5, unitFactor: 1, pollSec: 10, now: 0 };

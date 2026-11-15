@@ -31,8 +31,8 @@ export const SYSTEM_PHASE_KEYS = {
 
 /** English names of the system phases (used when the caller passes no translated names). */
 export const DEFAULT_PHASE_NAMES: Readonly<Record<string, string>> = {
-	antiCrease: "Anti-crease",
-	afterRun: "After the run",
+	antiCrease: "After-run",
+	afterRun: "After the end",
 	rest: "Rest",
 	unknown: "Unknown",
 };
@@ -110,7 +110,7 @@ export interface PhaseDef {
 export interface PhaseStats {
 	/** Runs or days with the phase. */
 	runs: number;
-	/** Agreement of the cross-check (0..1). */
+	/** Agreement of the cross-check (0..1); 0 for the after-run, which is not cross-checked. */
 	agreement: number;
 	/** End of the latest evidence (ms). */
 	lastSeen: number;

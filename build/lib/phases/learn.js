@@ -28,6 +28,13 @@ const FLICKER_MAX = 1.2;
 const OPEN_FACTOR = 10;
 const START_SHARE = 0.5;
 const NEUTRAL_TEMPLATE = "Phase {n}";
+function templatePattern(template) {
+    if (!template.includes("{n}")) {
+        return null;
+    }
+    const parts = template.split("{n}").map(p => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return new RegExp(`^${parts.join("\\d+")}$`, "u");
+}
 const OLD_GENERATED = / · ≈ -?\d+ \S+ · \d+–\d+ \S+$/u;
 const BAND_GENERATED = /^≈ -?\d+ W$/u;
 export function scopeOf(runsPerDay, medianRestMin) {
@@ -467,6 +474,7 @@ function crossCheck(full, folds, units, pollSec, holds) {
     let total = 0;
     let liveChanges = 0;
     let offline = 0;
+    const refs = [];
     units.forEach((u, n) => {
         const fold = folds[n];
         const bandOfId = new Map();
@@ -479,6 +487,7 @@ function crossCheck(full, folds, units, pollSec, holds) {
         }
         const runs = full.scope === "run" ? [runOf(u)] : undefined;
         const ref = replayPhases(full, u.points, pollSec, runs, { holds }).timeline;
+        refs.push(ref);
         const live = replayPhases(fold, u.points, pollSec, runs, { holds }).live;
         const end = ref.at(-1)?.to ?? 0;
         offline += ref.filter(x => x.to - x.from >= lagMs).length;
@@ -557,7 +566,7 @@ function crossCheck(full, folds, units, pollSec, holds) {
         }
         closeEpisode();
     });
-    return { agreement: total > 0 ? ok / total : 1, per, flicker: offline > 0 ? liveChanges / offline : 0 };
+    return { agreement: total > 0 ? ok / total : 1, per, flicker: offline > 0 ? liveChanges / offline : 0, refs };
 }
 function agreementOf(c) {
     if (!c || c.ref + c.wrong === 0) {
@@ -590,7 +599,7 @@ function typicalW(bands, units, factor) {
     }
     return pairs.map((x, k) => Math.round((x.length > 0 ? weightedMedian(x) : bands[k].min) * factor));
 }
-function phaseFactsOf(model, units, pollSec, holds, factor) {
+function phaseFactsOf(model, units, timelines, factor) {
     const ids = new Set(model.phases.map(p => p.id));
     const pos = new Map();
     const totals = new Map();
@@ -604,9 +613,8 @@ function phaseFactsOf(model, units, pollSec, holds, factor) {
             m.set(id, [...v]);
         }
     };
-    for (const u of units) {
-        const runs = model.scope === "run" ? [runOf(u)] : undefined;
-        const tl = replayPhases(model, u.points, pollSec, runs, { holds }).timeline;
+    units.forEach((u, n) => {
+        const tl = timelines[n] ?? [];
         const spans = [];
         let open = false;
         for (const x of tl) {
@@ -653,7 +661,7 @@ function phaseFactsOf(model, units, pollSec, holds, factor) {
                 }
             }
         }
-    }
+    });
     const out = new Map();
     for (const [id, list] of pos) {
         const t = totals.get(id);
@@ -787,7 +795,7 @@ export function learnPhases(units, ctx) {
     }
     const agreement = used.length > 0 ? check.agreement : 0;
     const tail = scope === "run" ? trailerOf(units, bands, factor) : null;
-    const facts = phaseFactsOf(full, used, pollSec, holds, factor);
+    const facts = phaseFactsOf(full, used, check.refs, factor);
     const typical = typicalW(bands, used, factor);
     const neutral = ctx.neutralName ?? defaultNeutral;
     const prev = ctx.previous;
@@ -799,12 +807,15 @@ export function learnPhases(units, ctx) {
         "start",
     ]);
     const most = (prev?.phases.length ?? 0) + full.phases.length + 1;
+    const patterns = [NEUTRAL_TEMPLATE, ...(ctx.neutralTemplates ?? [])]
+        .map(templatePattern)
+        .filter((p) => p !== null);
     const generated = (name) => {
-        if (OLD_GENERATED.test(name) || BAND_GENERATED.test(name)) {
+        if (OLD_GENERATED.test(name) || BAND_GENERATED.test(name) || patterns.some(p => p.test(name))) {
             return true;
         }
         for (let n = 1; n <= most; n++) {
-            if (name === neutral(n) || name === defaultNeutral(n)) {
+            if (name === neutral(n)) {
                 return true;
             }
         }
@@ -901,7 +912,7 @@ export function learnPhases(units, ctx) {
         return old !== undefined && old.trim() !== "" && !generated(old) ? old : neutral(n);
     };
     const kept = (out, old) => {
-        if (old?.final) {
+        if (old?.final && !out.trailer) {
             out.final = true;
         }
         if (old?.notify) {
@@ -954,7 +965,7 @@ export function learnPhases(units, ctx) {
             show: old?.show ?? true,
             stats: {
                 runs: tail.runs,
-                agreement: 1,
+                agreement: 0,
                 lastSeen: tail.lastSeen,
                 watts: tail.watts,
                 shortSec: tail.shortSec,

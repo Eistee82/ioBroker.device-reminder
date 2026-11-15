@@ -4,11 +4,25 @@ import { decisionOf, detectionOf } from "../build/lib/runStore.js";
 import { DRYER, WASHER } from "./helpers/devices.js";
 import { WM_FINAL } from "./helpers/final.js";
 import { loadSeries } from "./helpers/fixtures.js";
-import { droppedText, finalText, phaseItems, usesOfAnswer } from "../build/lib/learnDialog.js";
+import {
+	droppedText,
+	finalPhaseOf,
+	finalText,
+	finishChoiceOf,
+	finishOptions,
+	finishPreset,
+	phaseData,
+	phaseItems,
+	phasesFromForm,
+	usesOfAnswer,
+} from "../build/lib/learnDialog.js";
+import { FINAL_KEYS } from "../build/lib/detector/types.js";
 import { recordingChecks } from "../build/lib/learning.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import {
 	buildLearnSchema,
+	changedValues,
+	oldValuesOf,
 	buildRunTable,
 	RUN_TABLE_MODE,
 	buildOptimizationView,
@@ -217,7 +231,9 @@ function fakeAction(over = {}) {
 		},
 		showForm: async (schema, options) => {
 			forms.push({ schema, options });
-			return answers.shift();
+			// an answer may depend on the form (e.g. a phase id learned in the dialog)
+			const answer = answers.shift();
+			return typeof answer === "function" ? answer(schema, options) : answer;
 		},
 		progress: [],
 		openProgress: async (title, options) => {
@@ -1033,7 +1049,7 @@ describe("deviceManagement", () => {
 			assert.ok(dialog.options.data.longestPauseMin >= 20);
 			assert.ok(dialog.options.data.pauseHoldSec > 0, "pause protection is suggested");
 			assert.match(dialog.options.data.eval_current, /^\d\/3/);
-			assert.ok(dialog.schema.items.eval_current);
+			assert.ok(dialog.schema.items.details.items.eval_current, "under Details");
 			const values = action.forms.progress.values;
 			assert.strictEqual(values[0], 0);
 			assert.strictEqual(values.at(-1), 100);
@@ -1089,15 +1105,60 @@ describe("deviceManagement", () => {
 			assert.notStrictEqual(ctx.host.own("trockner.learning.active"), true);
 		});
 
-		it("offers the pause protection and the cross-check in the dialog", () => {
-			const items = buildLearnSchema(true, "kW", true).items;
-			for (const key of ["pauseHoldSec", "pauseUntilSec", "pauseBelowVal", "looText", "longestPauseMin"]) {
+		it("offers the pause protection in the dialog and the cross-check under Details", () => {
+			const items = buildLearnSchema({ fromHistory: true, unit: "kW", withCurrent: true }).items;
+			for (const key of ["pauseHoldSec", "pauseUntilSec", "pauseBelowVal"]) {
 				assert.ok(items[key], key);
 			}
+			const details = items.details.items;
+			for (const key of ["looText", "longestPauseMin", "eval_count", "eval_current", "samples"]) {
+				assert.ok(details[key], key);
+			}
 			assert.strictEqual(items.endVal.unit, "kW");
-			assert.ok(items.eval_current);
-			assert.strictEqual(buildLearnSchema(true).items.eval_current, undefined);
-			assert.strictEqual(buildLearnSchema(false).items.looText, undefined);
+			assert.deepStrictEqual(
+				[items.details.type, items.details.collapsable, items.details.color],
+				["panel", true, undefined],
+				"a collapsible panel without colour",
+			);
+			assert.strictEqual(buildLearnSchema({ fromHistory: true }).items.details.items.eval_current, undefined);
+			assert.strictEqual(buildLearnSchema().items.details.items.looText, undefined);
+		});
+
+		it("shows every detection value next to the value of the device and marks the changed ones (Spec B.7)", () => {
+			const before = {
+				mode: "count",
+				startVal: 20,
+				endVal: 3,
+				standby: 1,
+				startCount: 2,
+				endCount: 4,
+				startDurationSec: 0,
+				endDurationSec: 0,
+			};
+			const changed = changedValues(before, { ...before, endVal: "5", mode: "timed", pauseHoldSec: 0 });
+			assert.deepStrictEqual([...changed].sort(), ["endVal", "mode"]);
+			const items = buildLearnSchema({ changed }).items;
+			const rows = ["mode", "startVal", "endVal", "standby", "startCount", "endCount", "startDurationSec"].concat(
+				["endDurationSec", "pauseHoldSec", "pauseUntilSec", "pauseBelowVal"],
+			);
+			for (const key of rows) {
+				assert.strictEqual(items[`lbl_${key}`].type, "staticText", key);
+				assert.deepStrictEqual([items[`old_${key}`].type, items[`old_${key}`].disabled], ["text", true], key);
+				assert.ok(!items[key].disabled, `${key} can be changed`);
+			}
+			assert.match(items.lbl_endVal.text.en, /^≠ End threshold$/);
+			assert.match(items.lbl_mode.text.de, /^≠ /);
+			assert.doesNotMatch(items.lbl_startVal.text.en, /≠/);
+			assert.deepStrictEqual(
+				Object.keys(items).filter(k => k.startsWith("trailer")),
+				[],
+				"no fields of the after-run filter",
+			);
+			const old = oldValuesOf(before, "W");
+			assert.deepStrictEqual(
+				[old.old_mode, old.old_endVal, old.old_startCount, old.old_endDurationSec, old.old_pauseBelowVal],
+				["Count", "3 W", "2", "0 s", "0 W"],
+			);
 		});
 
 		it("takes the pause protection from the dialog and rejects negative values", () => {
@@ -1120,11 +1181,10 @@ describe("deviceManagement", () => {
 			assert.ok(parseLearnForm({ ...form, pauseHoldSec: -1 }).error);
 		});
 
-		it("offers and takes the anti-crease filter only when it is on", () => {
-			const off = buildLearnSchema(true).items;
-			assert.strictEqual(off.trailerBurstSec, undefined);
+		it("takes the after-run filter without fields of its own, and only when it is on", () => {
+			const off = buildLearnSchema({ fromHistory: true }).items;
 			assert.strictEqual(off.trailerNotSeparable, undefined);
-			const on = buildLearnSchema(true, "W", false, true, true, true).items;
+			const on = buildLearnSchema({ fromHistory: true, notSeparable: true }).items;
 			for (const key of [
 				"trailerBurstSec",
 				"trailerGapSec",
@@ -1132,13 +1192,11 @@ describe("deviceManagement", () => {
 				"trailerBlockVal",
 				"trailerMaxSec",
 			]) {
-				assert.ok(on[key], key);
+				assert.strictEqual(on[key], undefined, key);
 			}
 			assert.strictEqual(on.trailerNotSeparable.boxType, "warning");
-			assert.strictEqual(
-				buildLearnSchema(false, "W", false, false, false, false, false).items.samples,
-				undefined,
-			);
+			assert.match(I18n.translate("dm_learnTrailerNotSeparable"), /after-run/);
+			assert.strictEqual(buildLearnSchema({ withSamples: false }).items.details, undefined, "no empty Details");
 			const form = {
 				name: "T",
 				startVal: 20,
@@ -1278,20 +1336,60 @@ describe("deviceManagement", () => {
 				assert.ok(action.forms[1].schema.items.runs || action.forms[1].schema.items.use_0, "table or fallback");
 			});
 
-			it("suggestion from admitted runs only; final phase offered with key figures, checkbox off by default", async () => {
+			it("suggestion from admitted runs only: values next to the old ones, phases as rows, finished from standby by default", async () => {
 				const { action } = await open([
 					{ source: "history", instance: "history.0", reviewRuns: true },
 					{ operation: "next" },
 				]);
-				const d = action.forms[2].options.data;
-				assert.strictEqual(d.final_apply, false);
+				const { schema, options } = action.forms[2];
+				const d = options.data;
+				const items = schema.items;
+				assert.strictEqual(d.finishAt, "standby", "standby by default (3.1.2)");
+				assert.strictEqual(d.old_finishAt, "Standby (as before)");
+				const choices = items.finishAt.options;
+				assert.deepStrictEqual(
+					choices.map(o => o.value === "standby"),
+					[true, false],
+					"standby and the one phase after the final band",
+				);
 				// the tests run with I18n "en" (test/helpers/i18n.js)
 				assert.match(
-					d.final_text,
-					/^Finished \d+ min earlier \(median\), \d+ of \d+ runs, 0 too early, \d+ fallback/,
+					items.final_text.text.en,
+					/^Finished \d+ min earlier \(median\), checked on \d+ of \d+ runs, 0 too early, \d+ fallback/,
 				);
-				assert.ok(action.forms[2].schema.items.final_apply, "the checkbox exists");
-				assert.ok(action.forms[2].schema.items.showPhases, "phases can be switched on");
+				assert.strictEqual(d.old_startVal, "30 W", "the values of the template are the old ones");
+				const names = Object.keys(items).filter(k => /^phase_.+_name$/.test(k));
+				// the dialog learns from the stored values on the poll grid, which keeps more low bands than the raw
+				// values of phaseLearn.test.js (4–6 phases there)
+				assert.ok(names.length >= 3, names.join());
+				const ids = names.map(k => k.slice(6, -5));
+				for (const id of ids) {
+					for (const f of ["no", "power", "duration", "old"]) {
+						assert.ok(items[`phase_${id}_${f}`], `${id} ${f}`);
+					}
+					assert.strictEqual(d[`phase_${id}_old`], "new", "no phases before");
+					assert.match(d[`phase_${id}_duration`], /min$/);
+				}
+				assert.deepStrictEqual(
+					ids.map(id => d[`phase_${id}_name`]),
+					ids.map((_, i) => `Phase ${i + 1}`),
+				);
+				assert.match(
+					d[`phase_${ids.at(-1)}_power`],
+					/^short bursts ≈ \d+ W$/,
+					"the after-run is the last phase",
+				);
+				assert.match(d[`phase_${ids[0]}_power`], /^≈ \d+ W$/);
+				const at = ids.indexOf(choices[1].value);
+				assert.ok(at >= 0 && at < ids.length - 1, "a phase of the bands, not the after-run");
+				assert.strictEqual(choices[1].label, `Phase ${at + 2}`, "finished from the phase that follows it");
+				for (const gone of ["final_apply", "showPhases", "trailerBurstSec"]) {
+					assert.strictEqual(items[gone], undefined, gone);
+				}
+				assert.ok(
+					!Object.keys(items).some(k => /_(show|notifyStart|notifyEnd|final)$/.test(k)),
+					"no show, messages or finished afterwards per phase",
+				);
 			});
 
 			it("both run table variants are built; fallback is the default until the real system check", () => {
@@ -1365,15 +1463,29 @@ describe("deviceManagement", () => {
 			});
 
 			it("apply writes detection, final values and phases into the device and decisions into the store, no restart", async () => {
+				let chosen = "";
+				let first = "";
 				const { ctx, action } = await open([
 					{ source: "history", instance: "history.0", reviewRuns: true },
 					{ operation: "next", runs: [{ use: "exclude" }] },
-					{ operation: "apply", final_apply: true, showPhases: true },
+					schema => {
+						chosen = schema.items.finishAt.options[1].value;
+						first = Object.keys(schema.items).find(k => /^phase_.+_name$/.test(k));
+						return { operation: "apply", finishAt: chosen, [first]: " Heating " };
+					},
 				]);
 				assert.strictEqual(action.confirmations.length, 1);
 				const native = ctx.adapter.objects.get(`${NS}.wm`).native;
 				assert.ok(native.detection.finalMinVal > 0, "final phase taken over");
 				assert.strictEqual(native.phases?.enabled, true);
+				assert.deepStrictEqual(
+					native.phases.phases.filter(p => p.final).map(p => p.id),
+					[chosen],
+					"the phase in the final band carries finished afterwards",
+				);
+				assert.ok(!native.phases.phases.find(p => p.id === chosen).trailer);
+				assert.strictEqual(native.phases.phases.find(p => `phase_${p.id}_name` === first).name, "Heating");
+				assert.ok(native.phases.phases.every(p => p.notify === undefined && p.show === true));
 				assert.strictEqual(native.template, undefined);
 				assert.deepStrictEqual(ctx.adapter.extendedForeign, []);
 				const st = await ctx.registry.readLearningData("wm");
@@ -1386,18 +1498,54 @@ describe("deviceManagement", () => {
 				assert.strictEqual(action.messages.at(-1).en.includes("saved"), true);
 			});
 
-			it("without the checkbox the final phase of the device stays; decisions are still stored", async () => {
+			it("finished from standby: no final phase, the phases are still saved and shown; decisions are stored", async () => {
 				const { ctx } = await open([
 					{ source: "history", instance: "history.0", reviewRuns: true },
 					{ runs: [{ use: "exclude" }] },
-					{ final_apply: false },
+					{ finishAt: "standby" },
 				]);
 				const native = ctx.adapter.objects.get(`${NS}.wm`).native;
 				assert.ok(!native.detection.finalMinVal, "no final phase");
-				assert.strictEqual(native.phases, undefined, "phases stay off");
+				assert.strictEqual(native.phases?.enabled, true, "a learned model is always saved and switched on");
+				assert.ok(native.phases.phases.every(p => !p.final));
+				assert.ok(native.phases.phases.at(-1).trailer, "the after-run is the last phase");
 				const st = await ctx.registry.readLearningData("wm");
 				assert.ok(Object.values(st.verdicts).some(v => v.user === "exclude"));
 				assert.strictEqual(st.runs.length, 0, "no comparison runs without the final phase");
+			});
+
+			it("learning again shows the values, the phases and finished from as before; keep leaves the final phase", async () => {
+				const { ctx } = await open([
+					{ source: "history", instance: "history.0" },
+					schema => ({ finishAt: schema.items.finishAt.options[1].value }),
+				]);
+				const first = structuredClone(ctx.adapter.objects.get(`${NS}.wm`).native);
+				const inUse = first.phases.phases.find(p => p.final);
+				assert.ok(inUse && first.detection.finalMinVal > 0);
+				const [info] = await load(ctx);
+				const action = fakeAction({
+					forms: [{ source: "history", instance: "history.0" }, { finishAt: "keep" }],
+				});
+				await actionOf(info, "learn").handler("wm", action);
+				const { schema, options } = action.forms[1];
+				const d = options.data;
+				assert.strictEqual(d.finishAt, inUse.id, "the phase in use is preselected");
+				assert.match(d.old_finishAt, /^Phase \d+/, "before: the phase chosen the first time");
+				assert.deepStrictEqual(
+					schema.items.finishAt.options.map(o => o.value),
+					["standby", inUse.id, "keep"],
+				);
+				assert.strictEqual(
+					d.old_endVal,
+					`${first.detection.endVal} W`,
+					"before: the values of the first learning",
+				);
+				assert.match(d[`phase_${inUse.id}_old`], /^Phase \d+ · ≈ \d+ W · \d+(–\d+)? min$/);
+				const again = ctx.adapter.objects.get(`${NS}.wm`).native;
+				for (const key of FINAL_KEYS) {
+					assert.strictEqual(again.detection[key] ?? 0, first.detection[key] ?? 0, key);
+				}
+				assert.strictEqual(again.phases.phases.find(p => p.id === inUse.id)?.final, true);
 			});
 
 			it("cancelling after the runs changes nothing", async () => {
@@ -1422,9 +1570,10 @@ describe("deviceManagement", () => {
 				const [info] = await load(ctx);
 				const action = fakeAction({ forms: [] });
 				await actionOf(info, "learn").handler("trockner", action);
-				assert.strictEqual(action.forms[0].options.data.final_apply, undefined);
-				assert.strictEqual(action.forms[0].schema.items.final_apply, undefined);
-				assert.strictEqual(action.forms[0].schema.items.showPhases, undefined);
+				assert.strictEqual(action.forms[0].options.data.finishAt, undefined);
+				assert.strictEqual(action.forms[0].schema.items.finishAt, undefined);
+				assert.ok(action.forms[0].schema.items.old_startVal, "the values next to the old ones as well");
+				assert.ok(!Object.keys(action.forms[0].schema.items).some(k => k.startsWith("phase_")), "no phases");
 			});
 
 			it("an energy meter is not recorded either", async () => {
@@ -1921,12 +2070,132 @@ describe("learn dialog texts", () => {
 		assert.doesNotMatch(none.en, /action/);
 		const model = { enabled: true, scope: "run", phases: [] };
 		assert.strictEqual(
-			phaseItems(model, null, [], [{ id: "p3", name: "x", actions: 2 }]).phasesDropped.boxType,
+			phaseItems(model, [], [{ id: "p3", name: "x", actions: 2 }]).phasesDropped.boxType,
 			"warning",
 		);
-		assert.strictEqual(
-			phaseItems(model, null, [], [{ id: "p3", name: "x", actions: 0 }]).phasesDropped.boxType,
-			"info",
-		);
+		assert.strictEqual(phaseItems(model, [], [{ id: "p3", name: "x", actions: 0 }]).phasesDropped.boxType, "info");
+	});
+
+	describe("finished from and the phases of the dialog (Spec B.7)", () => {
+		const phase = (id, band, extra = {}) => ({
+			id,
+			name: `Phase ${id.slice(1)}`,
+			band,
+			minSec: 0,
+			maxSec: 0,
+			decided: "live",
+			show: true,
+			stats: { runs: 5, agreement: 1, lastSeen: 0, watts: 500, shortSec: 120, longSec: 840 },
+			...extra,
+		});
+		// heating (b3), spin (b2), after-run in the spin band: only a band phase can end the final band
+		const model = {
+			v: 1,
+			enabled: false,
+			scope: "run",
+			bands: [
+				{ id: "b1", name: "≈ 6 W", min: 5, max: 100, smoothing: "level", dipSec: 45, windowSec: 60 },
+				{ id: "b2", name: "≈ 500 W", min: 100, max: 1000, smoothing: "block", dipSec: 30, windowSec: 0 },
+				{ id: "b3", name: "≈ 2000 W", min: 1000, max: Infinity, smoothing: "block", dipSec: 30, windowSec: 0 },
+			],
+			phases: [
+				phase("p1", "b3"),
+				phase("p2", "b2", { notify: { end: true } }),
+				phase("p3", "b2", {
+					trailer: true,
+					stats: { runs: 5, agreement: 0, lastSeen: 0, watts: 110, shortSec: 1500, longSec: 1800 },
+				}),
+			],
+			learnedAt: 0,
+			quality: { agreement: 1, runsUsed: 5 },
+		};
+		const ok = { ok: true, values: { finalMinVal: 150, finalHotVal: 0 } };
+		const off = { active: false };
+
+		it("offers standby and the phase after the last phase in the final band, never the after-run itself", () => {
+			assert.strictEqual(finalPhaseOf(model, ok).id, "p2");
+			assert.strictEqual(finalPhaseOf(model, { ...ok, ok: false }), null);
+			assert.deepStrictEqual(finishOptions(model, ok, off), [
+				{ label: "Standby (as before)", value: "standby" },
+				{ label: "Phase 3", value: "p2" },
+			]);
+			assert.deepStrictEqual(
+				finishOptions(model, null, { active: true }).map(o => o.value),
+				["standby", "keep"],
+			);
+			const last = { ...model, phases: model.phases.slice(0, 2) };
+			assert.strictEqual(finishOptions(last, ok, off)[1].label, "After Phase 2", "no phase after it");
+			const named = { ...model, phases: model.phases.map(p => (p.id === "p3" ? { ...p, name: "Rest" } : p)) };
+			assert.strictEqual(finishOptions(named, ok, off)[1].label, "Phase 3 – Rest");
+		});
+		it("presets standby, the phase in use or keep, and reads the answer", () => {
+			assert.strictEqual(finishPreset(model, ok, off), "standby");
+			const inUse = { ...model, phases: model.phases.map(p => (p.id === "p2" ? { ...p, final: true } : p)) };
+			assert.strictEqual(finishPreset(inUse, ok, { active: true }), "p2");
+			assert.strictEqual(finishPreset(model, ok, { active: true }), "keep");
+			assert.deepStrictEqual(finishChoiceOf("p2", model, ok, off), {
+				useFinal: true,
+				keep: false,
+				finalId: "p2",
+			});
+			assert.deepStrictEqual(finishChoiceOf("p3", model, ok, off).useFinal, false, "the after-run is no choice");
+			assert.deepStrictEqual(finishChoiceOf("keep", model, ok, off).keep, false, "keep only with a final phase");
+			assert.deepStrictEqual(finishChoiceOf("keep", model, ok, { active: true }).keep, true);
+			assert.deepStrictEqual(finishChoiceOf(undefined, model, ok, off), {
+				useFinal: false,
+				keep: false,
+				finalId: null,
+			});
+		});
+		it("saves the phases switched on with the names of the form and finished afterwards at the chosen phase", () => {
+			const inUse = { ...model, phases: model.phases.map(p => (p.id === "p1" ? { ...p, final: true } : p)) };
+			const saved = phasesFromForm(
+				inUse,
+				{ phase_p1_name: " Heating ", phase_p2_name: "" },
+				{
+					useFinal: true,
+					keep: false,
+					finalId: "p2",
+				},
+			);
+			assert.strictEqual(saved.enabled, true);
+			assert.deepStrictEqual(
+				saved.phases.map(p => [p.id, p.name, p.final]),
+				[
+					["p1", "Heating", undefined],
+					["p2", "Phase 2", true],
+					["p3", "Phase 3", undefined],
+				],
+			);
+			assert.deepStrictEqual(saved.phases[1].notify, { end: true }, "messages of the model stay");
+			const kept = phasesFromForm(inUse, {}, { useFinal: false, keep: true, finalId: null });
+			assert.deepStrictEqual(
+				kept.phases.map(p => p.final),
+				[true, undefined, undefined],
+			);
+			const none = phasesFromForm(inUse, {}, { useFinal: false, keep: false, finalId: null });
+			assert.ok(
+				none.phases.every(p => !p.final),
+				"standby: no phase carries it",
+			);
+		});
+		it("shows power, duration and the phase before learning, or new", () => {
+			const before = {
+				...model,
+				phases: [
+					phase("p1", "b3", {
+						name: "Heating",
+						stats: { runs: 3, agreement: 1, lastSeen: 0, watts: 2100, shortSec: 60, longSec: 720 },
+					}),
+				],
+			};
+			const d = phaseData(model, before);
+			assert.deepStrictEqual(
+				[d.phase_p1_power, d.phase_p1_duration, d.phase_p1_old, d.phase_p2_old],
+				["≈ 500 W", "2–14 min", "Heating · ≈ 2100 W · 1–12 min", "new"],
+			);
+			assert.deepStrictEqual([d.phase_p3_power, d.phase_p3_duration], ["short bursts ≈ 110 W", "25–30 min"]);
+			assert.ok(!("agreement" in d), "no agreement shown");
+		});
 	});
 });

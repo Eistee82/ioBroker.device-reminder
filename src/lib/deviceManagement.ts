@@ -32,6 +32,7 @@ import type { DeviceRegistry } from "./deviceRegistry.js";
 import { BUDGET_WARN_JOBS, formatDate } from "./deviceRegistry.js";
 import { fill, plain, TEMPLATE_NAMES, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
+import { finalOn } from "./detector/index.js";
 import { FINAL_KEYS } from "./detector/types.js";
 import type { DetectionMode, DetectionSettings, FinalSettings } from "./detector/types.js";
 import { analyzeHistory, MIN_RUNS } from "./historyLearning.js";
@@ -46,14 +47,16 @@ import { learnFinal } from "./learn/finalLearn.js";
 import type { Verdict } from "./learn/quality.js";
 import { admitted, sameRun, verdictKey } from "./learn/quality.js";
 import { buildLayout } from "./learn/runs.js";
-import type { Evaluation, LearnInput, RunUse } from "./learnDialog.js";
+import type { Evaluation, FinishChoice, LearnInput, RunUse } from "./learnDialog.js";
 import {
 	buildRunsSchema,
 	checkText,
 	evaluateRuns,
-	finalItems,
-	finalText,
+	finishChoiceOf,
+	finishData,
+	finishItems,
 	heldBackSpans,
+	marked,
 	learnInputOf,
 	neutralName,
 	phaseData,
@@ -1403,6 +1406,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 				pollSec: poll,
 				...(cfg.phases ? { previous: cfg.phases } : {}),
 				neutralName,
+				neutralTemplates: Object.values(I18n.getTranslatedObject("phase_neutral") as Record<string, string>),
 				now: Date.now(),
 				actionsOf: phaseId => cfg.actions.filter(a => a.phaseId === phaseId).length,
 			},
@@ -1519,6 +1523,10 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			return;
 		}
 		const withTrailer = (suggestion.trailerBurstSec ?? 0) > 0;
+		const before = detectionOf(cfg.detection);
+		const oldFinish = { active: finalOn(before), ...(cfg.phases ? { model: cfg.phases } : {}) };
+		const model = extras?.model ?? null;
+		const finalCandidate = extras?.final ?? null;
 		let data: JsonFormData = {
 			startVal: suggestion.thresholds.startVal,
 			endVal: suggestion.thresholds.endVal,
@@ -1553,24 +1561,20 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			...(suggestion.checks && suggestion.checks.length > 0
 				? { checksText: suggestion.checks.map(code => checkLabel(code)).join(", ") }
 				: {}),
-			...(extras?.final
-				? {
-						final_text: translatedText(finalText(extras.final), this.adapter.language ?? "en"),
-						final_apply: false,
-					}
-				: {}),
-			...(extras?.model ? phaseData(extras.model, extras.final, cfg.phases?.enabled === true) : {}),
+			...(extras ? finishData(model, finalCandidate, oldFinish) : {}),
+			...(model ? phaseData(model, cfg.phases) : {}),
 		};
+		data = { ...data, ...oldValuesOf(before, unit) };
 		const fromHistory = suggestion.looDetected !== undefined;
-		const base = buildLearnSchema(
+		const base = buildLearnSchema({
 			fromHistory,
 			unit,
-			suggestion.current !== undefined,
-			suggestion.evaluation !== undefined,
-			withTrailer,
-			suggestion.trailer === "notSeparable",
-			suggestion.samples > 0,
-		);
+			withCurrent: suggestion.current !== undefined,
+			withEval: suggestion.evaluation !== undefined,
+			notSeparable: suggestion.trailer === "notSeparable",
+			withSamples: suggestion.samples > 0,
+			changed: changedValues(before, data),
+		});
 		const schema: JsonFormSchema = {
 			...base,
 			items: {
@@ -1590,13 +1594,13 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 							checksText: { type: "text", disabled: true, xs: 12 },
 						}
 					: {}),
-				...(extras?.final ? finalItems(extras.final) : {}),
-				...(extras?.model ? phaseItems(extras.model, extras.final, extras.retro, extras.dropped) : {}),
+				...(model ? phaseItems(model, extras?.retro ?? [], extras?.dropped ?? []) : {}),
+				...(extras ? finishItems(model, finalCandidate, oldFinish) : {}),
 			},
 		} as JsonFormSchema;
-		const before = detectionOf(cfg.detection);
 		let next: DetectionSettings | null = null;
-		let useFinal = false;
+		// without "finished from" (recording a run) the final phase of the device stays
+		let choice: FinishChoice = { useFinal: false, keep: true, finalId: null };
 		let answered: JsonFormData = data;
 		while (!next) {
 			const result = await ctx.showForm(schema, { data, title: TEXT.learnTitle, ignoreApplyDisabled: true });
@@ -1611,22 +1615,29 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 				data = answered;
 				continue;
 			}
-			// the learned values replace the base values; the final phase of the device stays unless the user takes
-			// the learned one (only offered when every release check passed)
-			useFinal = extras?.final?.ok === true && answered.final_apply === true;
+			// the learned values replace the base values; "finished from" decides the final phase: standby (3.1.2,
+			// no final phase), the learned one (offered only when every release check passed) or the one of the device
+			if (extras) {
+				choice = finishChoiceOf(answered.finishAt, model, finalCandidate, oldFinish);
+			}
 			const final: FinalSettings = {};
 			for (const key of FINAL_KEYS) {
-				final[key] = useFinal ? (extras!.final!.values[key] ?? 0) : (before[key] ?? 0);
+				final[key] = choice.useFinal
+					? (finalCandidate?.values[key] ?? 0)
+					: choice.keep
+						? (before[key] ?? 0)
+						: 0;
 			}
 			next = normalizeDetection({ ...final, ...parsed.values }, [], cfg.name);
 		}
+		const useFinal = choice.useFinal;
 		const changes = describeChange(before, next) || "-";
 		if (!(await ctx.showConfirmation(filled(confirm, { changes })))) {
 			return;
 		}
 		const { template: _template, typeId: _typeId, ...rest } = cfg as DeviceConfig & { typeId?: unknown };
-		const showPhases = extras?.model !== null && extras?.model !== undefined && answered.showPhases === true;
-		const phases = showPhases ? phasesFromForm(extras.model!, answered, extras.final, true) : undefined;
+		// a learned model is always saved and shown (Spec B.7); without learning nothing changes (3.1.2)
+		const phases = model ? phasesFromForm(model, answered, choice) : undefined;
 		await this.writeDevice(id, { ...rest, detection: next, learned: true, ...(phases ? { phases } : {}) });
 		if (extras) {
 			// the decisions about the runs go to the learning data; with the final phase the admitted runs and the
@@ -1663,16 +1674,6 @@ export interface LearnExtras {
 	bands: BaseBands | null;
 	/** The admitted runs as stored runs, labelled with the new values. */
 	storedRuns: (eff: DetectionSettings) => Promise<StoredRun[]>;
-}
-
-/**
- * One language of a translated text.
- *
- * @param text - Translated text
- * @param lang - Language
- */
-function translatedText(text: ioBroker.Translated, lang: string): string {
-	return (text as Record<string, string | undefined>)[lang] ?? text.en;
 }
 
 /**
@@ -1720,7 +1721,7 @@ function oldStoreOf(store: StoreFile | null): { from: number; to: number; keys: 
 }
 
 /**
- * Detection values with the suggestion of the analysis (anti-crease filter only when the suggestion uses it).
+ * Detection values with the suggestion of the analysis (after-run filter only when the suggestion uses it).
  *
  * @param before - Values of the device
  * @param s - Suggestion
@@ -2141,129 +2142,208 @@ export function buildLearnSourceSchema(): JsonFormSchema {
 	};
 }
 
+/** A detection value of the learn dialog: a row "label | before | new" (Spec B.7 step 2.2). */
+interface LearnRow {
+	/** Field of the value (`DetectionSettings`). */
+	key: Exclude<keyof LearnedValues, "mode" | `trailer${string}`>;
+	/** i18n key of the label. */
+	label: string;
+	/** Step of the number field. */
+	step: number;
+	/** Smallest value. */
+	min: number;
+	/** Unit: the unit of the state (`power`), seconds or none. */
+	unit?: "power" | "s";
+}
+
+/** The rows of the detection values in the order of the dialog (the mode first, the pause protection last). */
+const LEARN_ROWS: readonly LearnRow[] = [
+	{ key: "startVal", label: "dm_learnStartVal", step: 0.05, min: 0, unit: "power" },
+	{ key: "endVal", label: "dm_learnEndVal", step: 0.05, min: 0, unit: "power" },
+	{ key: "standby", label: "dm_learnStandby", step: 0.05, min: 0, unit: "power" },
+	{ key: "startCount", label: "dm_learnStartCount", step: 0.5, min: 1 },
+	{ key: "endCount", label: "dm_learnEndCount", step: 1, min: 2 },
+	{ key: "startDurationSec", label: "dm_learnStartDuration", step: 1, min: 0, unit: "s" },
+	{ key: "endDurationSec", label: "dm_learnEndDuration", step: 1, min: 0, unit: "s" },
+	{ key: "pauseHoldSec", label: "dm_learnPauseHold", step: 1, min: 0, unit: "s" },
+	{ key: "pauseUntilSec", label: "dm_learnPauseUntil", step: 1, min: 0, unit: "s" },
+	{ key: "pauseBelowVal", label: "dm_learnPauseBelow", step: 0.05, min: 0, unit: "power" },
+];
+
 /**
- * Schema of the dialog that shows the learned thresholds.
+ * Values of the device before learning for the column "before" (`old_<field>`), with their unit.
  *
- * @param fromHistory - Show the detection mode and the result of each mode over the history runs
+ * @param before - Detection values of the device
  * @param unit - Unit of the power state
- * @param withCurrent - Show the result of the current device type
- * @param withEval - Show the detection mode and the result of each mode (default: fromHistory)
- * @param withTrailer - Show the fields of the anti-crease filter
- * @param notSeparable - Show that the anti-crease phase cannot be told apart from phases inside a programme
- * @param withSamples - Show the duration and the number of samples
  */
-export function buildLearnSchema(
-	fromHistory = false,
-	unit = "W",
-	withCurrent = false,
-	withEval = fromHistory,
-	withTrailer = false,
-	notSeparable = false,
-	withSamples = true,
-): JsonFormSchema {
-	const num = (label: ioBroker.StringOrTranslated, step: number, min: number, unit?: string): PanelItem => ({
-		type: "number",
-		label,
-		min,
-		step,
-		...(unit ? { unit } : {}),
-		xs: 12,
+export function oldValuesOf(before: DetectionSettings, unit = "W"): JsonFormData {
+	const data: JsonFormData = { old_mode: I18n.translate(MODE_LABELS[before.mode ?? "count"]) };
+	for (const row of LEARN_ROWS) {
+		const v = before[row.key] ?? 0;
+		const u = row.unit === "power" ? unit : row.unit;
+		data[`old_${row.key}`] = u ? `${v} ${u}` : String(v);
+	}
+	return data;
+}
+
+/**
+ * Detection values the suggestion changes against the device (marked with "≠" in the dialog).
+ *
+ * @param before - Detection values of the device
+ * @param data - Form data with the suggestion
+ */
+export function changedValues(before: DetectionSettings, data: JsonFormData): Set<string> {
+	const out = new Set<string>();
+	if ((data.mode ?? "count") !== (before.mode ?? "count")) {
+		out.add("mode");
+	}
+	for (const row of LEARN_ROWS) {
+		const v = parseNumber(data[row.key]) ?? 0;
+		if (Math.abs(v - (before[row.key] ?? 0)) > 1e-9) {
+			out.add(row.key);
+		}
+	}
+	return out;
+}
+
+/** What the learn dialog shows besides the detection values. */
+export interface LearnSchemaOptions {
+	/** Show the runs, the longest pause and the cross-check of the history. */
+	fromHistory?: boolean;
+	/** Unit of the power state. */
+	unit?: string;
+	/** Show the result of the current values. */
+	withCurrent?: boolean;
+	/** Show the result of each mode (default: fromHistory). */
+	withEval?: boolean;
+	/** Show that the after-run cannot be told apart from phases inside a programme. */
+	notSeparable?: boolean;
+	/** Show the duration and the number of samples (default true). */
+	withSamples?: boolean;
+	/** Fields whose suggestion differs from the value of the device. */
+	changed?: ReadonlySet<string>;
+}
+
+/**
+ * Schema of the dialog that shows the learned values (Spec B.7 step 2): every detection value as a row "label |
+ * before | new" (a changed one marked with "≠"), the figures behind the suggestion in a collapsible "Details" panel.
+ * The values of the after-run filter are taken over without fields of their own.
+ *
+ * @param opts - What to show
+ */
+export function buildLearnSchema(opts: LearnSchemaOptions = {}): JsonFormSchema {
+	const fromHistory = opts.fromHistory ?? false;
+	const unit = opts.unit ?? "W";
+	const withEval = opts.withEval ?? fromHistory;
+	const changed = opts.changed ?? new Set<string>();
+	const before = I18n.getTranslatedObject("dm_learnColOld");
+	const after = I18n.getTranslatedObject("dm_learnColNew");
+	const items: PanelItems = {
+		info: { type: "infoBox", boxType: "info", text: I18n.getTranslatedObject("dm_learnInfo"), xs: 12 },
+	};
+	const row = (key: string, label: ioBroker.StringOrTranslated, field: PanelItem): void => {
+		items[`lbl_${key}`] = {
+			type: "staticText",
+			text: changed.has(key) ? marked(label) : label,
+			newLine: true,
+			xs: 12,
+			sm: 4,
+		};
+		items[`old_${key}`] = { type: "text", label: before, disabled: true, xs: 6, sm: 4 };
+		items[key] = field;
+	};
+	row("mode", I18n.getTranslatedObject("dm_detailsMode"), {
+		type: "select",
+		label: after,
+		options: DETECTION_MODES.map(m => ({ label: MODE_LABELS[m], value: m })),
+		xs: 6,
 		sm: 4,
 	});
-	return {
-		type: "panel",
-		items: {
-			info: { type: "infoBox", boxType: "info", text: I18n.getTranslatedObject("dm_learnInfo"), xs: 12 },
-			startVal: { ...num(I18n.getTranslatedObject("dm_learnStartVal"), 0.05, 0, unit), newLine: true },
-			endVal: num(I18n.getTranslatedObject("dm_learnEndVal"), 0.05, 0, unit),
-			standby: num(I18n.getTranslatedObject("dm_learnStandby"), 0.05, 0, unit),
-			startCount: { ...num(I18n.getTranslatedObject("dm_learnStartCount"), 0.5, 1), newLine: true },
-			endCount: num(I18n.getTranslatedObject("dm_learnEndCount"), 1, 2),
-			startDurationSec: { ...num(I18n.getTranslatedObject("dm_learnStartDuration"), 1, 0, "s"), newLine: true },
-			endDurationSec: num(I18n.getTranslatedObject("dm_learnEndDuration"), 1, 0, "s"),
-			pauseInfo: {
+	for (const r of LEARN_ROWS) {
+		if (r.key === "pauseHoldSec") {
+			items.pauseInfo = {
 				type: "staticText",
 				text: I18n.getTranslatedObject("dm_learnPauseInfo"),
 				newLine: true,
 				xs: 12,
-			},
-			pauseHoldSec: { ...num(I18n.getTranslatedObject("dm_learnPauseHold"), 1, 0, "s"), newLine: true },
-			pauseUntilSec: num(I18n.getTranslatedObject("dm_learnPauseUntil"), 1, 0, "s"),
-			pauseBelowVal: num(I18n.getTranslatedObject("dm_learnPauseBelow"), 0.05, 0, unit),
-			...(withTrailer ? trailerItems(unit, num) : {}),
-			...(notSeparable
-				? {
-						trailerNotSeparable: {
-							type: "infoBox",
-							boxType: "warning",
-							text: I18n.getTranslatedObject("dm_learnTrailerNotSeparable"),
-							newLine: true,
-							xs: 12,
-						},
-					}
-				: {}),
-			...(withSamples
-				? {
-						durationSec: {
-							type: "number",
-							label: I18n.getTranslatedObject("dm_learnDuration"),
-							unit: "s",
-							disabled: true,
-							newLine: true,
-							xs: 12,
-							sm: 4,
-						},
-						samples: {
-							type: "number",
-							label: fromHistory
-								? I18n.getTranslatedObject("dm_learnHistorySamples")
-								: I18n.getTranslatedObject("dm_learnSamples"),
-							disabled: true,
-							xs: 12,
-							sm: 4,
-						},
-					}
-				: {}),
-			...(withEval ? historyItems(fromHistory, withCurrent) : {}),
-		},
-	};
-}
-
-/**
- * Fields of the anti-crease filter in the learn dialog.
- *
- * @param unit - Unit of the power state
- * @param num - Builder of a number field
- */
-function trailerItems(
-	unit: string,
-	num: (label: ioBroker.StringOrTranslated, step: number, min: number, unit?: string) => PanelItem,
-): PanelItems {
-	return {
-		trailerInfo: {
-			type: "staticText",
-			text: I18n.getTranslatedObject("dm_learnTrailerInfo"),
+			};
+		}
+		const u = r.unit === "power" ? unit : r.unit;
+		row(r.key, I18n.getTranslatedObject(r.label), {
+			type: "number",
+			label: after,
+			min: r.min,
+			step: r.step,
+			...(u ? { unit: u } : {}),
+			xs: 6,
+			sm: 4,
+		});
+	}
+	if (opts.notSeparable) {
+		items.trailerNotSeparable = {
+			type: "infoBox",
+			boxType: "warning",
+			text: I18n.getTranslatedObject("dm_learnTrailerNotSeparable"),
 			newLine: true,
 			xs: 12,
-		},
-		trailerBurstSec: { ...num(I18n.getTranslatedObject("dm_learnTrailerBurst"), 1, 0, "s"), newLine: true },
-		trailerGapSec: num(I18n.getTranslatedObject("dm_learnTrailerGap"), 1, 0, "s"),
-		trailerMaxSec: num(I18n.getTranslatedObject("dm_learnTrailerMax"), 1, 0, "s"),
-		trailerAfterSec: { ...num(I18n.getTranslatedObject("dm_learnTrailerAfter"), 1, 0, "s"), newLine: true },
-		trailerBlockVal: num(I18n.getTranslatedObject("dm_learnTrailerBlock"), 0.05, 0, unit),
+		};
+	}
+	const details: PanelItems = {
+		...((opts.withSamples ?? true)
+			? {
+					durationSec: {
+						type: "number",
+						label: I18n.getTranslatedObject("dm_learnDuration"),
+						unit: "s",
+						disabled: true,
+						xs: 12,
+						sm: 4,
+					},
+					samples: {
+						type: "number",
+						label: fromHistory
+							? I18n.getTranslatedObject("dm_learnHistorySamples")
+							: I18n.getTranslatedObject("dm_learnSamples"),
+						disabled: true,
+						xs: 12,
+						sm: 4,
+					},
+				}
+			: {}),
+		...(withEval ? historyItems(fromHistory, opts.withCurrent ?? false) : {}),
 	};
+	if (Object.keys(details).length > 0) {
+		// no colour: a coloured panel is hard to read in the dark theme of the Admin
+		items.details = {
+			type: "panel",
+			label: I18n.getTranslatedObject("dm_learnDetails"),
+			collapsable: true,
+			newLine: true,
+			xs: 12,
+			items: details,
+		};
+	}
+	return { type: "panel", items };
 }
 
 /**
- * Detection mode and result per mode of the learn dialog (history analysis only).
+ * The figures behind the suggestion of the history analysis (in "Details"): runs, longest pause, the result of each
+ * mode, the cross-check and the result of the current values.
  *
  * @param fromHistory - Show the runs, the longest pause and the cross-check of the history
- * @param withCurrent - Show the result of the current device type
+ * @param withCurrent - Show the result of the current values
  */
 function historyItems(fromHistory: boolean, withCurrent: boolean): PanelItems {
 	const items: PanelItems = {};
 	if (fromHistory) {
-		items.runs = { type: "number", label: I18n.getTranslatedObject("dm_learnRuns"), disabled: true, xs: 12, sm: 4 };
+		items.runs = {
+			type: "number",
+			label: I18n.getTranslatedObject("dm_learnRuns"),
+			disabled: true,
+			newLine: true,
+			xs: 12,
+			sm: 4,
+		};
 		items.longestPauseMin = {
 			type: "number",
 			label: I18n.getTranslatedObject("dm_learnLongestPause"),
@@ -2272,14 +2352,6 @@ function historyItems(fromHistory: boolean, withCurrent: boolean): PanelItems {
 			sm: 4,
 		};
 	}
-	items.mode = {
-		type: "select",
-		label: I18n.getTranslatedObject("dm_detailsMode"),
-		options: DETECTION_MODES.map(m => ({ label: MODE_LABELS[m], value: m })),
-		newLine: true,
-		xs: 12,
-		sm: 4,
-	};
 	items.evalInfo = { type: "staticText", text: I18n.getTranslatedObject("dm_learnEvalInfo"), newLine: true, xs: 12 };
 	for (const m of DETECTION_MODES) {
 		items[`eval_${m}`] = { type: "text", label: MODE_LABELS[m], disabled: true, xs: 12, sm: 4 };
@@ -2306,7 +2378,7 @@ function historyItems(fromHistory: boolean, withCurrent: boolean): PanelItems {
 	return items;
 }
 
-/** Detection values taken from the learn dialog (anti-crease fields only when the filter is on). */
+/** Detection values taken from the learn dialog (after-run filter values only when the filter is on). */
 type LearnedValues = Pick<
 	DetectionSettings,
 	| "mode"
@@ -2365,7 +2437,7 @@ export function parseLearnForm(
 	}
 	const mode = DETECTION_MODES.find(m => m === data.mode) ?? "count";
 	const values: LearnedValues = { mode, ...parsed };
-	// the anti-crease fields are stored only when the filter is on (3.1.2 behaviour otherwise)
+	// the fields of the after-run filter are stored only when the filter is on (3.1.2 behaviour otherwise)
 	if (optional("trailerBurstSec") > 0) {
 		for (const key of TRAILER_FIELDS) {
 			const v = optional(key);

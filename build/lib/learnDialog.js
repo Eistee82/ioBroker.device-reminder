@@ -299,7 +299,7 @@ export function finalText(c) {
         if (c.ok) {
             out[lang] =
                 c.values.finalActVal > 0 && c.values.finalActShare > 0
-                    ? figures
+                    ? `${figures}.`
                     : `${figures}. ${fill(TEXT.finalNoActivity, lang, { lock: Math.round((c.values.finalLockSec > 0 ? c.values.finalLockSec : LOCK_DEFAULT_SEC) / 60) })}`;
         }
         else {
@@ -308,37 +308,10 @@ export function finalText(c) {
     }
     return out;
 }
-export function finalItems(c) {
-    return {
-        finalHeader: {
-            type: "header",
-            text: I18n.getTranslatedObject("dm_learnFinalHeader"),
-            size: 4,
-            newLine: true,
-            xs: 12,
-        },
-        final_text: {
-            type: "text",
-            label: I18n.getTranslatedObject("dm_learnFinalText"),
-            disabled: true,
-            newLine: true,
-            xs: 12,
-        },
-        final_apply: {
-            type: "checkbox",
-            label: I18n.getTranslatedObject("dm_learnFinalApply"),
-            help: I18n.getTranslatedObject("dm_learnFinalHelp"),
-            disabled: !c.ok,
-            newLine: true,
-            xs: 12,
-        },
-    };
-}
-export function phaseKey(id, field) {
-    return `phase_${id}_${field}`;
-}
+export const FINISH_STANDBY = "standby";
+export const FINISH_KEEP = "keep";
 export function finalAllowed(model, p, final) {
-    if (!final?.ok) {
+    if (!final?.ok || p.trailer) {
         return false;
     }
     const band = model.bands.find(b => b.id === p.band);
@@ -348,6 +321,99 @@ export function finalAllowed(model, p, final) {
     const low = final.values.finalMinVal;
     const high = final.values.finalHotVal > 0 ? final.values.finalHotVal : Number.POSITIVE_INFINITY;
     return band.max > low && band.min < high;
+}
+export function finalPhaseOf(model, final) {
+    return model.phases.filter(p => finalAllowed(model, p, final)).at(-1) ?? null;
+}
+export function phaseLabel(model, p) {
+    const neutral = neutralName(model.phases.indexOf(p) + 1);
+    return p.name === neutral ? p.name : `${neutral} – ${p.name}`;
+}
+export function finishLabel(model, p) {
+    const next = model.phases[model.phases.indexOf(p) + 1];
+    return next ? phaseLabel(model, next) : tr("dm_learnFinishAfter").replace("{phase}", phaseLabel(model, p));
+}
+function oldFinishText(old) {
+    if (!old.active) {
+        return tr("dm_learnFinishStandby");
+    }
+    const p = old.model?.phases.find(x => x.final === true);
+    return old.model && p ? finishLabel(old.model, p) : tr("dm_learnFinishDevice");
+}
+export function finishOptions(model, final, old) {
+    const out = [{ label: tr("dm_learnFinishStandby"), value: FINISH_STANDBY }];
+    const p = model ? finalPhaseOf(model, final) : null;
+    if (model && p) {
+        out.push({ label: finishLabel(model, p), value: p.id });
+    }
+    if (old.active) {
+        out.push({ label: tr("dm_learnFinishKeep"), value: FINISH_KEEP });
+    }
+    return out;
+}
+export function finishPreset(model, final, old) {
+    if (!old.active) {
+        return FINISH_STANDBY;
+    }
+    const p = model ? finalPhaseOf(model, final) : null;
+    return p?.final === true ? p.id : FINISH_KEEP;
+}
+export function marked(label) {
+    if (typeof label === "string") {
+        return `≠ ${label}`;
+    }
+    return Object.fromEntries(Object.entries(label).map(([lang, t]) => [lang, `≠ ${t}`]));
+}
+export function finishItems(model, final, old) {
+    const options = finishOptions(model, final, old);
+    const preset = finishPreset(model, final, old);
+    const label = I18n.getTranslatedObject("dm_learnFinishAt");
+    const changed = oldFinishText(old) !== options.find(o => o.value === preset)?.label;
+    const items = {
+        finalHeader: {
+            type: "header",
+            text: I18n.getTranslatedObject("dm_learnFinalHeader"),
+            size: 4,
+            newLine: true,
+            xs: 12,
+        },
+        lbl_finishAt: { type: "staticText", text: changed ? marked(label) : label, newLine: true, xs: 12, sm: 4 },
+        old_finishAt: {
+            type: "text",
+            label: I18n.getTranslatedObject("dm_learnColOld"),
+            disabled: true,
+            xs: 6,
+            sm: 4,
+        },
+        finishAt: {
+            type: "select",
+            label: I18n.getTranslatedObject("dm_learnColNew"),
+            help: I18n.getTranslatedObject("dm_learnFinishHelp"),
+            options,
+            xs: 6,
+            sm: 4,
+        },
+    };
+    if (final) {
+        items.final_text = { type: "staticText", text: finalText(final), newLine: true, xs: 12 };
+    }
+    return items;
+}
+export function finishData(model, final, old) {
+    return { old_finishAt: oldFinishText(old), finishAt: finishPreset(model, final, old) };
+}
+export function finishChoiceOf(value, model, final, old) {
+    const p = model ? finalPhaseOf(model, final) : null;
+    if (p && value === p.id) {
+        return { useFinal: true, keep: false, finalId: p.id };
+    }
+    if (old.active && value === FINISH_KEEP) {
+        return { useFinal: false, keep: true, finalId: null };
+    }
+    return { useFinal: false, keep: false, finalId: null };
+}
+export function phaseKey(id, field) {
+    return `phase_${id}_${field}`;
 }
 export function droppedText(dropped) {
     const phases = dropped.map(d => d.name || d.id).join(", ");
@@ -359,8 +425,24 @@ export function droppedText(dropped) {
     }
     return out;
 }
-export function phaseItems(model, final, retro, dropped) {
-    const hidden = "!data.showPhases";
+export function powerText(model, p) {
+    const w = p.stats.watts;
+    if (w === undefined) {
+        return model.bands.find(b => b.id === p.band)?.name ?? p.band;
+    }
+    return p.trailer ? tr("dm_learnPhaseBursts").replace("{w}", String(w)) : `≈ ${w} W`;
+}
+export function durationText(p) {
+    const lo = p.stats.shortSec ?? p.minSec;
+    const hi = p.stats.longSec ?? p.maxSec;
+    const a = Math.round(lo / 60);
+    if (hi <= 0) {
+        return `≥ ${a} min`;
+    }
+    const b = Math.round(hi / 60);
+    return a === b ? `${a} min` : `${a}–${b} min`;
+}
+export function phaseItems(model, retro, dropped) {
     const items = {
         phasesHeader: {
             type: "header",
@@ -369,10 +451,9 @@ export function phaseItems(model, final, retro, dropped) {
             newLine: true,
             xs: 12,
         },
-        showPhases: {
-            type: "checkbox",
-            label: I18n.getTranslatedObject("dm_learnShowPhases"),
-            help: I18n.getTranslatedObject("dm_learnPhasesHelp"),
+        phasesInfo: {
+            type: "staticText",
+            text: I18n.getTranslatedObject("dm_learnPhasesInfo"),
             newLine: true,
             xs: 12,
         },
@@ -382,109 +463,75 @@ export function phaseItems(model, final, retro, dropped) {
             type: "infoBox",
             boxType: dropped.some(d => d.actions > 0) ? "warning" : "info",
             text: droppedText(dropped),
-            hidden,
             newLine: true,
             xs: 12,
         };
     }
-    for (const p of model.phases) {
-        items[phaseKey(p.id, "info")] = {
-            type: "text",
-            label: p.name,
-            disabled: true,
-            hidden,
-            newLine: true,
-            xs: 12,
-            sm: 4,
-        };
+    model.phases.forEach((p, k) => {
+        items[phaseKey(p.id, "no")] = { type: "staticText", text: `${k + 1}.`, newLine: true, xs: 2, sm: 1 };
         items[phaseKey(p.id, "name")] = {
             type: "text",
             label: I18n.getTranslatedObject("dm_learnPhaseName"),
-            hidden,
+            xs: 10,
+            sm: 3,
+        };
+        items[phaseKey(p.id, "power")] = {
+            type: "text",
+            label: I18n.getTranslatedObject("dm_learnPhasePower"),
+            disabled: true,
+            xs: 6,
+            sm: 2,
+        };
+        items[phaseKey(p.id, "duration")] = {
+            type: "text",
+            label: I18n.getTranslatedObject("dm_learnPhaseDuration"),
+            disabled: true,
+            xs: 6,
+            sm: 2,
+        };
+        items[phaseKey(p.id, "old")] = {
+            type: "text",
+            label: I18n.getTranslatedObject("dm_learnColOld"),
+            disabled: true,
             xs: 12,
             sm: 4,
         };
-        items[phaseKey(p.id, "show")] = {
-            type: "checkbox",
-            label: I18n.getTranslatedObject("dm_learnPhaseShow"),
-            hidden,
-            xs: 6,
-            sm: 1,
-        };
-        items[phaseKey(p.id, "notifyStart")] = {
-            type: "checkbox",
-            label: I18n.getTranslatedObject("dm_learnPhaseNotifyStart"),
-            hidden,
-            xs: 6,
-            sm: 1,
-        };
-        items[phaseKey(p.id, "notifyEnd")] = {
-            type: "checkbox",
-            label: I18n.getTranslatedObject("dm_learnPhaseNotifyEnd"),
-            hidden,
-            xs: 6,
-            sm: 1,
-        };
-        if (finalAllowed(model, p, final)) {
-            items[phaseKey(p.id, "final")] = {
-                type: "checkbox",
-                label: I18n.getTranslatedObject("dm_learnPhaseFinal"),
-                hidden,
-                xs: 6,
-                sm: 1,
-            };
-        }
         if (retro.includes(p.id)) {
-            items[`phase_${p.id}_retro`] = {
+            items[phaseKey(p.id, "retro")] = {
                 type: "staticText",
                 text: I18n.getTranslatedObject("dm_learnPhaseRetro"),
-                hidden,
                 newLine: true,
                 xs: 12,
             };
         }
-    }
+    });
     return items;
 }
-export function phaseData(model, final, showPhases) {
-    const data = { showPhases };
-    const bandName = (id) => model.bands.find(b => b.id === id)?.name ?? id;
+export function phaseData(model, previous) {
+    const data = {};
     for (const p of model.phases) {
-        const dur = `${Math.round(p.minSec / 60)}–${p.maxSec > 0 ? Math.round(p.maxSec / 60) : "∞"} min`;
-        const after = (p.after ?? []).map(a => model.phases.find(x => x.id === a)?.name ?? a);
-        const pre = `${after.slice(0, 3).join(", ")}${after.length > 3 ? ", …" : ""}`;
-        data[phaseKey(p.id, "info")] =
-            `${bandName(p.band)} · ${dur}${pre ? ` · ← ${pre}` : ""} · ${Math.round(p.stats.agreement * 100)} %`;
+        const old = previous?.phases.find(o => o.id === p.id);
         data[phaseKey(p.id, "name")] = p.name;
-        data[phaseKey(p.id, "show")] = p.show;
-        data[phaseKey(p.id, "notifyStart")] = p.notify?.start === true;
-        data[phaseKey(p.id, "notifyEnd")] = p.notify?.end === true;
-        if (finalAllowed(model, p, final)) {
-            data[phaseKey(p.id, "final")] = p.final === true;
-        }
+        data[phaseKey(p.id, "power")] = powerText(model, p);
+        data[phaseKey(p.id, "duration")] = durationText(p);
+        data[phaseKey(p.id, "old")] =
+            old && previous
+                ? `${old.name} · ${powerText(previous, old)} · ${durationText(old)}`
+                : tr("dm_learnPhaseNew");
     }
     return data;
 }
-export function phasesFromForm(model, data, final, enabled) {
+export function phasesFromForm(model, data, choice) {
     const phases = model.phases.map(p => {
         const typed = data[phaseKey(p.id, "name")];
         const name = typeof typed === "string" ? typed.trim() : "";
-        const start = data[phaseKey(p.id, "notifyStart")] === true;
-        const end = data[phaseKey(p.id, "notifyEnd")] === true;
-        const { notify: oldNotify, final: _final, ...rest } = p;
-        const next = { ...rest, name: name || p.name, show: data[phaseKey(p.id, "show")] !== false };
-        if (start || end) {
-            next.notify = {
-                ...(oldNotify?.text ? { text: oldNotify.text } : {}),
-                ...(start ? { start } : {}),
-                ...(end ? { end } : {}),
-            };
-        }
-        if (finalAllowed(model, p, final) && data[phaseKey(p.id, "final")] === true) {
+        const { final: oldFinal, ...rest } = p;
+        const next = { ...rest, name: name || p.name };
+        if (choice.keep ? oldFinal === true : p.id === choice.finalId) {
             next.final = true;
         }
         return next;
     });
-    return { ...model, enabled, phases };
+    return { ...model, enabled: true, phases };
 }
 //# sourceMappingURL=learnDialog.js.map

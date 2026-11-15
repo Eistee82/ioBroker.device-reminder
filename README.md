@@ -31,8 +31,8 @@ Detects when household devices such as washing machines, dryers and dishwashers 
 
 - (Eistee82) BREAKING: complete rewrite with new state IDs, requires Node.js 22, js-controller 6 and admin 7.8; settings from 3.1.2 are migrated automatically (a device whose type is not found is taken over disabled with a hint)
 - (Eistee82) Device manager to add, edit and operate devices, with automatic detection of sockets and power meters
-- (Eistee82) New detection modes (time-based, combined), corrected abort detection, pause protection, anti-crease filter, a final phase that reports the end earlier and optional phases, learned in the order of the run, that show what the device does right now (all default off)
-- (Eistee82) Detection values live in each device; reminders, actions, learning from the history or a recorded run with a check of every run, and an optional automatic optimisation after every run with a dialog to choose the runs it uses
+- (Eistee82) New detection modes (time-based, combined), corrected abort detection, pause protection, after-run filter, a final phase that reports the end earlier and optional phases, learned in the order of the run, that show what the device does right now (all default off)
+- (Eistee82) Detection values live in each device; reminders, actions, learning from the history or a recorded run with a check of every run and each learned value next to the old one, and an optional automatic optimisation after every run with a dialog to choose the runs it uses
 - (Eistee82) New messengers ntfy, Pushsafer and Gotify, fixed messenger payloads and time windows for every recipient
 - (Eistee82) Blockly block and sendTo command to send messages to the configured recipients, vis-2 widgets (device card and overview)
 

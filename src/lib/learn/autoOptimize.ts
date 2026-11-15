@@ -1247,7 +1247,7 @@ export function describeChange(from: DetectionSettings, to: DetectionSettings): 
 	for (const k of DETECTION_KEYS) {
 		if (a[k] !== b[k]) {
 			if (k === "trailerBurstSec" && (a[k] === 0 || b[k] === 0)) {
-				parts.push(b[k] === 0 ? "anti-crease filter off" : "anti-crease filter on");
+				parts.push(b[k] === 0 ? "after-run filter off" : "after-run filter on");
 			} else if (
 				!k.startsWith("trailer") ||
 				((a.trailerBurstSec as number) > 0 && (b.trailerBurstSec as number) > 0)

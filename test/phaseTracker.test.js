@@ -337,8 +337,8 @@ describe("phase model (Spec A.4)", () => {
 	it("system phase names come from the translations (11 languages), with English as fallback", () => {
 		const en = systemPhaseNames(key => I18n.translate(key));
 		assert.deepStrictEqual(en, {
-			antiCrease: "Anti-crease",
-			afterRun: "After the run",
+			antiCrease: "After-run",
+			afterRun: "After the end",
 			rest: "Rest",
 			unknown: "Unknown",
 		});

@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { plain, TEMPLATE_NAMES, TEXT } from "../build/lib/dmTexts.js";
+import * as stateDefs from "../build/lib/stateDefinitions.js";
 
 const LANGS = ["en", "de", "ru", "pt", "nl", "fr", "it", "es", "pl", "uk", "zh-cn"];
 
@@ -49,6 +50,26 @@ describe("device manager texts", () => {
 			for (const [k, v] of Object.entries(TEXT)) {
 				const text = typeof v === "function" ? v("x") : v;
 				assert.doesNotMatch(text[lang], bad, `TEXT.${k}.${lang}`);
+			}
+		}
+	});
+	it("no device-specific terms in the texts: the after-run is the after-run in every language", () => {
+		// Knitterschutz / anti-crease and the drum of a washing machine in the 11 languages (key names stay)
+		const bad =
+			/knitter|crease|trommel|\bdrum|сминан|зминан|складок|барабан|rugas|vincos|kreuk|froiss|antipiega|arrugas|zagniec|gniecen|tambor|tambour|cestello|bębn|防皱|折痕|滚筒|endschleudern|final spin|\b(stufe|level) \d/i;
+		const defs = [...stateDefs.DEVICE_STATES, ...stateDefs.DEVICE_CHANNELS];
+		for (const lang of LANGS) {
+			const dict = JSON.parse(readFileSync(new URL(`../admin/i18n/${lang}.json`, import.meta.url), "utf8"));
+			for (const [k, v] of Object.entries(dict)) {
+				assert.doesNotMatch(v, bad, `${lang}:${k}`);
+			}
+			for (const [k, v] of Object.entries(TEXT)) {
+				const text = typeof v === "function" ? v("x") : v;
+				assert.doesNotMatch(text[lang], bad, `TEXT.${k}.${lang}`);
+			}
+			for (const def of defs) {
+				const name = typeof def.name === "string" ? def.name : def.name?.[lang];
+				assert.doesNotMatch(name ?? "", bad, `state ${def.id}.${lang}`);
 			}
 		}
 	});

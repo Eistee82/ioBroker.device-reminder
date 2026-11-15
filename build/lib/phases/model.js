@@ -13,8 +13,8 @@ export const SYSTEM_PHASE_KEYS = {
     neutral: "phase_neutral",
 };
 export const DEFAULT_PHASE_NAMES = {
-    antiCrease: "Anti-crease",
-    afterRun: "After the run",
+    antiCrease: "After-run",
+    afterRun: "After the end",
     rest: "Rest",
     unknown: "Unknown",
 };
