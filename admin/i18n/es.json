@@ -274,7 +274,7 @@
 	"modeTimed": "Duración",
 	"phase_afterRun": "Después del ciclo",
 	"phase_antiCrease": "Antiarrugas",
-	"phase_neutral": "Nivel {n} · ≈ {w} W · {min}–{max} min",
+	"phase_neutral": "Fase {n}",
 	"phase_rest": "Reposo",
 	"phase_unknown": "Desconocido",
 	"placeholderText": "Esta sección se configura en un paso posterior.",

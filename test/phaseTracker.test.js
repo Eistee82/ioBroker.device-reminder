@@ -167,6 +167,57 @@ describe("phase tracker (Spec A.5)", function () {
 			],
 		);
 	});
+	it("a learned after-run is shown while the trailer runs, with its start and end; the band reading never names it", () => {
+		const tail = {
+			id: "p5",
+			name: "Phase 5",
+			band: "wash",
+			minSec: 0,
+			maxSec: 0,
+			decided: "live",
+			show: true,
+			trailer: true,
+			stats: { runs: 3, agreement: 1, lastSeen: 0, watts: 90, shortSec: 1500, longSec: 1900 },
+		};
+		const w = [];
+		const model = normalizePhases({ ...WM_PHASES, phases: [...WM_PHASES.phases, tail] }, w, "WM");
+		assert.deepStrictEqual([w, model.phases.at(-1)], [[], tail], "kept by the validator");
+		const twice = normalizePhases(
+			{ ...WM_PHASES, phases: [...WM_PHASES.phases, tail, { ...tail, id: "p6" }] },
+			w,
+			"WM",
+		);
+		assert.strictEqual(twice, undefined, "at most one after-run");
+		assert.strictEqual(w.length, 1);
+		const t = new PhaseTracker(model, null, 10, { antiCrease: "AC", afterRun: "AR", rest: "R", unknown: "U" });
+		const edges = [];
+		t.onRun("start", 0);
+		t.observe(50, 0);
+		edges.push(...t.advance(60_000));
+		assert.strictEqual(t.current.id, "p2", "washing, not the after-run of the same band");
+		t.setContext({ inTrailer: true, settling: false });
+		edges.push(...t.advance(70_000));
+		assert.deepStrictEqual([t.current.id, t.current.name], ["p5", "Phase 5"]);
+		t.setContext({ inTrailer: false, settling: false });
+		edges.push(...t.advance(100_000));
+		t.onRun("end", 100_000);
+		edges.push(...t.advance(100_000));
+		assert.ok(
+			edges.some(e => e.id === "p5" && e.edge === "start" && e.at === 70_000),
+			JSON.stringify(edges),
+		);
+		assert.ok(
+			edges.some(e => e.id === "p5" && e.edge === "end" && e.at === 100_000),
+			JSON.stringify(edges),
+		);
+		assert.deepStrictEqual(
+			t.timeline().map(x => [x.id, x.from, x.to]),
+			[
+				["p2", 0, 70_000],
+				["p5", 70_000, 100_000],
+			],
+		);
+	});
 	it("continuous: rest outside all bands, a debounced entry is dated back, a time gap counts only up to the cap", () => {
 		const t = new PhaseTracker(BOILER_PHASES, null, 2);
 		t.observe(0, 0);
@@ -301,10 +352,8 @@ describe("phase model (Spec A.4)", () => {
 			for (const key of Object.values(SYSTEM_PHASE_KEYS)) {
 				assert.ok(dict[key], `${lang}:${key}`);
 			}
-			assert.ok(
-				["{n}", "{w}", "{min}", "{max}"].every(x => dict.phase_neutral.includes(x)),
-				lang,
-			);
+			assert.ok(dict.phase_neutral.includes("{n}"), lang);
+			assert.ok(!/\{(w|min|max)\}/.test(dict.phase_neutral), `${lang}: only the number of the phase`);
 		}
 	});
 });

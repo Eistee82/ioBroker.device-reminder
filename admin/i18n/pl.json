@@ -274,7 +274,7 @@
 	"modeTimed": "Czas trwania",
 	"phase_afterRun": "Po cyklu",
 	"phase_antiCrease": "Ochrona przed zagnieceniami",
-	"phase_neutral": "Poziom {n} · ≈ {w} W · {min}–{max} min",
+	"phase_neutral": "Faza {n}",
 	"phase_rest": "Spoczynek",
 	"phase_unknown": "Nieznany",
 	"placeholderText": "Ta sekcja jest konfigurowana w późniejszym kroku.",

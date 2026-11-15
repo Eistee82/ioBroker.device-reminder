@@ -274,7 +274,7 @@
 	"modeTimed": "期间",
 	"phase_afterRun": "运行后",
 	"phase_antiCrease": "防皱",
-	"phase_neutral": "级别 {n} · ≈ {w} W · {min}–{max} 分钟",
+	"phase_neutral": "阶段 {n}",
 	"phase_rest": "静止",
 	"phase_unknown": "未知",
 	"placeholderText": "此部分在稍后的步骤中配置。",

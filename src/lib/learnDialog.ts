@@ -421,25 +421,21 @@ export function phaseNames(): Record<string, string> {
 }
 
 /**
- * Neutral name of a learned phase from the translated template.
+ * Neutral name of a learned phase from the translated template ("Phase 3").
  *
- * @param n - Number
- * @param w - Typical power in W
- * @param min - Shortest duration in min
- * @param max - Longest duration in min
+ * @param n - Number of the phase in the order of the run
  */
-export function neutralName(n: number, w: number, min: number, max: number): string {
+export function neutralName(n: number): string {
 	let template: string;
 	try {
 		template = I18n.translate("phase_neutral");
 	} catch {
-		template = "Level {n} · ≈ {w} W · {min}–{max} min";
+		template = "Phase {n}";
 	}
-	return template
-		.replace("{n}", String(n))
-		.replace("{w}", String(Math.round(w)))
-		.replace("{min}", String(min))
-		.replace("{max}", String(max));
+	if (!template.includes("{n}")) {
+		template = "Phase {n}";
+	}
+	return template.replace("{n}", String(n));
 }
 
 /**

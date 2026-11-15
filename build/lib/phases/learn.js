@@ -26,7 +26,10 @@ const STABLE_SEC = 30;
 const AGREE_MIN = 0.99;
 const FLICKER_MAX = 1.2;
 const OPEN_FACTOR = 10;
-const NEUTRAL_TEMPLATE = "Level {n} · ≈ {w} W · {min}–{max} min";
+const START_SHARE = 0.5;
+const NEUTRAL_TEMPLATE = "Phase {n}";
+const OLD_GENERATED = / · ≈ -?\d+ \S+ · \d+–\d+ \S+$/u;
+const BAND_GENERATED = /^≈ -?\d+ W$/u;
 export function scopeOf(runsPerDay, medianRestMin) {
     return runsPerDay > CONTINUOUS_RUNS_PER_DAY || medianRestMin < CONTINUOUS_REST_MIN ? "continuous" : "run";
 }
@@ -331,7 +334,38 @@ function classesOf(k, segs) {
     });
     return out;
 }
-function draftsOf(bands, segs, units) {
+function mergedOf(k, segs, scope) {
+    const runs = segs.filter(list => list.length > 0).length;
+    const list = segs.flat().filter(s => s.band === k && s.closed && s.to > s.from);
+    const unitsOf = (m) => new Set(m.map(s => s.unit)).size;
+    const all = unitsOf(list);
+    if (all < MIN_UNITS) {
+        return [];
+    }
+    const draft = (members, ctx) => {
+        const sec = members.map(s => (s.to - s.from) / 1000).sort((a, b) => a - b);
+        return {
+            band: k,
+            minSec: 0,
+            maxSec: 0,
+            decided: "live",
+            ...(ctx ? { ctx } : {}),
+            lo: sec[0],
+            hi: sec.at(-1),
+            units: new Set(members.map(s => s.unit)),
+            lastSeen: Math.max(...members.map(s => s.to)),
+        };
+    };
+    const idle = list.filter(s => s.pred === "idle");
+    const active = list.filter(s => s.pred === "active");
+    const enough = (m) => m.length >= MIN_UNITS && unitsOf(m) >= MIN_UNITS;
+    const common = scope === "continuous" || unitsOf(idle) >= START_SHARE * runs;
+    if (enough(idle) && enough(active) && common) {
+        return [draft(idle, "idle"), draft(active, "active")];
+    }
+    return [draft(list)];
+}
+function draftsOf(bands, segs, units, scope) {
     const out = [];
     bands.forEach((b, k) => {
         const ev = b.smoothing === "peak" ? eventOf(k, segs, units) : null;
@@ -339,7 +373,7 @@ function draftsOf(bands, segs, units) {
             out.push(ev);
         }
         else {
-            out.push(...classesOf(k, segs));
+            out.push(...mergedOf(k, segs, scope));
         }
     });
     return out;
@@ -531,6 +565,18 @@ function agreementOf(c) {
     }
     return c.ok / (c.ref + c.wrong);
 }
+function weightedMedian(pairs) {
+    const x = [...pairs].sort((a, b) => a[0] - b[0]);
+    const total = x.reduce((acc, y) => acc + y[1], 0);
+    let acc = 0;
+    for (const [v, w] of x) {
+        acc += w;
+        if (acc >= total / 2) {
+            return v;
+        }
+    }
+    return x.at(-1)?.[0] ?? Number.NaN;
+}
 function typicalW(bands, units, factor) {
     const pairs = bands.map(() => []);
     for (const u of units) {
@@ -542,27 +588,108 @@ function typicalW(bands, units, factor) {
             }
         }
     }
-    return pairs.map((x, k) => {
-        if (x.length === 0) {
-            return Math.round(bands[k].min * factor);
+    return pairs.map((x, k) => Math.round((x.length > 0 ? weightedMedian(x) : bands[k].min) * factor));
+}
+function phaseFactsOf(model, units, pollSec, holds, factor) {
+    const ids = new Set(model.phases.map(p => p.id));
+    const pos = new Map();
+    const totals = new Map();
+    const held = new Map();
+    const push = (m, id, ...v) => {
+        const list = m.get(id);
+        if (list) {
+            list.push(...v);
         }
-        x.sort((a, b) => a[0] - b[0]);
-        const total = x.reduce((s, y) => s + y[1], 0);
-        let acc = 0;
-        for (const [v, d] of x) {
-            acc += d;
-            if (acc >= total / 2) {
-                return Math.round(v * factor);
+        else {
+            m.set(id, [...v]);
+        }
+    };
+    for (const u of units) {
+        const runs = model.scope === "run" ? [runOf(u)] : undefined;
+        const tl = replayPhases(model, u.points, pollSec, runs, { holds }).timeline;
+        const spans = [];
+        let open = false;
+        for (const x of tl) {
+            if (model.scope === "continuous" && x.id === SYSTEM_PHASES.rest) {
+                open = false;
+                continue;
+            }
+            if (open) {
+                spans.at(-1).segs.push(x);
+            }
+            else {
+                spans.push({ from: x.from, segs: [x] });
+                open = true;
             }
         }
-        return Math.round(x.at(-1)[0] * factor);
-    });
+        const own = new Map();
+        for (const sp of spans) {
+            const to = sp.segs.at(-1).to;
+            const len = Math.max(1, to - sp.from);
+            for (const x of sp.segs) {
+                if (ids.has(x.id) && x.to > x.from) {
+                    push(own, x.id, [((x.from + x.to) / 2 - sp.from) / len, x.to - x.from]);
+                }
+            }
+        }
+        for (const [id, list] of own) {
+            push(pos, id, weightedMedian(list));
+            push(totals, id, list.reduce((acc, y) => acc + y[1], 0) / 1000);
+        }
+        const p = u.points;
+        let i = 0;
+        for (const x of tl) {
+            if (!ids.has(x.id)) {
+                continue;
+            }
+            while (i + 1 < p.length && p[i + 1].ts <= x.from) {
+                i++;
+            }
+            for (let j = i; j < p.length && p[j].ts < x.to; j++) {
+                const from = Math.max(p[j].ts, x.from);
+                const to = Math.min(p[j + 1]?.ts ?? x.to, x.to);
+                if (to > from) {
+                    push(held, x.id, [p[j].val, to - from]);
+                }
+            }
+        }
+    }
+    const out = new Map();
+    for (const [id, list] of pos) {
+        const t = totals.get(id);
+        const v = held.get(id) ?? [];
+        out.set(id, {
+            pos: median(list),
+            shortSec: Math.round(Math.min(...t)),
+            longSec: Math.round(Math.max(...t)),
+            watts: v.length > 0 ? Math.round(weightedMedian(v) * factor) : 0,
+        });
+    }
+    return out;
 }
-function defaultNeutral(n, w, min, max) {
-    return NEUTRAL_TEMPLATE.replace("{n}", String(n))
-        .replace("{w}", String(w))
-        .replace("{min}", String(min))
-        .replace("{max}", String(max));
+function trailerOf(units, bands, factor) {
+    const runs = units.filter(u => u.sample.kind === "run" &&
+        admitted(u.verdict, "phases") &&
+        admitted(u.verdict, "trailer") &&
+        (u.sample.facts.feat?.trailerSec ?? 0) > 0);
+    if (runs.length < MIN_UNITS || bands.length === 0) {
+        return null;
+    }
+    const watts = median(runs.map(u => u.sample.facts.feat.burstMaxW));
+    const sec = runs.map(u => u.sample.facts.feat.trailerSec);
+    const v = watts / factor;
+    const k = bands.findIndex(b => v >= b.min && v < b.max);
+    return {
+        band: k >= 0 ? k : v < bands[0].min ? 0 : bands.length - 1,
+        runs: runs.length,
+        lastSeen: Math.max(...runs.map(u => u.sample.facts.end)),
+        watts: Math.round(watts),
+        shortSec: Math.round(Math.min(...sec)),
+        longSec: Math.round(Math.max(...sec)),
+    };
+}
+function defaultNeutral(n) {
+    return NEUTRAL_TEMPLATE.replace("{n}", String(n));
 }
 function freeId(prefix, used) {
     for (let n = 1;; n++) {
@@ -572,6 +699,12 @@ function freeId(prefix, used) {
             return id;
         }
     }
+}
+function contextOf(p) {
+    if (!p.after) {
+        return undefined;
+    }
+    return p.after.some(a => a === "idle" || a === "start") ? "idle" : "active";
 }
 function rangeOf(p) {
     return [Math.max(1, p.minSec), p.maxSec > 0 ? p.maxSec : Infinity];
@@ -598,11 +731,11 @@ export function learnPhases(units, ctx) {
     const holds = holdProfile(used, learned);
     const bands = smoothingOf(learned, used, raw, scope, pollSec, holds);
     const segs = bandSegments(modelOf(scope, bands, []), used, pollSec, holds);
-    const drafts = draftsOf(bands, segs, used);
+    const drafts = draftsOf(bands, segs, used, scope);
     const keys = drafts.map((_, i) => `k${i + 1}`);
     let full = modelOf(scope, bands, phasesOf(drafts, keys, bands, scope));
     let folds = used.map((_, n) => {
-        const fd = draftsOf(bands, segs.filter((__, i) => i !== n), used);
+        const fd = draftsOf(bands, segs.filter((__, i) => i !== n), used, scope);
         const map = mapDrafts(fd, drafts);
         const seen = new Set(keys);
         const ids = fd.map((__, i) => (map[i] !== null ? keys[map[i]] : freeId("x", seen)));
@@ -653,6 +786,8 @@ export function learnPhases(units, ctx) {
         check = crossCheck(full, folds, used, pollSec, holds);
     }
     const agreement = used.length > 0 ? check.agreement : 0;
+    const tail = scope === "run" ? trailerOf(units, bands, factor) : null;
+    const facts = phaseFactsOf(full, used, pollSec, holds, factor);
     const typical = typicalW(bands, used, factor);
     const neutral = ctx.neutralName ?? defaultNeutral;
     const prev = ctx.previous;
@@ -663,6 +798,18 @@ export function learnPhases(units, ctx) {
         "idle",
         "start",
     ]);
+    const most = (prev?.phases.length ?? 0) + full.phases.length + 1;
+    const generated = (name) => {
+        if (OLD_GENERATED.test(name) || BAND_GENERATED.test(name)) {
+            return true;
+        }
+        for (let n = 1; n <= most; n++) {
+            if (name === neutral(n) || name === defaultNeutral(n)) {
+                return true;
+            }
+        }
+        return false;
+    };
     const bandIds = bands.map(() => "");
     const bandNames = bands.map(() => "");
     if (prev) {
@@ -678,40 +825,45 @@ export function learnPhases(units, ctx) {
         for (const p of pairs) {
             if (bandIds[p.i] === "" && !taken.has(p.j)) {
                 bandIds[p.i] = prev.bands[p.j].id;
-                bandNames[p.i] = prev.bands[p.j].name;
+                const name = prev.bands[p.j].name;
+                bandNames[p.i] = generated(name) ? "" : name;
                 taken.add(p.j);
             }
         }
     }
-    const segOfBand = (k) => segs
-        .flat()
-        .filter(s => s.band === k)
-        .map(s => (s.to - s.from) / 1000);
     bands.forEach((_, k) => {
         if (bandIds[k] === "") {
             bandIds[k] = freeId("b", usedIds);
-            const d = segOfBand(k);
-            const lo = d.length > 0 ? Math.min(...d) : 0;
-            const hi = d.length > 0 ? Math.max(...d) : 0;
-            bandNames[k] = neutral(k + 1, typical[k], Math.floor(lo / 60), Math.max(1, Math.ceil(hi / 60)));
+        }
+        if (bandNames[k] === "") {
+            bandNames[k] = `≈ ${typical[k]} W`;
         }
     });
     const draftOf = new Map(keys.map((key, i) => [key, drafts[i]]));
     const phaseIds = new Map();
     const keep = new Map();
     const dropped = [];
+    const TAIL = "tail";
     if (prev) {
         const pairs = [];
         for (const old of prev.phases) {
             const ob = prev.bands.find(b => b.id === old.band);
+            if (old.trailer) {
+                if (tail) {
+                    pairs.push({ key: TAIL, old, score: 1 });
+                }
+                continue;
+            }
             for (const p of full.phases) {
                 const d = draftOf.get(p.id);
                 if (!ob || !old.trigger !== !p.trigger) {
                     continue;
                 }
                 const nb = bands[d.band];
+                const open = old.minSec === 0 && old.maxSec === 0;
                 const score = overlap([ob.min, ob.max], [nb.min, nb.max]) *
-                    overlap(rangeOf(old), [Math.max(1, d.lo), Math.max(1, d.hi)]);
+                    (open ? 1 : overlap(rangeOf(old), [Math.max(1, d.lo), Math.max(1, d.hi)])) *
+                    (contextOf(old) === d.ctx ? 1 : 0.5);
                 if (score > 0) {
                     pairs.push({ key: p.id, old, score });
                 }
@@ -730,22 +882,42 @@ export function learnPhases(units, ctx) {
             }
         }
     }
-    for (const p of full.phases) {
+    const ordered = full.phases
+        .map((p, i) => ({ p, i, d: draftOf.get(p.id), f: facts.get(p.id) }))
+        .sort((x, y) => (x.f?.pos ?? 1) - (y.f?.pos ?? 1) ||
+        x.d.band - y.d.band ||
+        Number(x.d.ctx !== "idle") - Number(y.d.ctx !== "idle") ||
+        x.i - y.i);
+    for (const { p } of ordered) {
         if (!phaseIds.has(p.id)) {
             phaseIds.set(p.id, freeId("p", usedIds));
         }
     }
+    if (tail && !phaseIds.has(TAIL)) {
+        phaseIds.set(TAIL, freeId("p", usedIds));
+    }
+    const nameOf = (id, n) => {
+        const old = keep.get(id)?.name;
+        return old !== undefined && old.trim() !== "" && !generated(old) ? old : neutral(n);
+    };
+    const kept = (out, old) => {
+        if (old?.final) {
+            out.final = true;
+        }
+        if (old?.notify) {
+            out.notify = { ...old.notify };
+        }
+        return out;
+    };
     const bandIdOf = new Map(bands.map((b, k) => [b.id, bandIds[k]]));
     const outBands = bands.map((b, k) => ({ ...b, id: bandIds[k], name: bandNames[k] }));
-    const outPhases = full.phases.map(p => {
-        const d = draftOf.get(p.id);
+    const outPhases = ordered.map(({ p, d, f }, n) => {
         const id = phaseIds.get(p.id);
         const old = keep.get(id);
         const c = check.per.get(p.id);
         const out = {
             id,
-            name: old?.name ??
-                neutral(d.band + 1, typical[d.band], Math.floor(d.lo / 60), Math.max(1, Math.ceil(d.hi / 60))),
+            name: nameOf(id, n + 1),
             band: bandIdOf.get(p.band),
             minSec: p.minSec,
             maxSec: p.maxSec,
@@ -755,6 +927,9 @@ export function learnPhases(units, ctx) {
                 runs: p.stats.runs,
                 agreement: liveAgreement.get(p.id) ?? agreementOf(c),
                 lastSeen: p.stats.lastSeen,
+                watts: f?.watts ?? typical[d.band],
+                shortSec: f?.shortSec ?? Math.round(d.lo),
+                longSec: f?.longSec ?? Math.round(d.hi),
             },
         };
         if (p.after) {
@@ -763,14 +938,30 @@ export function learnPhases(units, ctx) {
         if (p.trigger) {
             out.trigger = { ...p.trigger, confirm: p.trigger.confirm.map(b => bandIdOf.get(b)) };
         }
-        if (old?.final) {
-            out.final = true;
-        }
-        if (old?.notify) {
-            out.notify = { ...old.notify };
-        }
-        return out;
+        return kept(out, old);
     });
+    if (tail) {
+        const id = phaseIds.get(TAIL);
+        const old = keep.get(id);
+        outPhases.push(kept({
+            id,
+            name: nameOf(id, outPhases.length + 1),
+            band: bandIds[tail.band],
+            minSec: 0,
+            maxSec: 0,
+            decided: "live",
+            trailer: true,
+            show: old?.show ?? true,
+            stats: {
+                runs: tail.runs,
+                agreement: 1,
+                lastSeen: tail.lastSeen,
+                watts: tail.watts,
+                shortSec: tail.shortSec,
+                longSec: tail.longSec,
+            },
+        }, old));
+    }
     return {
         model: {
             v: 1,
@@ -913,7 +1104,7 @@ function proposalOf(model, used, pollSec, holds) {
             .filter(sec => sec > 0);
         const own = model.phases
             .map((p, i) => ({ p, i }))
-            .filter(x => x.p.band === b.id && !x.p.trigger && !x.p.after)
+            .filter(x => x.p.band === b.id && !x.p.trigger && !x.p.after && !x.p.trailer)
             .sort((x, y) => x.p.minSec - y.p.minSec);
         for (let j = 0; j + 1 < own.length; j++) {
             const lim = classLimits(own[j].p, own[j + 1].p, durations);
@@ -950,7 +1141,7 @@ export function tunePhases(model, units, prev, opts = {}) {
     if (used.length >= MIN_UNITS) {
         const segs = bandSegments({ ...model, phases: [] }, used, pollSec, holds);
         newPattern = model.bands.some((b, k) => {
-            const own = model.phases.filter(p => p.band === b.id);
+            const own = model.phases.filter(p => p.band === b.id && !p.trailer);
             return classesOf(k, segs).some(d => d.units.size >= MIN_UNITS &&
                 !own.some(p => {
                     const [lo, hi] = rangeOf(p);

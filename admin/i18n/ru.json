@@ -274,7 +274,7 @@
 	"modeTimed": "Продолжительность",
 	"phase_afterRun": "После цикла",
 	"phase_antiCrease": "Защита от сминания",
-	"phase_neutral": "Уровень {n} · ≈ {w} Вт · {min}–{max} мин",
+	"phase_neutral": "Фаза {n}",
 	"phase_rest": "Покой",
 	"phase_unknown": "Неизвестно",
 	"placeholderText": "Этот раздел настраивается на более позднем этапе.",

@@ -122,6 +122,11 @@ function phaseOfRaw(raw, k, bandIds) {
             lastSeen: nonNegative(stats.lastSeen, 0, `stats.lastSeen of phase "${id}"`),
         },
     };
+    for (const key of ["watts", "shortSec", "longSec"]) {
+        if (stats[key] !== undefined) {
+            out.stats[key] = nonNegative(stats[key], 0, `stats.${key} of phase "${id}"`);
+        }
+    }
     if (raw.after !== undefined) {
         out.after = idList(raw.after, `after of phase "${id}"`);
     }
@@ -145,6 +150,9 @@ function phaseOfRaw(raw, k, bandIds) {
     }
     if (raw.final === true) {
         out.final = true;
+    }
+    if (raw.trailer === true) {
+        out.trailer = true;
     }
     if (isRecord(raw.notify)) {
         const notify = {};
@@ -204,6 +212,9 @@ export function normalizePhases(raw, warnings, label) {
                 fail(`phase id "${p.id}" is used twice or reserved`);
             }
             ids.add(p.id);
+        }
+        if (phases.filter(p => p.trailer).length > 1) {
+            fail("more than one after-run phase");
         }
         const phaseIds = new Set(phases.map(p => p.id));
         for (const p of phases) {

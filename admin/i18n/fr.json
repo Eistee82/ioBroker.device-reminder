@@ -274,7 +274,7 @@
 	"modeTimed": "Durée",
 	"phase_afterRun": "Après le cycle",
 	"phase_antiCrease": "Anti-froissage",
-	"phase_neutral": "Niveau {n} · ≈ {w} W · {min}–{max} min",
+	"phase_neutral": "Phase {n}",
 	"phase_rest": "Repos",
 	"phase_unknown": "Inconnu",
 	"placeholderText": "Cette section est configurée dans une étape ultérieure.",

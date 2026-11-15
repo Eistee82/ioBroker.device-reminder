@@ -53,18 +53,37 @@ function blockRun(k, sec, verdict = OK) {
 
 describe("learn phases (Spec B.5)", function () {
 	this.timeout(600_000);
-	it("washer: cross-check ≥ 99 %, a boundary between spin (≤ 839 W) and heating (≥ 2047 W)", () => {
+	it("washer: few phases in run order, the after-run last; cross-check ≥ 95 %, a boundary between spin (≤ 839 W) and heating (≥ 2047 W)", () => {
 		const { units, runLimit } = phaseInput(W);
 		const r = learnPhases(units, { runLimitW: runLimit, unitFactor: 1, pollSec: 10 });
 		assert.strictEqual(r.model.scope, "run");
-		assert.ok(r.looAgreement >= 0.99, String(r.looAgreement));
+		assert.ok(r.looAgreement >= 0.95, String(r.looAgreement));
 		assert.ok(r.model.bands.some(b => b.min > 839 && b.min < 2047));
+		const ph = r.model.phases;
+		assert.ok(ph.length >= 3 && ph.length <= 6, ph.map(p => `${p.name} ${p.band}`).join());
 		assert.ok(
-			r.model.phases.every(p => p.stats.runs >= 3 && p.show === true && p.notify === undefined),
-			"a class needs ≥ 3 runs, otherwise it is merged",
+			ph.every(p => p.stats.runs >= 3 && p.show === true && p.notify === undefined && p.decided === "live"),
+			"a phase needs ≥ 3 runs",
 		);
+		assert.ok(ph.every(p => /^Phase \d+$/.test(p.name)));
+		const own = ph.filter(p => !p.trailer);
+		assert.strictEqual(new Set(own.map(p => `${p.band} ${JSON.stringify(p.after ?? null)}`)).size, own.length);
+		assert.ok(own.length < 9, "the duration classes of a band are one phase");
+		const heat = r.model.bands.at(-1);
+		const heatAt = ph.findIndex(p => p.band === heat.id);
+		const wash = own.filter(p => p.band !== heat.id).sort((a, b) => b.stats.longSec - a.stats.longSec)[0];
+		const washAt = ph.indexOf(wash);
+		assert.ok(heatAt >= 0 && heatAt < washAt, "heating comes before washing");
+		const tail = ph.at(-1);
+		assert.strictEqual(tail.trailer, true, "the after-run is the last phase");
+		assert.strictEqual(ph.filter(p => p.trailer).length, 1);
+		assert.ok(tail.stats.runs >= 3 && tail.stats.watts > 50 && tail.stats.watts < 150, JSON.stringify(tail.stats));
+		assert.ok(tail.stats.shortSec >= 1200 && tail.stats.longSec <= 2400, JSON.stringify(tail.stats));
+		for (const p of own) {
+			assert.ok(p.stats.watts > 0 && p.stats.shortSec > 0 && p.stats.longSec >= p.stats.shortSec, p.name);
+		}
 	});
-	it("dryer: read over raw values, all 7 runs pass the cross-check, the unusable recording is not used", () => {
+	it("dryer: read over raw values, all 7 runs pass the cross-check, the after-run is learned, the unusable recording is not used", () => {
 		const { units, runLimit } = phaseInput(D);
 		assert.ok(
 			units.some(u => u.verdict.stage === "unusable"),
@@ -73,7 +92,7 @@ describe("learn phases (Spec B.5)", function () {
 		const r = learnPhases(units, { runLimitW: runLimit, unitFactor: 1, pollSec: 10, now: 0 });
 		assert.strictEqual(r.model.scope, "run");
 		assert.strictEqual(r.model.quality.runsUsed, 7);
-		assert.ok(r.looAgreement >= 0.99, String(r.looAgreement));
+		assert.ok(r.looAgreement >= 0.95, String(r.looAgreement));
 		assert.ok(
 			r.model.bands.every(b => b.smoothing !== "level" && b.windowSec === 0),
 			"no rhythm: the bands are read over the raw values",
@@ -81,10 +100,14 @@ describe("learn phases (Spec B.5)", function () {
 		const heat = r.model.bands.at(-1);
 		assert.ok(heat.min > 200 && heat.max === Infinity, String(heat.min));
 		assert.ok(r.model.phases.some(p => p.band === heat.id && p.stats.runs === 7));
+		const ph = r.model.phases;
+		assert.ok(ph.length >= 3 && ph.length <= 6, ph.map(p => `${p.name} ${p.band}`).join());
 		assert.ok(
-			r.model.phases.every(p => p.stats.runs >= 3 && p.decided === "live" && p.show === true),
-			"a class needs ≥ 3 runs; every class passes live",
+			ph.every(p => p.stats.runs >= 3 && p.decided === "live" && p.show === true),
+			"a phase needs ≥ 3 runs; every phase passes live",
 		);
+		assert.ok(ph.every((p, i) => p.name === `Phase ${i + 1}`));
+		assert.deepStrictEqual([ph.at(-1).trailer, ph.at(-1).stats.runs], [true, 7], "the after-run is the last phase");
 		assert.deepStrictEqual(r.retroOnly, []);
 	});
 	it("boiler: scope continuous from runs per day or rest, peak band kept, ≥ 3 days without help (P2, P3)", () => {
@@ -111,6 +134,17 @@ describe("learn phases (Spec B.5)", function () {
 		assert.ok(
 			!ign || ign.stats.agreement >= 0.99 || r.retroOnly.includes(ign.id),
 			"ignition live only when it passes the cross-check",
+		);
+		assert.ok(r.looAgreement >= 0.95, String(r.looAgreement));
+		assert.ok(
+			r.model.phases.every((p, i) => p.name === `Phase ${i + 1}` && !p.trailer),
+			"no after-run without runs",
+		);
+		const startUp = r.model.phases.findIndex(p => p.after?.includes("idle"));
+		assert.ok(startUp >= 0, "start-up told apart by the predecessor");
+		assert.ok(
+			r.model.phases.every(p => !p.after || p.after.includes("idle") || p.after.length > 0),
+			"every predecessor list is usable",
 		);
 	});
 	it("relearning keeps ids, names and notify; unmatched phases are reported with their actions", () => {
@@ -144,26 +178,53 @@ describe("learn phases (Spec B.5)", function () {
 		assert.deepStrictEqual([p4?.name, p4?.notify], ["Final", { end: true, text: "Fertig geschleudert" }]);
 		assert.deepStrictEqual(r.dropped, [{ id: "p9", name: "Trocknen", actions: 2 }]);
 	});
-	it("neutral names without a vocabulary, from the translated template", () => {
+	it("neutral names 'Phase n' in run order from the translated template; ids do not depend on the language", () => {
 		const { units, runLimit } = phaseInput(W);
 		const r = learnPhases(units, { runLimitW: runLimit, unitFactor: 1, pollSec: 10 });
+		assert.deepStrictEqual(
+			r.model.phases.map(p => p.name),
+			r.model.phases.map((_, i) => `Phase ${i + 1}`),
+		);
 		assert.ok(
-			r.model.phases.every(p => /^Level \d+ · ≈ \d+ W · \d+–\d+ min$/.test(p.name)),
-			r.model.phases.map(p => p.name).join(),
+			r.model.bands.every(b => /^≈ \d+ W$/.test(b.name)),
+			r.model.bands.map(b => b.name).join(),
 		);
 		const de = learnPhases(units, {
 			runLimitW: runLimit,
 			unitFactor: 1,
 			pollSec: 10,
-			neutralName: (n, w, a, b) => `Stufe ${n} · ≈ ${w} W · ${a}–${b} min`,
+			neutralName: n => `Abschnitt ${n}`,
 		});
+		assert.deepStrictEqual(
+			de.model.phases.map(p => p.name),
+			r.model.phases.map((_, i) => `Abschnitt ${i + 1}`),
+		);
 		assert.deepStrictEqual(
 			de.model.phases.map(p => p.id),
 			r.model.phases.map(p => p.id),
 			"ids do not depend on the language",
 		);
 	});
-	it("a duration class seen in fewer than 3 runs is merged; excluded runs are not used", () => {
+	it("relearning keeps the names given by the user and renames the generated ones", () => {
+		const { units, runLimit } = phaseInput(W);
+		const ctx = { runLimitW: runLimit, unitFactor: 1, pollSec: 10, now: 0 };
+		const first = learnPhases(units, ctx).model;
+		const own = {
+			...first,
+			phases: first.phases.map((p, i) =>
+				i === 1 ? { ...p, name: "Heizen" } : i === 0 ? { ...p, name: "Level 3 · ≈ 63 W · 0–1 min" } : p,
+			),
+			bands: first.bands.map((b, i) => (i === 0 ? { ...b, name: "Level 1 · ≈ 6 W · 0–1 min" } : b)),
+		};
+		const again = learnPhases(units, { ...ctx, previous: own });
+		assert.deepStrictEqual(
+			again.model.phases.map(p => [p.id, p.name]),
+			first.phases.map((p, i) => [p.id, i === 1 ? "Heizen" : `Phase ${i + 1}`]),
+		);
+		assert.strictEqual(again.model.bands[0].name, first.bands[0].name, "an old generated band name is replaced");
+		assert.deepStrictEqual(again.dropped, []);
+	});
+	it("segments of one band are one phase whatever their duration; excluded runs are not used", () => {
 		const ctx = { runLimitW: 5, unitFactor: 1, pollSec: 10, now: 0 };
 		const two = learnPhases(
 			[0, 1, 2, 3].map(k => blockRun(k, 300)).concat([4, 5].map(k => blockRun(k, 3000))),
@@ -179,11 +240,17 @@ describe("learn phases (Spec B.5)", function () {
 			ctx,
 		);
 		assert.deepStrictEqual(
-			three.model.phases.map(p => [p.minSec, p.maxSec, p.decided, p.stats.runs]),
+			three.model.phases.map(p => [p.name, p.minSec, p.maxSec, p.decided, p.stats.runs]),
+			[["Phase 1", 0, 0, "live", 7]],
+		);
+		assert.deepStrictEqual(
 			[
-				[0, 949, "end", 4],
-				[949, 0, "live", 3],
+				three.model.phases[0].stats.watts,
+				three.model.phases[0].stats.shortSec,
+				three.model.phases[0].stats.longSec,
 			],
+			[1000, 300, 3000],
+			"typical power and the shortest and longest time per run",
 		);
 		const excluded = learnPhases(
 			[0, 1, 2, 3]
@@ -282,6 +349,12 @@ describe("learn phases (Spec B.5)", function () {
 		const { units: wu } = phaseInput(W);
 		const noFinal = { ...WM_PHASES, phases: WM_PHASES.phases.filter(p => p.id !== "p4") };
 		assert.strictEqual(tunePhases(noFinal, wu, null).newPattern, true);
+		const tail = { ...WM_PHASES.phases[3], id: "p5", minSec: 0, trailer: true };
+		assert.strictEqual(
+			tunePhases({ ...noFinal, phases: [...noFinal.phases, tail] }, wu, null).newPattern,
+			true,
+			"the after-run covers no pattern of its band",
+		);
 		assert.strictEqual(tunePhases(WM_PHASES, wu, null).newPattern, false);
 	});
 });

@@ -274,7 +274,7 @@
 	"modeTimed": "Duur",
 	"phase_afterRun": "Nadraaien",
 	"phase_antiCrease": "Kreukbescherming",
-	"phase_neutral": "Niveau {n} · ≈ {w} W · {min}–{max} min",
+	"phase_neutral": "Fase {n}",
 	"phase_rest": "Rust",
 	"phase_unknown": "Onbekend",
 	"placeholderText": "Deze sectie wordt in een latere stap geconfigureerd.",

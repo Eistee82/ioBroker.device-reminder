@@ -25,7 +25,7 @@ export const SYSTEM_PHASE_KEYS = {
 	afterRun: "phase_afterRun",
 	rest: "phase_rest",
 	unknown: "phase_unknown",
-	/** Template of a learned phase without a name: placeholders `{n}`, `{w}`, `{min}`, `{max}` (Task 19). */
+	/** Template of the name of a learned phase: placeholder `{n}`, its number in the order of the run (Spec B.5). */
 	neutral: "phase_neutral",
 } as const;
 
@@ -93,12 +93,33 @@ export interface PhaseDef {
 	decided: "live" | "end";
 	/** "Finished afterwards" (operation only; the effect comes from `detection.final*`). */
 	final?: boolean;
+	/**
+	 * After-run (Spec B.5 step 8): shown while the trailer filter holds the end, never read from the bands (`band` only
+	 * keeps the model valid); at most one per model.
+	 */
+	trailer?: boolean;
 	/** Shown in the states. */
 	show: boolean;
 	/** Messages at the start and/or end of the phase. */
 	notify?: { start?: boolean; end?: boolean; text?: string };
 	/** Learning statistics. */
-	stats: { runs: number; agreement: number; lastSeen: number };
+	stats: PhaseStats;
+}
+
+/** Learning statistics of a phase. */
+export interface PhaseStats {
+	/** Runs or days with the phase. */
+	runs: number;
+	/** Agreement of the cross-check (0..1). */
+	agreement: number;
+	/** End of the latest evidence (ms). */
+	lastSeen: number;
+	/** Typical power in W (after-run: the highest values of its bursts). */
+	watts?: number;
+	/** Shortest time in the phase per run or day (s). */
+	shortSec?: number;
+	/** Longest time in the phase per run or day (s). */
+	longSec?: number;
 }
 
 /** Phase model of a device (`DeviceConfig.phases`). */
@@ -241,6 +262,11 @@ function phaseOfRaw(raw: unknown, k: number, bandIds: ReadonlySet<string>): Phas
 			lastSeen: nonNegative(stats.lastSeen, 0, `stats.lastSeen of phase "${id}"`),
 		},
 	};
+	for (const key of ["watts", "shortSec", "longSec"] as const) {
+		if (stats[key] !== undefined) {
+			out.stats[key] = nonNegative(stats[key], 0, `stats.${key} of phase "${id}"`);
+		}
+	}
 	if (raw.after !== undefined) {
 		out.after = idList(raw.after, `after of phase "${id}"`);
 	}
@@ -264,6 +290,9 @@ function phaseOfRaw(raw: unknown, k: number, bandIds: ReadonlySet<string>): Phas
 	}
 	if (raw.final === true) {
 		out.final = true;
+	}
+	if (raw.trailer === true) {
+		out.trailer = true;
 	}
 	if (isRecord(raw.notify)) {
 		const notify: PhaseDef["notify"] = {};
@@ -334,6 +363,9 @@ export function normalizePhases(raw: unknown, warnings: string[], label: string)
 				fail(`phase id "${p.id}" is used twice or reserved`);
 			}
 			ids.add(p.id);
+		}
+		if (phases.filter(p => p.trailer).length > 1) {
+			fail("more than one after-run phase");
 		}
 		const phaseIds = new Set(phases.map(p => p.id));
 		for (const p of phases) {

@@ -226,19 +226,18 @@ export function phaseNames() {
         }
     });
 }
-export function neutralName(n, w, min, max) {
+export function neutralName(n) {
     let template;
     try {
         template = I18n.translate("phase_neutral");
     }
     catch {
-        template = "Level {n} · ≈ {w} W · {min}–{max} min";
+        template = "Phase {n}";
     }
-    return template
-        .replace("{n}", String(n))
-        .replace("{w}", String(Math.round(w)))
-        .replace("{min}", String(min))
-        .replace("{max}", String(max));
+    if (!template.includes("{n}")) {
+        template = "Phase {n}";
+    }
+    return template.replace("{n}", String(n));
 }
 export function phaseSequences(model, bands, input, pollSec) {
     const out = new Map();

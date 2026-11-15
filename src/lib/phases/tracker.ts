@@ -167,6 +167,8 @@ export class PhaseTracker {
 	private readonly names: Record<string, string>;
 	private readonly maxSegments: number;
 	private readonly continuous: boolean;
+	/** Learned after-run: shown instead of the system phase while the trailer filter holds the end. */
+	private readonly trailerPhase: PhaseDef | null;
 
 	// raw values
 	private queue: { val: number; ts: number }[] = [];
@@ -212,8 +214,9 @@ export class PhaseTracker {
 		opts: TrackerOptions = {},
 	) {
 		this.bands = model.bands;
-		this.classes = this.bands.map(b => model.phases.filter(p => p.band === b.id && !p.trigger));
-		this.triggers = this.bands.map(b => model.phases.filter(p => p.band === b.id && p.trigger));
+		this.classes = this.bands.map(b => model.phases.filter(p => p.band === b.id && !p.trigger && !p.trailer));
+		this.triggers = this.bands.map(b => model.phases.filter(p => p.band === b.id && p.trigger && !p.trailer));
+		this.trailerPhase = model.phases.find(p => p.trailer) ?? null;
 		this.suspectMs = suspectOf(this.bands, holds);
 		this.levelIdx = this.bands.flatMap((b, k) => (b.smoothing === "level" ? [k] : []));
 		this.windowMs = Math.max(0, ...this.levelIdx.map(k => this.bands[k].windowSec * 1000));
@@ -300,7 +303,7 @@ export class PhaseTracker {
 	 * `advance`.
 	 *
 	 * @param c - Context
-	 * @param c.inTrailer - The anti-crease phase runs
+	 * @param c.inTrailer - The trailer filter holds the end (system phase, or the learned after-run)
 	 * @param c.settling - The lock phase of the final phase runs
 	 */
 	public setContext(c: { inTrailer: boolean; settling: boolean }): void {
@@ -824,6 +827,9 @@ export class PhaseTracker {
 			case "unknown":
 				return { id: SYSTEM_PHASES.unknown, name: this.names.unknown, phase: null };
 			case "system":
+				if (d.sys === SYSTEM_PHASES.antiCrease && this.trailerPhase) {
+					return { id: this.trailerPhase.id, name: this.trailerPhase.name, phase: this.trailerPhase };
+				}
 				return { id: d.sys!, name: this.names[d.sys!] ?? d.sys!, phase: null };
 			case "trigger":
 				return { id: d.phase!.id, name: d.phase!.name, phase: d.phase };
