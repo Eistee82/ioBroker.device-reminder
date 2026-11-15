@@ -15,10 +15,10 @@ import { describeChange } from "./learn/autoOptimize.js";
 import { learnFinal } from "./learn/finalLearn.js";
 import { admitted, sameRun, verdictKey } from "./learn/quality.js";
 import { buildLayout } from "./learn/runs.js";
-import { buildRunsSchema, evaluateRuns, finalItems, finalText, heldBackSpans, learnInputOf, neutralName, phaseData, phaseItems, phaseSequences, phasesFromForm, rowsOf, runTableData, usesOfAnswer, } from "./learnDialog.js";
+import { buildRunsSchema, checkText, evaluateRuns, finalItems, finalText, heldBackSpans, learnInputOf, neutralName, phaseData, phaseItems, phaseSequences, phasesFromForm, rowsOf, runTableData, usesOfAnswer, } from "./learnDialog.js";
 import { normalizePhases } from "./phases/model.js";
 import { learnPhases } from "./phases/learn.js";
-import { BASE_KEYS, decisionOf, detectionOf, startOf, typeHash } from "./runStore.js";
+import { BASE_KEYS, boundaryInfo, decisionOf, detectionOf, startOf, typeHash } from "./runStore.js";
 import { archiveTemplates, CUSTOM_TEMPLATE, findTemplate, scalePowers } from "./templates.js";
 import { detectFromHost } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
@@ -711,7 +711,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             return this.updateOf(id);
         }
         const check = active ? await registry.checkStoredRuns(id) : null;
-        const view = buildOptimizationView(store, check, runtime.baseDetection, runtime.effective, active);
+        const view = buildOptimizationView(store, check, runtime.baseDetection, runtime.effective, active, registry.verdictsOf(id));
         const result = await ctx.showForm(view.schema, {
             data: view.data,
             title: I18n.getTranslatedObject("dm_optimization"),
@@ -720,24 +720,18 @@ export class ReminderDeviceManagement extends DeviceManagement {
         const op = textOf(result?.operation);
         switch (op) {
             case "undo":
-                await ctx.showMessage((await registry.undoOptimization(id)) ? TEXT.optUndone : TEXT.optNothingToUndo);
+                await this.undoDialog(id, store, ctx);
                 break;
             case "reset":
                 await registry.resetOptimization(id);
                 await ctx.showMessage(TEXT.optResetDone);
                 break;
-            case "discard": {
-                const runId = textOf(result?.discardRun);
-                if (runId === "" || !(await registry.discardRun(id, runId))) {
-                    await ctx.showMessage(TEXT.optNoRunSelected);
-                    break;
-                }
-                await ctx.showMessage(TEXT.optDiscarded);
+            case "use":
+                await this.useDialog(id, store, textOf(result?.runKey), textOf(result?.use), ctx);
                 break;
-            }
             case "clear":
                 if (await ctx.showConfirmation(I18n.getTranslatedObject("dm_optClearConfirm"))) {
-                    await registry.deleteLearningData(id);
+                    await registry.deleteLearningData(id, result?.clearDecisions !== true);
                     await ctx.showMessage(TEXT.optCleared);
                 }
                 break;
@@ -753,10 +747,70 @@ export class ReminderDeviceManagement extends DeviceManagement {
                 }
                 break;
             }
+            case "finalOn":
+                await ctx.showMessage((await registry.resumeFinal(id, "user")) ? TEXT.optFinalOnDone : TEXT.optFinalNotSuspended);
+                break;
+            case "newRun": {
+                const key = textOf(result?.runKey);
+                if (key === "") {
+                    await ctx.showMessage(TEXT.optNoRunSelected);
+                    break;
+                }
+                await ctx.showMessage((await registry.resumeFinal(id, "newRun", key)) ? TEXT.optNewRunDone : TEXT.optNewRunLeft);
+                break;
+            }
+            case "dropLegacy":
+                if (await ctx.showConfirmation(I18n.getTranslatedObject("dm_optDropLegacyConfirm"))) {
+                    await ctx.showMessage((await registry.dropLegacyLimits(id)) ? TEXT.optDropLegacyDone : TEXT.optNoLegacy);
+                }
+                break;
             default:
                 break;
         }
         return this.updateOf(id);
+    }
+    async undoDialog(id, store, ctx) {
+        const registry = this.adapter.registry;
+        const first = await registry.undoOptimization(id);
+        if (first.ok) {
+            await ctx.showMessage(TEXT.optUndone);
+            return;
+        }
+        if (first.failing.length === 0 && first.offerExclude === null) {
+            await ctx.showMessage(TEXT.optNothingToUndo);
+            return;
+        }
+        const dates = (keys) => keys
+            .map(k => {
+            const run = [...store.runs, ...store.spikes].find(r => r.key === k || sameRun(r.key, k));
+            return run ? formatDate(startOf(run)) : k;
+        })
+            .join(", ");
+        const runs = dates(first.failing) || "-";
+        if (first.offerExclude !== null) {
+            const question = filled(TEXT.optUndoExcludeConfirm, { runs, date: dates([first.offerExclude]) });
+            if (await ctx.showConfirmation(question)) {
+                const second = await registry.undoOptimization(id, true);
+                await ctx.showMessage(second.ok ? TEXT.optUndone : filled(TEXT.optUndoBlocked, { runs: dates(second.failing) || "-" }));
+                return;
+            }
+        }
+        await ctx.showMessage(filled(TEXT.optUndoBlocked, { runs }));
+    }
+    async useDialog(id, store, key, use, ctx) {
+        const registry = this.adapter.registry;
+        if (key === "" || !["auto", "include", "exclude"].includes(use)) {
+            await ctx.showMessage(TEXT.optNoRunSelected);
+            return;
+        }
+        const decision = use === "auto" ? null : use;
+        if (decision === "exclude" && boundaryInfo(store, registry.verdictsOf(id) ?? undefined).has(key)) {
+            if (!(await ctx.showConfirmation(TEXT.optExcludeWarn))) {
+                return;
+            }
+        }
+        const done = await registry.setRunUse(id, key, decision);
+        await ctx.showMessage(done.reverted ? TEXT.optUseReverted : TEXT.optUseDone);
     }
     async learn(id, ctx) {
         const registry = this.adapter.registry;
@@ -1268,7 +1322,7 @@ function changeText(c) {
             .map(([k, v]) => `${k} ${String(v)}`)
             .join(", "));
 }
-export function buildOptimizationView(store, check, type, effective, active) {
+export function buildOptimizationView(store, check, type, effective, active, verdicts = null) {
     const items = {};
     const data = {};
     const tr = (key) => I18n.translate(key);
@@ -1314,9 +1368,8 @@ export function buildOptimizationView(store, check, type, effective, active) {
         return { name: key, type: a, effective: a === b ? b : `${b} *` };
     });
     items.runsHeader = { type: "header", text: I18n.getTranslatedObject("dm_optRuns"), size: 4, newLine: true, xs: 12 };
-    const all = [...store.runs, ...store.spikes]
-        .filter(r => decisionOf(store, r.key)?.user !== "exclude")
-        .sort((x, y) => x.ts - y.ts);
+    const all = [...store.runs, ...store.spikes].sort((x, y) => x.ts - y.ts);
+    const boundary = boundaryInfo(store, verdicts ?? undefined);
     if (all.length === 0) {
         items.none = { type: "staticText", text: I18n.getTranslatedObject("dm_optNone"), newLine: true, xs: 12 };
     }
@@ -1328,29 +1381,42 @@ export function buildOptimizationView(store, check, type, effective, active) {
             noDelete: true,
             xs: 12,
             items: [
-                { type: "text", attr: "date", title: tr("dm_optRunDate"), width: "22%" },
-                { type: "text", attr: "duration", title: tr("dm_optRunDuration"), width: "13%" },
-                { type: "text", attr: "family", title: tr("dm_optRunFamily"), width: "13%" },
-                { type: "text", attr: "delay", title: tr("dm_optRunDelay"), width: "13%" },
-                { type: "text", attr: "label", title: tr("dm_optRunLabel"), width: "27%" },
-                { type: "text", attr: "gate", title: tr("dm_optRunGate"), width: "12%" },
+                { type: "text", attr: "date", title: tr("dm_optRunDate"), width: "15%" },
+                { type: "text", attr: "duration", title: tr("dm_optRunDuration"), width: "8%" },
+                { type: "text", attr: "family", title: tr("dm_optRunFamily"), width: "7%" },
+                { type: "text", attr: "source", title: tr("dm_optRunSource"), width: "8%" },
+                { type: "text", attr: "label", title: tr("dm_learnColCheck"), width: "21%" },
+                { type: "text", attr: "use", title: tr("dm_learnColUse"), width: "11%" },
+                { type: "text", attr: "boundary", title: tr("dm_learnColBoundary"), width: "24%" },
+                { type: "text", attr: "gate", title: tr("dm_optRunGate"), width: "6%" },
             ],
         };
         data.runs = all.map(r => {
             const res = check?.perRun.find(x => x.id === r.id);
             const spike = r.label === "spike";
             const minutes = ((r.seg.runEndIdx - r.seg.startIdx + 1) * r.step) / 60_000;
+            const user = decisionOf(store, r.key)?.user;
             let gateText = "";
-            if (check) {
+            if (check && user !== "exclude") {
                 const ok = spike ? check.spikesOk : res?.ok === true;
-                gateText = ok ? "\u2713" : "\u2717";
+                gateText = ok ? "✓" : "✗";
+            }
+            const verdict = verdicts?.get(r.key);
+            const found = verdict && verdict.reasons.length > 0 ? checkText(verdict) : "";
+            const b = boundary.get(r.key);
+            const limits = (b?.limits ?? []).map(l => `${l.quantity} ${Math.round(l.value * 10) / 10} (${tr("dm_optWithout")} ${Math.round(l.without * 10) / 10})`);
+            if (b?.veto) {
+                limits.push(tr("dm_optVeto"));
             }
             return {
-                date: formatDate(r.ts + r.seg.startIdx * r.step),
+                key: r.key,
+                date: formatDate(startOf(r)),
                 duration: spike ? "" : `${Math.round(minutes)} min`,
                 family: spike || r.family < 0 ? "" : String(r.family + 1),
-                delay: res && Number.isFinite(res.delaySec) ? `${Math.round(res.delaySec / 6) / 10} min` : "",
-                label: tr(`dm_optLabel_${r.label}`),
+                source: tr(`dm_optSource_${r.src}`),
+                label: [tr(`dm_optLabel_${r.label}`), found].filter(x => x !== "").join(": "),
+                use: tr(`dm_learnUse_${user ?? "auto"}`),
+                boundary: limits.join(", "),
                 gate: gateText,
             };
         });
@@ -1384,15 +1450,26 @@ export function buildOptimizationView(store, check, type, effective, active) {
     const ops = [
         { label: I18n.getTranslatedObject("dm_optOpNone"), value: "" },
     ];
+    const splits = store.final?.splits ?? [];
+    const suspended = store.final?.state === "suspended";
+    if (all.length > 0) {
+        ops.push({ label: I18n.getTranslatedObject("dm_optUse"), value: "use" });
+    }
     if (active) {
         ops.push({ label: I18n.getTranslatedObject("dm_optUndo"), value: "undo" }, { label: I18n.getTranslatedObject("dm_optReset"), value: "reset" });
-        if (all.length > 0) {
-            ops.push({ label: I18n.getTranslatedObject("dm_optDiscard"), value: "discard" });
-        }
     }
     ops.push({ label: I18n.getTranslatedObject("dm_optClear"), value: "clear" });
     if (active) {
         ops.push({ label: I18n.getTranslatedObject("dm_optAdopt"), value: "adopt" });
+    }
+    if (suspended) {
+        ops.push({ label: I18n.getTranslatedObject("dm_optFinalOn"), value: "finalOn" });
+    }
+    if (splits.length > 0) {
+        ops.push({ label: I18n.getTranslatedObject("dm_optNewRun"), value: "newRun" });
+    }
+    if ((store.legacyEnvelope?.n ?? 0) > 0) {
+        ops.push({ label: I18n.getTranslatedObject("dm_optDropLegacy"), value: "dropLegacy" });
     }
     items.operation = {
         type: "select",
@@ -1403,20 +1480,44 @@ export function buildOptimizationView(store, check, type, effective, active) {
         sm: 6,
     };
     data.operation = "";
-    if (active && all.length > 0) {
-        items.discardRun = {
+    if (all.length > 0 || splits.length > 0) {
+        const known = new Map(all.map(r => [r.key, `${formatDate(startOf(r))} · ${tr(`dm_optLabel_${r.label}`)}`]));
+        const options = [
+            ...all.map(r => ({ label: known.get(r.key) ?? r.key, value: r.key })),
+            ...splits.filter(k => !known.has(k)).map(k => ({ label: k, value: k })),
+        ];
+        items.runKey = {
             type: "select",
-            label: I18n.getTranslatedObject("dm_optDiscardRun"),
-            options: all.map(r => ({
-                label: `${formatDate(r.ts + r.seg.startIdx * r.step)} \u00b7 ${tr(`dm_optLabel_${r.label}`)}`,
-                value: r.id,
-            })),
-            hidden: "data.operation !== 'discard'",
+            label: I18n.getTranslatedObject("dm_optUseRun"),
+            options,
+            hidden: "data.operation !== 'use' && data.operation !== 'newRun'",
             xs: 12,
             sm: 6,
         };
-        data.discardRun = "";
+        data.runKey = "";
+        items.use = {
+            type: "select",
+            label: I18n.getTranslatedObject("dm_learnColUse"),
+            options: ["auto", "include", "exclude"].map(u => ({
+                label: I18n.getTranslatedObject(`dm_learnUse_${u}`),
+                value: u,
+            })),
+            hidden: "data.operation !== 'use'",
+            newLine: true,
+            xs: 12,
+            sm: 6,
+        };
+        data.use = "auto";
     }
+    items.clearDecisions = {
+        type: "checkbox",
+        label: I18n.getTranslatedObject("dm_optClearDecisions"),
+        hidden: "data.operation !== 'clear'",
+        newLine: true,
+        xs: 12,
+        sm: 6,
+    };
+    data.clearDecisions = false;
     return { schema: { type: "panel", items }, data };
 }
 export function buildLearnSourceSchema() {

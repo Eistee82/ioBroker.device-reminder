@@ -14,7 +14,7 @@ import type { FileIO, MessageSink, NotifierHost, RuntimeEvent, RuntimeListener }
 import type { FinalEvent, GateResult, Hint, OptimizeContext, OptimizeOutcome } from "./learn/autoOptimize.js";
 import type { QualityContext, Verdict } from "./learn/quality.js";
 import { admitted, sameRun, verdictKey } from "./learn/quality.js";
-import { applyVetoes, effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
+import { applyVetoes, effectiveOf, gate, LOCK_MS, LOCK_RUNS, needsRepair, optimize } from "./learn/autoOptimize.js";
 import { checkFinalSplit } from "./learn/finalLearn.js";
 import { buildLayout } from "./learn/runs.js";
 import type { LearningSuggestion } from "./learning.js";
@@ -86,6 +86,40 @@ const CHECKED_MAX = 20;
 
 /** Changes that "undo" takes back (the last one of these). */
 const UNDOABLE = new Set<string>(["repair", "tighten", "finalOn", "finalRepair", "finalTune"]);
+
+/** Result of `undoOptimization`. */
+export interface UndoResult {
+	/** The change was undone. */
+	ok: boolean;
+	/** Keys of the runs the values before the change would not detect (nothing was undone). */
+	failing: string[];
+	/** Key of the boundary run that caused the undone repair: excluding it first would let the undo pass. */
+	offerExclude: string | null;
+}
+
+/** Changes that set the override (what "revert" and "undo" look at). */
+const VALUE_CHANGES = new Set<string>([
+	"repair",
+	"tighten",
+	"undo",
+	"reset",
+	"revert",
+	"adopted",
+	"baseChanged",
+	"typeChanged",
+	"finalOn",
+	"finalRepair",
+	"finalTune",
+]);
+
+/**
+ * The newest change of the store that set the override.
+ *
+ * @param store - Store
+ */
+function lastValueChange(store: StoreFile): StoreFile["changes"][number] | undefined {
+	return [...store.changes].reverse().find(c => VALUE_CHANGES.has(c.kind));
+}
 
 /** Why the final phase is suspended. */
 export type FinalSuspendReason = "finalSplit" | "earlyEnd";
@@ -400,9 +434,15 @@ export class DeviceRegistry implements RuntimeListener {
 				case "learning.stop":
 					await this.stopLearning(deviceId);
 					break;
-				case "learning.undo":
-					await this.undoOptimization(deviceId);
+				case "learning.undo": {
+					const undone = await this.undoOptimization(deviceId);
+					if (!undone.ok && undone.failing.length > 0) {
+						this.host.log.warn(
+							`${entry.runtime.config.name}: cannot undo, the earlier values would not detect ${undone.failing.length} stored run(s) correctly (use the dialog of the device to exclude them)`,
+						);
+					}
 					break;
+				}
 				case "learning.reset":
 					await this.resetOptimization(deviceId);
 					break;
@@ -601,34 +641,138 @@ export class DeviceRegistry implements RuntimeListener {
 	}
 
 	/**
-	 * Exclude one stored run or false start (e.g. a run that was no normal use of the device): the decision is kept
-	 * over the key of the run (also by "clear learning data" and a new import), the run is no longer replayed and the
-	 * envelope is computed again without it.
+	 * Decide whether a stored run counts (Spec D.4, D.7): `exclude` (never use), `include` (use although the run
+	 * check holds it back) or `null` (the run check decides). The decision is kept over the key of the run (also by
+	 * "clear learning data" and a new import) and the envelope is computed again at once. Excluding a boundary run
+	 * that triggered the last repair takes the repair back when the values before it detect every remaining admitted
+	 * run (entry `revert`, lock lifted). Using a run again (or including it) repairs at once when the values in use
+	 * do not detect it, so envelope and values are restored exactly.
 	 *
 	 * @param deviceId - Device id
-	 * @param runId - Id of the stored run
+	 * @param key - Key of the run
+	 * @param use - Decision
 	 */
-	public discardRun(deviceId: string, runId: string): Promise<boolean> {
-		return this.serialized(() => this.discardRunNow(deviceId, runId));
+	public setRunUse(deviceId: string, key: string, use: "include" | "exclude" | null): Promise<{ reverted: boolean }> {
+		return this.serialized(() => this.setRunUseNow(deviceId, key, use));
 	}
 
-	private async discardRunNow(deviceId: string, runId: string): Promise<boolean> {
+	private async setRunUseNow(
+		deviceId: string,
+		key: string,
+		use: "include" | "exclude" | null,
+	): Promise<{ reverted: boolean }> {
 		const entry = this.devices.get(deviceId);
 		const store = entry?.opt?.store;
 		if (!entry || !store) {
-			return false;
+			// no automatic optimisation: the decision still counts for the learning data on the file
+			await this.setDecisionsNow(deviceId, { [key]: use }, [], undefined, "");
+			return { reverted: false };
 		}
-		const run = [...store.runs, ...store.spikes].find(r => r.id === runId);
-		if (!run || decisionOf(store, run.key)?.user === "exclude") {
-			return false;
+		if ((decisionOf(store, key)?.user ?? null) === use) {
+			return { reverted: false };
 		}
-		setDecision(store, run.key, "exclude");
+		// a decision stored under a key of the same run (live ↔ history) is replaced
+		for (const k of Object.keys(store.verdicts)) {
+			if (k !== key && sameRun(k, key)) {
+				setDecision(store, k, null);
+			}
+		}
+		setDecision(store, key, use);
 		entry.opt!.verdicts = recompute(store, this.qualityContext(store));
 		refreshInfo(store);
+		const reverted = use === "exclude" ? await this.revertRepairOf(deviceId, entry, store, key) : false;
 		await this.saveOpt(entry);
 		await this.writeOptStates(deviceId, entry);
-		this.host.log.info(`${entry.runtime.config.name}: stored run ${runId} discarded`);
+		this.host.log.info(
+			`${entry.runtime.config.name}: run ${key} set to "${use ?? "auto"}"${reverted ? ", repair taken back" : ""}`,
+		);
+		if (!reverted && use !== "exclude" && this.modeOf(entry.runtime.config) === "full") {
+			// the run counts now: a run the values in use do not detect is repaired at once (no lock, no minimum)
+			const failing = await needsRepair(store, this.optimizeContext(entry));
+			if (failing.length > 0) {
+				await this.runOptimize(deviceId);
+			}
+		}
+		return { reverted };
+	}
+
+	/**
+	 * Take back the last repair when `key` (the run that triggered it) is excluded and the values before the repair
+	 * pass the gate over the remaining admitted runs (Spec D.7, P25).
+	 *
+	 * @param deviceId - Device id
+	 * @param entry - Entry
+	 * @param store - Store (the decision is set, the verdicts are computed again)
+	 * @param key - Key of the excluded run
+	 */
+	private async revertRepairOf(deviceId: string, entry: Entry, store: StoreFile, key: string): Promise<boolean> {
+		const last = lastValueChange(store);
+		if (last?.kind !== "repair" || !last.trigger || !sameRun(last.trigger, key)) {
+			return false;
+		}
+		const ctx = this.optimizeContext(entry);
+		const g = await gate(store, effectiveOf(ctx.type, last.from), ctx);
+		if (!g.ok) {
+			return false;
+		}
+		const wasOn = finalOn(entry.runtime.effective);
+		const now = this.host.now();
+		pushChange(store, {
+			ts: now,
+			kind: "revert",
+			from: store.override,
+			to: last.from,
+			reason: "repair taken back (run excluded)",
+			runs: store.runs.length + store.spikes.length,
+			gainSec: 0,
+			trigger: key,
+		});
+		store.override = last.from;
+		delete store.job;
+		store.lockRuns = 0;
+		store.lockUntilTs = 0;
+		store.lastChangeTs = now;
+		store.newSinceChange = 0;
+		store.failStreak = 0;
+		if (store.info.status === "locked") {
+			store.info.status = "ok";
+		}
+		entry.holdOverride = false;
+		entry.runtime.setOverride(store.override);
+		entry.runtime.setPhaseTune(this.phaseTuneOf(entry));
+		await this.syncFinalObjects(deviceId, entry, wasOn);
 		return true;
+	}
+
+	/**
+	 * Verdicts of the run check of a device (null while its learning data is not loaded).
+	 *
+	 * @param deviceId - Device id
+	 */
+	public verdictsOf(deviceId: string): ReadonlyMap<string, Verdict> | null {
+		return this.devices.get(deviceId)?.opt?.verdicts ?? null;
+	}
+
+	/**
+	 * Forget the frozen limits of the learning data of before this version (`legacyEnvelope`, Spec D.7 "discard old
+	 * limits"): the envelope then comes from the stored runs alone.
+	 *
+	 * @param deviceId - Device id
+	 */
+	public dropLegacyLimits(deviceId: string): Promise<boolean> {
+		return this.serialized(async () => {
+			const entry = this.devices.get(deviceId);
+			const store = entry?.opt?.store;
+			if (!entry || !store || (store.legacyEnvelope?.n ?? 0) === 0) {
+				return false;
+			}
+			delete store.legacyEnvelope;
+			entry.opt!.verdicts = recompute(store, this.qualityContext(store));
+			await this.saveOpt(entry);
+			await this.writeOptStates(deviceId, entry);
+			this.host.log.info(`${entry.runtime.config.name}: old limits of the learning data discarded`);
+			return true;
+		});
 	}
 
 	/**
@@ -777,19 +921,23 @@ export class DeviceRegistry implements RuntimeListener {
 	}
 
 	/**
-	 * Undo the last change of the automatic optimisation (locks the tightening for 14 days).
+	 * Undo the last change of the automatic optimisation (locks the tightening for 14 days). Only back to the last
+	 * change of the base values, and only if the values before it detect every admitted run (gate); otherwise the
+	 * runs that would fail are returned, and for a repair a boundary run caused, that run is offered for exclusion.
 	 *
 	 * @param deviceId - Device id
+	 * @param excludeTrigger - Exclude the run that caused the repair first (when the gate then passes)
 	 */
-	public undoOptimization(deviceId: string): Promise<boolean> {
-		return this.serialized(() => this.undoOptimizationNow(deviceId));
+	public undoOptimization(deviceId: string, excludeTrigger = false): Promise<UndoResult> {
+		return this.serialized(() => this.undoOptimizationNow(deviceId, excludeTrigger));
 	}
 
-	private async undoOptimizationNow(deviceId: string): Promise<boolean> {
+	private async undoOptimizationNow(deviceId: string, excludeTrigger: boolean): Promise<UndoResult> {
+		const nothing: UndoResult = { ok: false, failing: [], offerExclude: null };
 		const entry = this.devices.get(deviceId);
 		const store = entry?.opt?.store;
 		if (!entry || !store) {
-			return false;
+			return nothing;
 		}
 		// a change of the base values (also adopting) ends what can be undone: an older override belongs to other
 		// base values
@@ -798,7 +946,33 @@ export class DeviceRegistry implements RuntimeListener {
 			.reverse()
 			.find(c => !["undo", "reset", "finalSuspend", "finalResume"].includes(c.kind));
 		if (!last || !UNDOABLE.has(last.kind)) {
-			return false;
+			return nothing;
+		}
+		const trigger =
+			last.kind === "repair" && last.trigger
+				? ([...store.runs, ...store.spikes].find(r => sameRun(r.key, last.trigger ?? ""))?.key ?? null)
+				: null;
+		const offer = trigger !== null && decisionOf(store, trigger)?.user !== "exclude" ? trigger : null;
+		const target = effectiveOf(entry.runtime.baseDetection, last.from);
+		let g = await gate(store, target, this.optimizeContext(entry));
+		let excluded = false;
+		if (!g.ok && excludeTrigger && offer !== null) {
+			setDecision(store, offer, "exclude");
+			entry.opt!.verdicts = recompute(store, this.qualityContext(store));
+			g = await gate(store, target, this.optimizeContext(entry));
+			excluded = g.ok;
+			if (!excluded) {
+				// the exclusion did not help: the decision is not kept
+				setDecision(store, offer, null);
+				entry.opt!.verdicts = recompute(store, this.qualityContext(store));
+			}
+		}
+		if (!g.ok) {
+			const failing = [...g.perRun.filter(r => !r.ok).map(r => r.key), ...g.spikeKeys];
+			return { ok: false, failing, offerExclude: offer };
+		}
+		if (excluded) {
+			refreshInfo(store);
 		}
 		const wasOn = finalOn(entry.runtime.effective);
 		this.setOverrideByUser(entry, store, last.from, "undo", "undo of the last change");
@@ -806,7 +980,7 @@ export class DeviceRegistry implements RuntimeListener {
 		await this.syncFinalObjects(deviceId, entry, wasOn);
 		await this.writeOptStates(deviceId, entry);
 		this.host.log.info(`${entry.runtime.config.name}: last optimisation undone`);
-		return true;
+		return { ok: true, failing: [], offerExclude: null };
 	}
 
 	/**

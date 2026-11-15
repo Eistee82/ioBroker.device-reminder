@@ -3530,7 +3530,7 @@ Imports: `buildRunTable`, `RUN_TABLE_MODE` aus `../build/lib/deviceManagement.js
   - Dialog-Operationen: `use` (mit `runKey`, `use`), `undo`, `reset`, `clear` (Option `clearDecisions`), `adopt` (Task 8), `finalOn`, `newRun` (bei `finalSplit`, mit `runKey` → `resumeFinal(…, "newRun", runKey)`), `dropLegacy` (Warnung, löscht `legacyEnvelope`).
   - Tabelle: Datum, Dauer, Gruppe, Quelle, Prüfung, Verwendung, Grenzlauf (Grenze, Wert ohne ihn, Veto), ✓/✗; Warnung vor dem Ausschließen eines Grenzlaufs: „Wenn dieser Lauf echt war, kann ein solcher Lauf künftig zu früh als fertig gemeldet werden“.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 ```js
 // test/optimizeOutliers.test.js
@@ -3620,9 +3620,17 @@ it("clear keeps decisions unless 'also discard decisions' is ticked", async () =
 });
 ```
 
-- [ ] **Step 2:** FAIL → **Step 3:** implementieren → **Step 4:** `npm test` → PASS.
-- [ ] **Doku:** `docs/de|en/README.md` §8 (Optimierungsdialog: Verwendung je Lauf, Grenzlauf mit Wert ohne ihn, Undo nur bis zur letzten Grundwertänderung, „war ein neuer Lauf“, „Altgrenzen verwerfen“, „auch Entscheidungen verwerfen“); Changelog-Zeile zur Optimierung.
-- [ ] **Step 5: Commit** `feat: optimisation dialog with run use, coupled undo and exclusion, final phase controls`
+- [x] **Step 2:** FAIL → **Step 3:** implementieren → **Step 4:** `npm test` → PASS.
+- [x] **Doku:** `docs/de|en/README.md` §8 (Optimierungsdialog: Verwendung je Lauf, Grenzlauf mit Wert ohne ihn, Undo nur bis zur letzten Grundwertänderung, „war ein neuer Lauf“, „Altgrenzen verwerfen“, „auch Entscheidungen verwerfen“); Changelog-Zeile zur Optimierung.
+- [x] **Step 5: Commit** `feat: optimisation dialog with run use, coupled undo and exclusion, final phase controls`
+
+**Umsetzungsnotizen (Task 25):** Reihenfolge: Tests aus dem Plan zuerst gegen den alten Stand (`setRunUse` fehlte, `undoOptimization` lieferte kein Objekt → rot), dann Umsetzung, grün.
+- **Registry:** `setRunUse` ersetzt `discardRun`; ohne geladenen Speicher wird die Entscheidung über `setDecisionsNow` in die Datei geschrieben. Ein Ausschließen nimmt die letzte Reparatur zurück, wenn sie von diesem Lauf ausgelöst wurde (`Change.trigger`), sie die letzte wertändernde Änderung ist und das Gate der Werte davor über die übrigen zugelassenen Läufe besteht (Eintrag `revert`, `lockRuns`/`lockUntilTs` = 0). Verwenden/Zurück-auf-Auto prüft sofort `needsRepair` und führt bei Bedarf `runOptimize` aus (Reparatur ohne Sperre/Mindestzahl). `undoOptimization(id, excludeTrigger)` liefert `{ ok, failing, offerExclude }`; die Ausschluss-Entscheidung wird nur behalten, wenn das Gate danach besteht. Neu `verdictsOf`, `dropLegacyLimits`, in `runStore.ts` `boundaryInfo` (Grenze, Wert mit und ohne den Lauf, Veto). Der State `learning.undo` schreibt bei gesperrtem Undo eine Warnung ins Log.
+- **Dialog:** Operationen `use` (mit `runKey`, `use` = auto/include/exclude), `undo` (mit Rückfrage „diesen Lauf ausschließen und rückgängig machen?“), `reset`, `clear` (Haken `clearDecisions`), `adopt`, `finalOn`, `newRun` (`resumeFinal(…, "newRun", key)`), `dropLegacy` (mit Rückfrage). Die Tabelle listet auch ausgeschlossene Läufe (sonst gäbe es kein „wieder verwenden“) mit Datum, Dauer, Gruppe, Quelle, Einordnung + Befunde, Verwendung, Grenzlauf, ✓/✗; die Spalte „Ende-Verzögerung“ entfällt. Vor dem Ausschließen eines Grenzlaufs kommt die Warnung aus der Spec.
+- **Abweichung (Undo-Barriere):** `reconcileBase` schreibt jetzt auch ohne Override einen Eintrag `baseChanged`, sonst gäbe es nach einem Undo und einer Grundwert-Änderung keine Grenze, hinter die „Rückgängig“ nicht zurückgreift (Plan-Test 4). Nachrichten an Empfänger bleiben davon unberührt (nur mit Override, wie bisher).
+- **Folge für bestehende Tests:** Undo ist jetzt gate-geprüft. `autoOptimize.test.js` („undo and reset“, Statebutton wird gesperrt, dann Undo mit Ausschluss; `deleteLearningData` behält die Entscheidung, also eine Datei) und `optimizationIntegration.test.js` (Undo im laufenden Job mit einer unschädlichen `tighten`-Änderung, `discardRun` → `setRunUse`, `.ok`) wurden angepasst. Die Dialogtests in `deviceManagement.test.js` und die neuen Registrytests lassen die Fake-Timer mitlaufen (die Prüfungen geben Rechenzeit ab, unter `c8` hing der Test sonst).
+- **Texte:** de/en von Hand, 9 Sprachen per `npm run translate`; die Übersetzungen für „Lauf/run“ (maschinell „Rennen“) und die geänderten Texte habe ich von Hand korrigiert. `dm_optInfo` nennt jetzt 8 statt 4 Läufe. Entfernt: `dm_optDiscard`, `dm_optDiscardRun`, `dm_optRunDelay`, `dm_optRunLabel`, `TEXT.optDiscarded`.
+- **Offen:** Die Spalte „Grenzlauf“ zeigt die Grenzen der Hülle (`maxPauseSec`, …) mit ihren technischen Namen.
 
 ---
 

@@ -118,19 +118,19 @@ describe("automatic optimisation in the registry", function () {
 		assert.strictEqual(ctx.files.writes, 0);
 	});
 
-	it("discards a stored run as decision of the user, replays it no more and reads the data while the optimisation is off", async () => {
+	it("excludes a stored run as decision of the user, replays it no more and reads the data while the optimisation is off", async () => {
 		const ctx = await setup({ detection: DRYER });
 		const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 3, after: 400 });
 		await play(ctx, run.values);
 		const store = ctx.reg.learningData("dev");
 		const ids = [...store.runs, ...store.spikes].map(r => r.id);
+		const keys = [...store.runs, ...store.spikes].map(r => r.key);
 		assert.ok(ids.length > 0, "a run was stored");
 		const check = await ctx.reg.checkStoredRuns("dev");
 		assert.strictEqual(check.perRun.length, store.runs.length);
 
-		assert.strictEqual(await ctx.reg.discardRun("dev", "nope"), false);
-		assert.strictEqual(await ctx.reg.discardRun("dev", ids[0]), true);
-		assert.strictEqual(await ctx.reg.discardRun("dev", ids[0]), false, "already excluded");
+		await ctx.reg.setRunUse("dev", keys[0], "exclude");
+		assert.deepStrictEqual(await ctx.reg.setRunUse("dev", keys[0], "exclude"), { reverted: false }, "no change");
 		const after = ctx.reg.learningData("dev");
 		const gone = [...after.runs, ...after.spikes].find(r => r.id === ids[0]);
 		assert.deepStrictEqual(after.verdicts[gone.key], { user: "exclude" }, "kept as decision over its key");
@@ -141,7 +141,6 @@ describe("automatic optimisation in the registry", function () {
 		await ctx.reg.upsert("dev", { ...ctx.cfg, autoOptimize: undefined });
 		assert.strictEqual(ctx.reg.learningData("dev"), null);
 		assert.strictEqual(await ctx.reg.checkStoredRuns("dev"), null);
-		assert.strictEqual(await ctx.reg.discardRun("dev", ids[0]), false);
 		const read = await ctx.reg.readLearningData("dev");
 		assert.strictEqual(read.runs.length + read.spikes.length, ids.length);
 		assert.strictEqual(Object.keys(read.verdicts).length, 1);
@@ -196,7 +195,18 @@ describe("automatic optimisation in the registry", function () {
 			if (op === "undo") {
 				// a first change to undo later
 				await play(ctx, runOf({ device: "dryer", programme: "iron", shape: "T1", seed: 2, after: 400 }).values);
-				assert.ok(ctx.reg.learningData("dev").changes.length > 0);
+				const first = ctx.reg.learningData("dev");
+				assert.ok(first.changes.length > 0);
+				// a change that the values in use pass for every stored run (undo is checked against the runs, Spec D.7)
+				first.changes.push({
+					ts: ctx.host.now(),
+					kind: "tighten",
+					from: first.override,
+					to: first.override,
+					reason: "test",
+					runs: 1,
+					gainSec: 0,
+				});
 			}
 			const instBefore = JSON.stringify(ctx.inst);
 			const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 });
@@ -209,9 +219,11 @@ describe("automatic optimisation in the registry", function () {
 			}
 			// the job waits at its first yield (fake timers run only in drain)
 			const store = ctx.reg.learningData("dev");
-			const user = op === "reset" ? ctx.reg.resetOptimization("dev") : ctx.reg.undoOptimization("dev");
+			// the values before the repair would not detect the run that caused it: undo with excluding that run
+			const user = op === "reset" ? ctx.reg.resetOptimization("dev") : ctx.reg.undoOptimization("dev", true);
 			await drain(ctx);
-			assert.strictEqual(await user, true);
+			const done = await user;
+			assert.strictEqual(op === "undo" ? done.ok : done, true);
 			assert.strictEqual(store.changes.at(-1).kind, op, `${op}: ${store.changes.map(c => c.kind)}`);
 			assert.deepStrictEqual(ctx.reg.get("dev").currentOverride, store.override);
 			if (op === "reset") {
@@ -364,7 +376,7 @@ describe("base, effective and active values at runtime", function () {
 			await ctx.reg.upsert("dev", { ...ctx.cfg, detection });
 			const what = adopt ? "adopted" : "baseChanged";
 			assert.strictEqual(store.changes.at(-1).kind, what);
-			assert.strictEqual(await ctx.reg.undoOptimization("dev"), false, what);
+			assert.strictEqual((await ctx.reg.undoOptimization("dev")).ok, false, what);
 			assert.deepStrictEqual([store.override, ctx.reg.get("dev").currentOverride], [null, null], what);
 			assert.strictEqual(store.changes.at(-1).kind, what);
 		}

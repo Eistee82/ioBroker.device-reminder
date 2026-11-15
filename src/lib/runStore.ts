@@ -806,17 +806,16 @@ export function reconcileBase(
 		store.override = null;
 		return "adopted";
 	}
-	if (store.override) {
-		pushChange(store, {
-			ts: now,
-			kind: "baseChanged",
-			from: store.override,
-			to: null,
-			reason: "detection values changed",
-			runs: store.runs.length,
-			gainSec: 0,
-		});
-	}
+	// also without an override: undo goes back only to the last change of the base values (Spec D.7)
+	pushChange(store, {
+		ts: now,
+		kind: "baseChanged",
+		from: store.override,
+		to: null,
+		reason: "detection values changed",
+		runs: store.runs.length,
+		gainSec: 0,
+	});
 	store.override = null;
 	store.failStreak = 0;
 	if (store.info.status === "drift") {
@@ -1589,6 +1588,43 @@ export function boundaryRuns(store: StoreFile, verdicts?: ReadonlyMap<string, Ve
 	for (const r of [...store.runs, ...store.spikes]) {
 		if (isBoundary(store, use, full, r)) {
 			out.add(r.key);
+		}
+	}
+	return out;
+}
+
+/** Safety limits one run sets on its own (Spec D.7: the limit, its value and the value without the run). */
+export interface BoundaryInfo {
+	/** Limits of the envelope only this run sets. */
+	limits: { quantity: string; value: number; without: number }[];
+	/** The run stopped a candidate of the optimisation (veto). */
+	veto: boolean;
+}
+
+/**
+ * What every boundary run sets on its own, for the optimisation dialog: the envelope limits with the value with and
+ * without the run (the frozen envelope of before V5 counts in both), and whether it stopped a candidate.
+ *
+ * @param store - Store
+ * @param verdicts - Verdicts by key (`recompute`); without them only the decisions of the user count
+ */
+export function boundaryInfo(store: StoreFile, verdicts?: ReadonlyMap<string, Verdict>): Map<string, BoundaryInfo> {
+	const use = usesOfStore(store, verdicts);
+	const legacy = store.legacyEnvelope ?? emptyEnvelope();
+	const full = mergeEnvelope(legacy, envelopeWith(store, use));
+	const out = new Map<string, BoundaryInfo>();
+	for (const r of [...store.runs, ...store.spikes]) {
+		if (use.get(r)?.excluded) {
+			continue;
+		}
+		const rest = mergeEnvelope(legacy, envelopeWith(store, use, r));
+		const limits = ENVELOPE_KEYS.filter(k => rest[k] !== full[k]).map(k => ({
+			quantity: k,
+			value: full[k],
+			without: rest[k],
+		}));
+		if (limits.length > 0 || r.veto !== undefined) {
+			out.set(r.key, { limits, veto: r.veto !== undefined });
 		}
 	}
 	return out;

@@ -246,7 +246,11 @@ describe("automatic optimisation", function () {
 		await play(ctx, runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 1, after: 400 }));
 		const store = ctx.reg.learningData("dev");
 		assert.ok(store.override);
+		// the values before the repair would not detect the run that caused it: the state button does nothing (Spec D.7)
 		await ctx.reg.routeOwnState("dev.learning.undo", true, false);
+		assert.ok(store.override, "blocked by the gate");
+		assert.ok(ctx.host.logs.warn.some(m => m.includes("cannot undo")));
+		assert.strictEqual((await ctx.reg.undoOptimization("dev", true)).ok, true, "after excluding that run");
 		assert.strictEqual(store.override, null);
 		assert.strictEqual(store.changes.at(-1).kind, "undo");
 		assert.strictEqual(store.lockUntilTs, ctx.host.now() + LOCK_MS);
@@ -258,8 +262,10 @@ describe("automatic optimisation", function () {
 		// clear the learning data
 		await ctx.reg.deleteLearningData("dev");
 		assert.strictEqual(ctx.reg.learningData("dev").runs.length, 0);
+		assert.strictEqual(ctx.files.files.size, 1, "only the decision about the excluded run is kept");
+		await ctx.reg.deleteLearningData("dev", false);
 		assert.strictEqual(ctx.files.files.size, 0);
-		assert.strictEqual(await ctx.reg.undoOptimization("dev"), false);
+		assert.strictEqual((await ctx.reg.undoOptimization("dev")).ok, false);
 		assert.strictEqual(await ctx.reg.resetOptimization("nope"), false);
 		// switching the option off goes back to the values of the device
 		ctx.reg.get("dev").setOverride({ endCount: 30 });

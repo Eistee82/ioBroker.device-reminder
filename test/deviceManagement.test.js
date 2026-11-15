@@ -1,7 +1,8 @@
 import assert from "node:assert";
 import { DEFAULT_REMINDER, normalizeDeviceConfig, normalizeInstanceConfig } from "../build/lib/config.js";
-import { detectionOf } from "../build/lib/runStore.js";
+import { decisionOf, detectionOf } from "../build/lib/runStore.js";
 import { DRYER, WASHER } from "./helpers/devices.js";
+import { WM_FINAL } from "./helpers/final.js";
 import { loadSeries } from "./helpers/fixtures.js";
 import { usesOfAnswer } from "../build/lib/learnDialog.js";
 import { recordingChecks } from "../build/lib/learning.js";
@@ -1558,7 +1559,18 @@ describe("optimisation in the device manager", function () {
 	async function openDialog(ctx, answer, confirm = true) {
 		const [info] = await load(ctx);
 		const action = fakeAction({ forms: [answer], confirm });
-		await actionOf(info, "optimization").handler("trockner", action);
+		// the checks of the optimisation yield to the fake timers: advance them while the action runs
+		const running = actionOf(info, "optimization").handler("trockner", action);
+		let done = false;
+		void running.then(
+			() => (done = true),
+			() => (done = true),
+		);
+		for (let i = 0; i < 100_000 && !done; i++) {
+			await ctx.host.advance(0);
+			await new Promise(resolve => setImmediate(resolve));
+		}
+		await running;
 		return action;
 	}
 
@@ -1590,37 +1602,51 @@ describe("optimisation in the device manager", function () {
 		assert.ok(options.data.changes[0].kind.length > 0);
 		assert.deepStrictEqual(
 			schema.items.operation.options.map(o => o.value),
-			["", "undo", "reset", "discard", "clear", "adopt"],
+			["", "use", "undo", "reset", "clear", "adopt"],
 		);
-		assert.ok(schema.items.discardRun.options.length >= 1);
+		assert.ok(schema.items.runKey.options.length >= 1);
+		assert.deepStrictEqual(Object.keys(options.data.runs[0]).sort(), [
+			"boundary",
+			"date",
+			"duration",
+			"family",
+			"gate",
+			"key",
+			"label",
+			"source",
+			"use",
+		]);
 		assert.deepStrictEqual(action.messages, []);
 	});
 
-	it("undoes, resets, discards and clears", async () => {
+	it("undoes, resets, sets the use of a run and clears", async () => {
 		const ctx = await optSetup();
 		assert.ok(ctx.registry.get("trockner").currentOverride !== null, "the repair is active");
-		let action = await openDialog(ctx, { operation: "undo" });
+		// the values before the repair would not detect the run that caused it: the dialog offers to exclude it
+		let action = await openDialog(ctx, { operation: "undo" }, false);
+		assert.strictEqual(action.confirmations.length, 1);
+		assert.ok(action.messages[0].en.includes("Cannot undo"));
+		assert.ok(ctx.registry.get("trockner").currentOverride !== null, "declined: nothing undone");
+		action = await openDialog(ctx, { operation: "undo" });
 		assert.ok(action.messages[0].en.includes("undone"));
 		assert.strictEqual(ctx.registry.get("trockner").currentOverride, null);
+		const store = ctx.registry.learningData("trockner");
+		const first = [...store.runs, ...store.spikes][0];
+		assert.strictEqual(store.verdicts[first.key].user, "exclude", "the run that caused the repair is excluded");
 		action = await openDialog(ctx, { operation: "reset" });
 		assert.ok(action.messages[0].en.includes("base values"));
 		assert.strictEqual(ctx.registry.learningData("trockner").changes.at(-1).kind, "reset");
 
-		action = await openDialog(ctx, { operation: "discard" });
+		action = await openDialog(ctx, { operation: "use" });
 		assert.ok(action.messages[0].en.includes("Select"));
-		const store = ctx.registry.learningData("trockner");
-		const id = [...store.runs, ...store.spikes][0].id;
-		const count = store.runs.length + store.spikes.length;
-		action = await openDialog(ctx, { operation: "discard", discardRun: id });
-		assert.ok(action.messages[0].en.includes("discarded"));
-		const left = ctx.registry.learningData("trockner");
-		const shown = [...left.runs, ...left.spikes].filter(r => left.verdicts[r.key]?.user !== "exclude");
-		assert.strictEqual(shown.length, count - 1);
 		const view = await openDialog(ctx, { operation: "" });
-		assert.ok(
-			!(view.forms[0].schema.items.discardRun?.options ?? []).some(o => o.value === id),
-			"no longer listed",
-		);
+		const row = view.forms[0].options.data.runs.find(r => r.key === first.key);
+		assert.ok(row, "an excluded run is still listed");
+		assert.strictEqual(row.use, I18n.translate("dm_learnUse_exclude"));
+		action = await openDialog(ctx, { operation: "use", runKey: first.key, use: "auto" });
+		assert.ok(action.messages[0].en.includes("saved"));
+		assert.strictEqual(decisionOf(ctx.registry.learningData("trockner"), first.key), undefined);
+		assert.ok(ctx.registry.get("trockner").currentOverride !== null, "the run counts again: repaired at once");
 
 		action = await openDialog(ctx, { operation: "clear" }, false);
 		assert.strictEqual(action.messages.length, 0, "cancelled");
@@ -1665,6 +1691,87 @@ describe("optimisation in the device manager", function () {
 		const cancelled = await openDialog(ctx3, { operation: "adopt" }, false);
 		assert.deepStrictEqual(cancelled.messages, []);
 		assert.ok(ctx3.registry.learningData("trockner").override, "cancelled: nothing adopted");
+	});
+
+	it("drop old limits removes legacyEnvelope after a warning", async () => {
+		const ctx = await optSetup();
+		ctx.registry.learningData("trockner").legacyEnvelope = {
+			maxPauseSec: 900,
+			maxBurstSec: 0,
+			maxTrailSec: 0,
+			maxTrailerSec: 0,
+			minRunW: 0,
+			minCoreSec: 0,
+			n: 3,
+		};
+		const shown = await openDialog(ctx, { operation: "" });
+		assert.ok(shown.forms[0].schema.items.operation.options.some(o => o.value === "dropLegacy"));
+		const action = await openDialog(ctx, { operation: "dropLegacy" });
+		assert.ok(action.confirmations.length === 1);
+		assert.strictEqual(ctx.registry.learningData("trockner").legacyEnvelope, undefined);
+		const again = await openDialog(ctx, { operation: "dropLegacy" });
+		assert.ok(!again.forms[0].schema.items.operation.options.some(o => o.value === "dropLegacy"));
+	});
+
+	it("'was a new run' resumes the final phase without auto-optimisation", async () => {
+		const ctx = await optSetup({ autoOptimize: undefined, detection: { ...WASHER, ...WM_FINAL } }, false);
+		await ctx.registry.suspendFinal("trockner", "finalSplit", "trockner@5");
+		const shown = await openDialog(ctx, { operation: "" });
+		const ops = shown.forms[0].schema.items.operation.options.map(o => o.value);
+		assert.ok(ops.includes("finalOn") && ops.includes("newRun"));
+		assert.strictEqual(ctx.registry.get("trockner").active.finalMinVal, 0, "suspended");
+		const action = await openDialog(ctx, { operation: "newRun", runKey: "trockner@5" });
+		assert.ok(action.messages[0].en.includes("used again"));
+		assert.strictEqual(ctx.registry.get("trockner").active.finalMinVal, WM_FINAL.finalMinVal);
+		assert.deepStrictEqual(ctx.registry.learningData("trockner").final.splits, []);
+		const none = await openDialog(ctx, { operation: "newRun" });
+		assert.ok(none.messages[0].en.includes("Select"));
+	});
+
+	it("'use the final phase again' lifts the suspension and tells when there is none", async () => {
+		const ctx = await optSetup({ autoOptimize: undefined, detection: { ...WASHER, ...WM_FINAL } }, false);
+		await ctx.registry.suspendFinal("trockner", "finalSplit", "trockner@5");
+		let action = await openDialog(ctx, { operation: "finalOn" });
+		assert.ok(action.messages[0].en.includes("used again"));
+		assert.strictEqual(ctx.registry.get("trockner").active.finalMinVal, WM_FINAL.finalMinVal);
+		action = await openDialog(ctx, { operation: "finalOn" });
+		assert.ok(action.messages[0].en.includes("not suspended"));
+	});
+
+	it("the run table shows the value without a boundary run and warns before excluding it", async () => {
+		const ctx = await optSetup();
+		const key = ctx.registry.learningData("trockner").runs[0].key;
+		const shown = await openDialog(ctx, { operation: "" });
+		const rows = shown.forms[0].options.data.runs;
+		assert.ok(
+			rows.some(r => /ohne ihn|without it/.test(r.boundary)),
+			"the limits the run sets alone are shown",
+		);
+		const action = await openDialog(ctx, { operation: "use", runKey: key, use: "exclude" });
+		assert.ok(action.confirmations.some(c => JSON.stringify(c).includes("zu früh als fertig")));
+		assert.ok(action.confirmations.some(c => JSON.stringify(c).includes("too early")));
+		const included = await openDialog(ctx, { operation: "use", runKey: key, use: "include" });
+		assert.strictEqual(decisionOf(ctx.registry.learningData("trockner"), key).user, "include");
+		assert.strictEqual(included.confirmations.length, 0, "no warning for using a run");
+	});
+
+	it("declining the warning leaves the run as it was", async () => {
+		const ctx = await optSetup();
+		const key = ctx.registry.learningData("trockner").runs[0].key;
+		const action = await openDialog(ctx, { operation: "use", runKey: key, use: "exclude" }, false);
+		assert.deepStrictEqual(action.messages, []);
+		assert.strictEqual(decisionOf(ctx.registry.learningData("trockner"), key), undefined);
+	});
+
+	it("clear keeps decisions unless 'also discard decisions' is ticked", async () => {
+		const ctx = await optSetup();
+		const st = ctx.registry.learningData("trockner");
+		const key = st.runs[0].key;
+		await ctx.registry.setRunUse("trockner", key, "exclude");
+		await openDialog(ctx, { operation: "clear", clearDecisions: false });
+		assert.strictEqual((await ctx.registry.readLearningData("trockner")).verdicts[key].user, "exclude");
+		await openDialog(ctx, { operation: "clear", clearDecisions: true });
+		assert.deepStrictEqual((await ctx.registry.readLearningData("trockner")).verdicts, {});
 	});
 
 	it("explains that the optimisation is off when there is no learning data", async () => {

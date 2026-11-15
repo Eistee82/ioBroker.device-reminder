@@ -298,17 +298,15 @@ export function reconcileBase(store, baseHash, effectiveHash, now) {
         store.override = null;
         return "adopted";
     }
-    if (store.override) {
-        pushChange(store, {
-            ts: now,
-            kind: "baseChanged",
-            from: store.override,
-            to: null,
-            reason: "detection values changed",
-            runs: store.runs.length,
-            gainSec: 0,
-        });
-    }
+    pushChange(store, {
+        ts: now,
+        kind: "baseChanged",
+        from: store.override,
+        to: null,
+        reason: "detection values changed",
+        runs: store.runs.length,
+        gainSec: 0,
+    });
     store.override = null;
     store.failStreak = 0;
     if (store.info.status === "drift") {
@@ -791,6 +789,27 @@ export function boundaryRuns(store, verdicts) {
     for (const r of [...store.runs, ...store.spikes]) {
         if (isBoundary(store, use, full, r)) {
             out.add(r.key);
+        }
+    }
+    return out;
+}
+export function boundaryInfo(store, verdicts) {
+    const use = usesOfStore(store, verdicts);
+    const legacy = store.legacyEnvelope ?? emptyEnvelope();
+    const full = mergeEnvelope(legacy, envelopeWith(store, use));
+    const out = new Map();
+    for (const r of [...store.runs, ...store.spikes]) {
+        if (use.get(r)?.excluded) {
+            continue;
+        }
+        const rest = mergeEnvelope(legacy, envelopeWith(store, use, r));
+        const limits = ENVELOPE_KEYS.filter(k => rest[k] !== full[k]).map(k => ({
+            quantity: k,
+            value: full[k],
+            without: rest[k],
+        }));
+        if (limits.length > 0 || r.veto !== undefined) {
+            out.set(r.key, { limits, veto: r.veto !== undefined });
         }
     }
     return out;

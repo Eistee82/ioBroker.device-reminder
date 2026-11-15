@@ -7,7 +7,7 @@ import { fill, TEXT } from "./dmTexts.js";
 import { storedRunsOfHistory } from "./historyRuns.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import { admitted, sameRun, verdictKey } from "./learn/quality.js";
-import { applyVetoes, effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
+import { applyVetoes, effectiveOf, gate, LOCK_MS, LOCK_RUNS, needsRepair, optimize } from "./learn/autoOptimize.js";
 import { checkFinalSplit } from "./learn/finalLearn.js";
 import { buildLayout } from "./learn/runs.js";
 import { LearningRecorder, recordingChecks, suggestType } from "./learning.js";
@@ -20,6 +20,22 @@ export const BUDGET_WARN_JOBS = 3;
 const OUTAGE_MS = 60 * 60_000;
 const CHECKED_MAX = 20;
 const UNDOABLE = new Set(["repair", "tighten", "finalOn", "finalRepair", "finalTune"]);
+const VALUE_CHANGES = new Set([
+    "repair",
+    "tighten",
+    "undo",
+    "reset",
+    "revert",
+    "adopted",
+    "baseChanged",
+    "typeChanged",
+    "finalOn",
+    "finalRepair",
+    "finalTune",
+]);
+function lastValueChange(store) {
+    return [...store.changes].reverse().find(c => VALUE_CHANGES.has(c.kind));
+}
 function isTrue(val) {
     return val === true || val === 1 || val === "true" || val === "1";
 }
@@ -218,9 +234,13 @@ export class DeviceRegistry {
                 case "learning.stop":
                     await this.stopLearning(deviceId);
                     break;
-                case "learning.undo":
-                    await this.undoOptimization(deviceId);
+                case "learning.undo": {
+                    const undone = await this.undoOptimization(deviceId);
+                    if (!undone.ok && undone.failing.length > 0) {
+                        this.host.log.warn(`${entry.runtime.config.name}: cannot undo, the earlier values would not detect ${undone.failing.length} stored run(s) correctly (use the dialog of the device to exclude them)`);
+                    }
                     break;
+                }
                 case "learning.reset":
                     await this.resetOptimization(deviceId);
                     break;
@@ -371,26 +391,94 @@ export class DeviceRegistry {
         }
         return gate(store, entry.runtime.effective, this.optimizeContext(entry));
     }
-    discardRun(deviceId, runId) {
-        return this.serialized(() => this.discardRunNow(deviceId, runId));
+    setRunUse(deviceId, key, use) {
+        return this.serialized(() => this.setRunUseNow(deviceId, key, use));
     }
-    async discardRunNow(deviceId, runId) {
+    async setRunUseNow(deviceId, key, use) {
         const entry = this.devices.get(deviceId);
         const store = entry?.opt?.store;
         if (!entry || !store) {
-            return false;
+            await this.setDecisionsNow(deviceId, { [key]: use }, [], undefined, "");
+            return { reverted: false };
         }
-        const run = [...store.runs, ...store.spikes].find(r => r.id === runId);
-        if (!run || decisionOf(store, run.key)?.user === "exclude") {
-            return false;
+        if ((decisionOf(store, key)?.user ?? null) === use) {
+            return { reverted: false };
         }
-        setDecision(store, run.key, "exclude");
+        for (const k of Object.keys(store.verdicts)) {
+            if (k !== key && sameRun(k, key)) {
+                setDecision(store, k, null);
+            }
+        }
+        setDecision(store, key, use);
         entry.opt.verdicts = recompute(store, this.qualityContext(store));
         refreshInfo(store);
+        const reverted = use === "exclude" ? await this.revertRepairOf(deviceId, entry, store, key) : false;
         await this.saveOpt(entry);
         await this.writeOptStates(deviceId, entry);
-        this.host.log.info(`${entry.runtime.config.name}: stored run ${runId} discarded`);
+        this.host.log.info(`${entry.runtime.config.name}: run ${key} set to "${use ?? "auto"}"${reverted ? ", repair taken back" : ""}`);
+        if (!reverted && use !== "exclude" && this.modeOf(entry.runtime.config) === "full") {
+            const failing = await needsRepair(store, this.optimizeContext(entry));
+            if (failing.length > 0) {
+                await this.runOptimize(deviceId);
+            }
+        }
+        return { reverted };
+    }
+    async revertRepairOf(deviceId, entry, store, key) {
+        const last = lastValueChange(store);
+        if (last?.kind !== "repair" || !last.trigger || !sameRun(last.trigger, key)) {
+            return false;
+        }
+        const ctx = this.optimizeContext(entry);
+        const g = await gate(store, effectiveOf(ctx.type, last.from), ctx);
+        if (!g.ok) {
+            return false;
+        }
+        const wasOn = finalOn(entry.runtime.effective);
+        const now = this.host.now();
+        pushChange(store, {
+            ts: now,
+            kind: "revert",
+            from: store.override,
+            to: last.from,
+            reason: "repair taken back (run excluded)",
+            runs: store.runs.length + store.spikes.length,
+            gainSec: 0,
+            trigger: key,
+        });
+        store.override = last.from;
+        delete store.job;
+        store.lockRuns = 0;
+        store.lockUntilTs = 0;
+        store.lastChangeTs = now;
+        store.newSinceChange = 0;
+        store.failStreak = 0;
+        if (store.info.status === "locked") {
+            store.info.status = "ok";
+        }
+        entry.holdOverride = false;
+        entry.runtime.setOverride(store.override);
+        entry.runtime.setPhaseTune(this.phaseTuneOf(entry));
+        await this.syncFinalObjects(deviceId, entry, wasOn);
         return true;
+    }
+    verdictsOf(deviceId) {
+        return this.devices.get(deviceId)?.opt?.verdicts ?? null;
+    }
+    dropLegacyLimits(deviceId) {
+        return this.serialized(async () => {
+            const entry = this.devices.get(deviceId);
+            const store = entry?.opt?.store;
+            if (!entry || !store || (store.legacyEnvelope?.n ?? 0) === 0) {
+                return false;
+            }
+            delete store.legacyEnvelope;
+            entry.opt.verdicts = recompute(store, this.qualityContext(store));
+            await this.saveOpt(entry);
+            await this.writeOptStates(deviceId, entry);
+            this.host.log.info(`${entry.runtime.config.name}: old limits of the learning data discarded`);
+            return true;
+        });
     }
     setDecisions(deviceId, decisions, runs = [], bands, baseHash = "") {
         return this.serialized(() => this.setDecisionsNow(deviceId, decisions, runs, bands, baseHash));
@@ -492,20 +580,45 @@ export class DeviceRegistry {
             this.host.log.warn(`Cannot delete the learning data of ${deviceId}: ${errorMessage(err)}`);
         }
     }
-    undoOptimization(deviceId) {
-        return this.serialized(() => this.undoOptimizationNow(deviceId));
+    undoOptimization(deviceId, excludeTrigger = false) {
+        return this.serialized(() => this.undoOptimizationNow(deviceId, excludeTrigger));
     }
-    async undoOptimizationNow(deviceId) {
+    async undoOptimizationNow(deviceId, excludeTrigger) {
+        const nothing = { ok: false, failing: [], offerExclude: null };
         const entry = this.devices.get(deviceId);
         const store = entry?.opt?.store;
         if (!entry || !store) {
-            return false;
+            return nothing;
         }
         const last = [...store.changes]
             .reverse()
             .find(c => !["undo", "reset", "finalSuspend", "finalResume"].includes(c.kind));
         if (!last || !UNDOABLE.has(last.kind)) {
-            return false;
+            return nothing;
+        }
+        const trigger = last.kind === "repair" && last.trigger
+            ? ([...store.runs, ...store.spikes].find(r => sameRun(r.key, last.trigger ?? ""))?.key ?? null)
+            : null;
+        const offer = trigger !== null && decisionOf(store, trigger)?.user !== "exclude" ? trigger : null;
+        const target = effectiveOf(entry.runtime.baseDetection, last.from);
+        let g = await gate(store, target, this.optimizeContext(entry));
+        let excluded = false;
+        if (!g.ok && excludeTrigger && offer !== null) {
+            setDecision(store, offer, "exclude");
+            entry.opt.verdicts = recompute(store, this.qualityContext(store));
+            g = await gate(store, target, this.optimizeContext(entry));
+            excluded = g.ok;
+            if (!excluded) {
+                setDecision(store, offer, null);
+                entry.opt.verdicts = recompute(store, this.qualityContext(store));
+            }
+        }
+        if (!g.ok) {
+            const failing = [...g.perRun.filter(r => !r.ok).map(r => r.key), ...g.spikeKeys];
+            return { ok: false, failing, offerExclude: offer };
+        }
+        if (excluded) {
+            refreshInfo(store);
         }
         const wasOn = finalOn(entry.runtime.effective);
         this.setOverrideByUser(entry, store, last.from, "undo", "undo of the last change");
@@ -513,7 +626,7 @@ export class DeviceRegistry {
         await this.syncFinalObjects(deviceId, entry, wasOn);
         await this.writeOptStates(deviceId, entry);
         this.host.log.info(`${entry.runtime.config.name}: last optimisation undone`);
-        return true;
+        return { ok: true, failing: [], offerExclude: null };
     }
     resetOptimization(deviceId) {
         return this.serialized(() => this.resetOptimizationNow(deviceId));
