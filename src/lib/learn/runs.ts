@@ -15,7 +15,13 @@ export const MAX_WINDOWS = 20;
  * Revision of the layout rules. A stored run with an older revision (or none) is laid out again from
  * its cells when it is loaded.
  */
-export const LAYOUT_REV = 2;
+export const LAYOUT_REV = 3;
+/** A block of one tick counts as a single report only at polls up to this long (`peelSingles`). */
+export const SINGLE_REPORT_MAX_MS = 10_000;
+/** At most this many single reports are cut off at each edge of a run (`peelSingles`). */
+export const SINGLE_REPORT_MAX_PEEL = 2;
+/** A single report at least this far from the rest of a run does not extend it (`peelSingles`). */
+export const SINGLE_REPORT_GAP_MS = 30_000;
 /** Longest burst of an anti-crease trailer. */
 export const TRAILER_BURST_MS = 2 * 60_000;
 /** Longest distance between two bursts of an anti-crease trailer. */
@@ -298,7 +304,63 @@ function segments(s: TickSeries, limit: number, maxGap: number, endIsGap: number
 	if (endIsGap > 0 && current && current.active >= endIsGap && s.length - 1 - current.to <= maxGap) {
 		current.touched = true;
 	}
-	return out;
+	return s.stepMs <= SINGLE_REPORT_MAX_MS ? out.flatMap(x => peelSingles(s, x, limit)) : out;
+}
+
+/**
+ * A single report at the edge of a segment does not extend it (LAYOUT_REV 3): a block of one tick before the first
+ * or after the last other block, at least SINGLE_REPORT_GAP_MS away, is a segment of its own (a spike) when the block
+ * next to it is longer than one tick, or when it is one tick as well and the two gaps differ by more than a factor
+ * of 2 (bursts of an anti-crease phase come at regular gaps and stay). At most SINGLE_REPORT_MAX_PEEL per edge.
+ *
+ * @param s - Series
+ * @param seg - Segment
+ * @param limit - Level in W
+ */
+function peelSingles(s: TickSeries, seg: Segment, limit: number): Segment[] {
+	if (seg.active < 2) {
+		return [seg];
+	}
+	const b = blocksOf(s, seg, limit);
+	if (b.length < 2) {
+		return [seg];
+	}
+	const minGap = Math.ceil(SINGLE_REPORT_GAP_MS / s.stepMs);
+	const gapAt = (k: number): number => b[k + 1].from - b[k].to - 1;
+	const single = (k: number): boolean => b[k].from === b[k].to;
+	const irregular = (g: number, h: number): boolean => Math.max(g, h) > 2 * Math.max(1, Math.min(g, h));
+	// `edge` is the single block, `inner` the block next to it, `g` the gap between them, `h` the gap behind `inner`
+	const lone = (inner: number, g: number, h: number | null): boolean =>
+		g >= minGap && (!single(inner) || (h !== null && irregular(g, h)));
+	let lo = 0;
+	let hi = b.length - 1;
+	while (
+		lo < SINGLE_REPORT_MAX_PEEL &&
+		hi - lo >= 1 &&
+		single(lo) &&
+		lone(lo + 1, gapAt(lo), lo + 1 < hi ? gapAt(lo + 1) : null)
+	) {
+		lo++;
+	}
+	while (
+		b.length - 1 - hi < SINGLE_REPORT_MAX_PEEL &&
+		hi - lo >= 1 &&
+		single(hi) &&
+		lone(hi - 1, gapAt(hi - 1), hi - 1 > lo ? gapAt(hi - 2) : null)
+	) {
+		hi--;
+	}
+	if (lo === 0 && hi === b.length - 1) {
+		return [seg];
+	}
+	const piece = (k: number): Segment => ({ from: b[k].from, to: b[k].to, active: 1, touched: seg.touched });
+	const rest: Segment = {
+		from: b[lo].from,
+		to: b[hi].to,
+		active: seg.active - lo - (b.length - 1 - hi),
+		touched: seg.touched,
+	};
+	return [...b.slice(0, lo).map((_, k) => piece(k)), rest, ...b.slice(hi + 1).map((_, k) => piece(hi + 1 + k))];
 }
 
 /**

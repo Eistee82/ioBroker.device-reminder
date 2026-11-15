@@ -13,7 +13,7 @@ function read(rel) {
 
 /** Terms both documentation languages have to mention (Spec 7.5). */
 const TERMS = {
-	de: ["Startverzögerung", "Restrisiko", "8 Läufe", "10 zugelassenen Läufe", "2 Läufe je Programmgruppe"],
+	de: ["Startverzögerung", "Restrisiko", "8 Läufe", "10 zugelassenen Läufe", "2 Läufen je Programmgruppe"],
 	en: ["Start delay", "Remaining risk", "8 runs", "10 admitted runs", "2 runs per programme group"],
 };
 

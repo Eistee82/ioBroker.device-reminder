@@ -28,8 +28,7 @@ const W0 = loadSeries("washer30d").filter(p => p.ts < CUT);
 const W = [...W0, { ts: CUT, val: W0.at(-1).val }];
 const end = CUT + 60 * MIN;
 const near = (a, b) => Math.abs(a - b) <= 0.05 * Math.max(Math.abs(b), 1e-9);
-const START_KEYS = ["startVal", "standby", "startCount"];
-const ALL_KEYS = [...START_KEYS, "endVal", "endCount"];
+const ALL_KEYS = ["startVal", "standby", "startCount", "endVal", "endCount"];
 
 /**
  * Defects (Spec 8.4) with the finding expected at their stretch (`held`: the run check holds the stretch back with
@@ -131,17 +130,14 @@ describe("injected defects change no value (Spec 8.4)", function () {
 			const sg = await analyzeHistory(d.pts, 10, {});
 			// the defect changes nothing beyond the runs it takes out of use
 			const ref = await analyzeHistory(withoutSpans(W, held.spans), 10, {});
-			for (const k of d.spikes ? START_KEYS : ALL_KEYS) {
+			for (const k of ALL_KEYS) {
 				assert.ok(
 					near(sg.thresholds[k], ref.thresholds[k]),
 					`${k} ${sg.thresholds[k]} vs ${ref.thresholds[k]}`,
 				);
 			}
-			if (!d.spikes) {
-				// single reports next to a run join it in the layout (open, see the plan): for the spikes only the start
-				// values stay
-				assert.strictEqual(sg.mode, ref.mode);
-			}
+			// a single report next to a run does not extend it (LAYOUT_REV 3), so the spikes change no end value either
+			assert.strictEqual(sg.mode, ref.mode);
 			// the final phase: released only if it reports no real run early, and then as without the stretches
 			const fin = storeInput(d.pts);
 			const f = await learnFinal(fin.runs, finalCtx(fin));

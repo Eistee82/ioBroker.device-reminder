@@ -78,6 +78,17 @@ describe("3.1.2 → V4 mapping (Spec C.5, one test per row)", () => {
 		);
 		assert.ok(!full.warnings.some(w => w.startsWith("Recipient whatsapp-")), "an equal path gives no warning");
 	});
+	it("alexa row without id → warning, the row is dropped", () => {
+		const r = migrateLegacyConfig({
+			...src,
+			alexa: { ids: [...src.alexa.ids, { name: "Küche", path: "alexa2.0.Echo-Devices.X.Commands.speak" }] },
+		});
+		assert.deepStrictEqual(
+			r.instance.recipients.filter(x => x.kind === "alexa").map(x => x.id),
+			src.alexa.ids.map(row => `alexa-${row.id}`),
+		);
+		assert.ok(r.warnings.includes(`Recipient alexa row ${src.alexa.ids.length + 1} ignored: no id`));
+	});
 	it("telegram row → telegram.N, target and target kind", () => {
 		for (const row of src.telegram.ids) {
 			const r = rec(full, `telegram-${row.id}`);
@@ -182,6 +193,16 @@ describe("3.1.2 → V4 mapping (Spec C.5, one test per row)", () => {
 			);
 			assert.ok(!("typeId" in c), "no device type any more");
 		}
+	});
+	it("runtimeMax (unused in 3.1.2) and id of a device row are dropped without a warning", () => {
+		const finalIds = Object.fromEntries(
+			Object.entries(src.linkedDevice.finalIds).map(([k, raw]) => [k, { ...raw, runtimeMax: "120" }]),
+		);
+		const r = migrateLegacyConfig({ ...src, linkedDevice: { ...src.linkedDevice, finalIds } });
+		for (const d of r.devices) {
+			assert.ok(!("runtimeMax" in d.config) && !("id" in d.config), d.oldName);
+		}
+		assert.deepStrictEqual(r.warnings, full.warnings);
 	});
 	it("exact type → detection copy of the row, template, enabled, no final phase", () => {
 		const c = dev(edge, "Waschen");

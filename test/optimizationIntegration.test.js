@@ -786,6 +786,20 @@ describe("optimisation over 30 days (Spec D.1–D.4)", function () {
 		const g = await ctx.reg.checkStoredRuns("dev");
 		assert.strictEqual(g.ok, true, "the end of the combined run is detected (endOk of the whole run)");
 	});
+	it("merged runs whose real end is never reported are repaired at once; afterwards the end is detected (decision 9)", async () => {
+		// idle at 0.5 W stays above endVal 0.3: the two runs merge and the combined run never ends
+		const ctx = await registrySetup({ detection: { ...WASHER, endVal: 0.3, standby: 0.2 } });
+		const a = runOf({ device: "washer", programme: "quick30", seed: 5, after: 60 }).values;
+		const b = runOf({ device: "washer", programme: "quick30", seed: 6 }).values;
+		// the capture closes at the latest after 12 h (CAPTURE_MAX_MS)
+		await feed(ctx, [...a, ...b, ...new Array(4400).fill(0.5)]);
+		const st = ctx.reg.learningData("dev");
+		assert.ok(
+			st.changes.some(c => c.kind === "repair"),
+			`a missing end of the combined run is a detection error: ${JSON.stringify(st.info)}`,
+		);
+		assert.strictEqual((await ctx.reg.checkStoredRuns("dev")).ok, true, "the repaired values detect the end");
+	});
 	it("an end that is never reported is repaired at once (end not detected)", async () => {
 		// idle at 0.5 W stays above endVal 0.3: with the current values the run never ends
 		const ctx = await registrySetup({ detection: { ...WASHER, endVal: 0.3, standby: 0.2 } });
@@ -1059,6 +1073,19 @@ describe("final phase in the optimisation (Spec D.5)", function () {
 		assert.strictEqual(ctx.reg.get("dev").effective.finalMinVal ?? 0, 0, "undo switches it off");
 		assert.ok(objects.deleted.includes("dev.settlingUntil"), "settlingUntil removed again");
 	});
+	it("switching the final phase on without optimizeNotify sends no message, only the log (G14)", async () => {
+		const ctx = await registrySetup({});
+		await windowsFeed(ctx, [...CLONES, ...CLONES]);
+		const st = ctx.reg.learningData("dev");
+		assert.strictEqual(st.final?.state, "on");
+		assert.ok(st.changes.some(c => c.kind === "finalOn"));
+		assert.ok(ctx.host.logs.info.some(m => m.includes("final phase switched on")));
+		assert.deepStrictEqual(
+			ctx.host.sent.filter(x => x.instance === "telegram.0"),
+			[],
+			"no message without optimizeNotify",
+		);
+	});
 	it("analysis candidates never change final fields; no silent switch-off", async () => {
 		const ctx = await registrySetup({ detection: { ...WASHER, ...WM_FINAL, endCount: 120 } });
 		for (let k = 1; k <= 9; k++) {
@@ -1113,6 +1140,24 @@ describe("final phase in the optimisation (Spec D.5)", function () {
 		} else {
 			assert.ok(st.final.reason, "stays suspended with a reason");
 		}
+	});
+	it("soaking just above the run level of the capture (3 W): the rest is stored and judged as split", async () => {
+		const ctx = await registrySetup({ detection: { ...WASHER, ...WM_FINAL } });
+		await windowsFeed(ctx, ["w01", "w03", "w06", "w07"]);
+		const pts = soaking(loadSeries("washer30d"), 10, 3);
+		const win = runWindow("washer30d", "w11");
+		const end = win.at(-1).ts + 3_600_000;
+		const part = pts.filter(p => p.ts >= win[0].ts && p.ts <= end);
+		await liveFeed(ctx, [...part, { ts: end, val: part.at(-1).val }]);
+		const st = ctx.reg.learningData("dev");
+		assert.ok(
+			st.runs.some(r => r.afterFinal !== undefined),
+			"the rest is stored",
+		);
+		assert.ok(
+			st.changes.some(c => c.kind === "finalSuspend"),
+			"judged afterwards and suspended",
+		);
 	});
 	it("resume after a correct early end", async () => {
 		const ctx = await registrySetup({ detection: { ...WASHER, ...WM_FINAL } });

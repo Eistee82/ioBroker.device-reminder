@@ -74,4 +74,43 @@ describe("layout: programme end and tail", () => {
 			JSON.stringify(L.incomplete),
 		);
 	});
+	it("a single report before the start or after the end does not extend the run (LAYOUT_REV 3)", () => {
+		const { L: L0, s } = layoutOf(W);
+		const at = k => s.t0 + k * s.stepMs;
+		const spike = (ts, val) => {
+			const held = W.findLast(p => p.ts <= ts).val;
+			return [
+				{ ts, val },
+				{ ts: ts + 10_000, val: held },
+			];
+		};
+		// w07 (layout run 6): 10 min before its start, 15 min after the end of its tail, and both at the end of w01
+		const r = L0.runs[6];
+		const r0 = L0.runs[0];
+		const pts = [
+			...W,
+			...spike(at(r.from) - 10 * 60_000, 400),
+			...spike(at(r.to) + 15 * 60_000, 400),
+			...spike(at(r0.to) + 20 * 60_000, 3000),
+		].sort((a, b) => a.ts - b.ts);
+		const { L } = layoutOf(pts);
+		assert.strictEqual(L.runs.length, L0.runs.length);
+		L.runs.forEach((x, k) => {
+			const y = L0.runs[k];
+			assert.deepStrictEqual(
+				[x.from, x.coreEnd, x.runEnd, x.progEnd, x.trailerFrom, x.trailerTo],
+				[y.from, y.coreEnd, y.runEnd, y.progEnd, y.trailerFrom, y.trailerTo],
+				`run ${k}`,
+			);
+		});
+		assert.strictEqual(L.spikes.length, L0.spikes.length + 3);
+	});
+	it("a short block at the edge of a run is kept: only a single report is cut off", () => {
+		const { L: L0, s } = layoutOf(W);
+		const r = L0.runs[6];
+		const from = s.t0 + r.from * s.stepMs - 10 * 60_000;
+		const pts = [...W, { ts: from, val: 400 }, { ts: from + 20_000, val: 0 }].sort((a, b) => a.ts - b.ts);
+		const { L } = layoutOf(pts);
+		assert.strictEqual(L.runs[6].from, r.from - 60);
+	});
 });

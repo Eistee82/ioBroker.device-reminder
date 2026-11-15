@@ -4,7 +4,10 @@ export const MIN_ACTIVE_MS = 5 * 60_000;
 export const PAD_BEFORE_MS = 30 * 60_000;
 export const PAD_AFTER_MS = 3 * 60 * 60_000;
 export const MAX_WINDOWS = 20;
-export const LAYOUT_REV = 2;
+export const LAYOUT_REV = 3;
+export const SINGLE_REPORT_MAX_MS = 10_000;
+export const SINGLE_REPORT_MAX_PEEL = 2;
+export const SINGLE_REPORT_GAP_MS = 30_000;
 export const TRAILER_BURST_MS = 2 * 60_000;
 export const TRAILER_GAP_MAX_MS = 15 * 60_000;
 export function TRAILER_GAP_MIN_MS(stepMs) {
@@ -87,7 +90,46 @@ function segments(s, limit, maxGap, endIsGap) {
     if (endIsGap > 0 && current && current.active >= endIsGap && s.length - 1 - current.to <= maxGap) {
         current.touched = true;
     }
-    return out;
+    return s.stepMs <= SINGLE_REPORT_MAX_MS ? out.flatMap(x => peelSingles(s, x, limit)) : out;
+}
+function peelSingles(s, seg, limit) {
+    if (seg.active < 2) {
+        return [seg];
+    }
+    const b = blocksOf(s, seg, limit);
+    if (b.length < 2) {
+        return [seg];
+    }
+    const minGap = Math.ceil(SINGLE_REPORT_GAP_MS / s.stepMs);
+    const gapAt = (k) => b[k + 1].from - b[k].to - 1;
+    const single = (k) => b[k].from === b[k].to;
+    const irregular = (g, h) => Math.max(g, h) > 2 * Math.max(1, Math.min(g, h));
+    const lone = (inner, g, h) => g >= minGap && (!single(inner) || (h !== null && irregular(g, h)));
+    let lo = 0;
+    let hi = b.length - 1;
+    while (lo < SINGLE_REPORT_MAX_PEEL &&
+        hi - lo >= 1 &&
+        single(lo) &&
+        lone(lo + 1, gapAt(lo), lo + 1 < hi ? gapAt(lo + 1) : null)) {
+        lo++;
+    }
+    while (b.length - 1 - hi < SINGLE_REPORT_MAX_PEEL &&
+        hi - lo >= 1 &&
+        single(hi) &&
+        lone(hi - 1, gapAt(hi - 1), hi - 1 > lo ? gapAt(hi - 2) : null)) {
+        hi--;
+    }
+    if (lo === 0 && hi === b.length - 1) {
+        return [seg];
+    }
+    const piece = (k) => ({ from: b[k].from, to: b[k].to, active: 1, touched: seg.touched });
+    const rest = {
+        from: b[lo].from,
+        to: b[hi].to,
+        active: seg.active - lo - (b.length - 1 - hi),
+        touched: seg.touched,
+    };
+    return [...b.slice(0, lo).map((_, k) => piece(k)), rest, ...b.slice(hi + 1).map((_, k) => piece(hi + 1 + k))];
 }
 export function blocksOf(s, span, limit) {
     const out = [];
