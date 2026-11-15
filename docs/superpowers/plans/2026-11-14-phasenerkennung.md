@@ -3643,11 +3643,18 @@ Die Tasks 4–25 haben ihre Doku- und Changelog-Anteile schon im eigenen Commit 
 
 **Interfaces:** keine.
 
-- [ ] **Step 1: Doku de/en** nach Spec 7.5: Vorlagen und Werte im Gerät; Kapitel „Phasen“ (inkl. was nur rückwirkend erscheint); §8 Laufprüfung, Verwendung, Grenzläufe, Reparatur-Vorrang (sofort nach einem falsch erkannten zugelassenen Lauf, ohne Mindestzahl, Sperre und Schrittgrenze), Schlussphase (nur wo Daten trennen und ein Nachlauf existiert; Grenzen der Felder nach Spec A.2 „Bereich“), 30 Tage, Mindestzahlen (8 Läufe Verschärfung, 10 Läufe/2 je Gruppe Schlussphase, Reparatur sofort), automatisches Einschalten mit Undo, `keepCurrentLevel`, Restrisiko erstes unbekanntes Programm, Verhalten nach frühem Ende, Startverzögerung nach Ausräumen (Beispiel WM ≤ ~4 min); §9 Migration (exakte Namen, unbekannter Typ deaktiviert, umbenannte Plätze, V4-Teststände, Kopien bei geteilten Typen, Archiv inkl. Namen, vor V5 verworfene Läufe können erneut erscheinen, Warnungen aus Befund M5–M7, Verhaltensänderungen M11); §13 States inkl. `settlingUntil`, `phase*`, `learning.parameters`; §7 Aktionen `phaseStart`/`phaseEnd`.
-- [ ] **Step 2: Changelog** – weiterhin genau 6 Zeilen unter `### **WORK IN PROGRESS**`; Zeile 35 umformulieren (statt „save the values as a device type“: Werte im Gerät, Laufprüfung, Schlussphase), Zeile 34 um Phasen ergänzen; nutzerverständlich, Format `- (Eistee82) …`.
-- [ ] **Step 3: Release-Notes** `:69-79` (Typen → Vorlagen/Archiv).
-- [ ] **Step 4: Prüfen:** `npm test` (inkl. `docsStates.test.js`) grün; im WIP-Block genau 6 Zeilen `- (Eistee82)`; keine E-Mail-Adresse in `docs/de/README.md`, `docs/en/README.md`, `README.md` (`grep -nE "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}"` leer).
-- [ ] **Step 5: Commit** `docs: templates, phases, final phase, run check and migration notes`
+- [x] **Step 1: Doku de/en** nach Spec 7.5: Vorlagen und Werte im Gerät; Kapitel „Phasen“ (inkl. was nur rückwirkend erscheint); §8 Laufprüfung, Verwendung, Grenzläufe, Reparatur-Vorrang (sofort nach einem falsch erkannten zugelassenen Lauf, ohne Mindestzahl, Sperre und Schrittgrenze), Schlussphase (nur wo Daten trennen und ein Nachlauf existiert; Grenzen der Felder nach Spec A.2 „Bereich“), 30 Tage, Mindestzahlen (8 Läufe Verschärfung, 10 Läufe/2 je Gruppe Schlussphase, Reparatur sofort), automatisches Einschalten mit Undo, `keepCurrentLevel`, Restrisiko erstes unbekanntes Programm, Verhalten nach frühem Ende, Startverzögerung nach Ausräumen (Beispiel WM ≤ ~4 min); §9 Migration (exakte Namen, unbekannter Typ deaktiviert, umbenannte Plätze, V4-Teststände, Kopien bei geteilten Typen, Archiv inkl. Namen, vor V5 verworfene Läufe können erneut erscheinen, Warnungen aus Befund M5–M7, Verhaltensänderungen M11); §13 States inkl. `settlingUntil`, `phase*`, `learning.parameters`; §7 Aktionen `phaseStart`/`phaseEnd`.
+- [x] **Step 2: Changelog** – weiterhin genau 6 Zeilen unter `### **WORK IN PROGRESS**`; Zeile 35 umformulieren (statt „save the values as a device type“: Werte im Gerät, Laufprüfung, Schlussphase), Zeile 34 um Phasen ergänzen; nutzerverständlich, Format `- (Eistee82) …`.
+- [x] **Step 3: Release-Notes** `:69-79` (Typen → Vorlagen/Archiv).
+- [x] **Step 4: Prüfen:** `npm test` (inkl. `docsStates.test.js`) grün; im WIP-Block genau 6 Zeilen `- (Eistee82)`; keine E-Mail-Adresse in `docs/de/README.md`, `docs/en/README.md`, `README.md` (`grep -nE "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}"` leer).
+- [x] **Step 5: Commit** `docs: templates, phases, final phase, run check and migration notes`
+
+**Umsetzungsnotizen (Task 26):**
+- Der Gesamtabgleich fand in de/en nur drei Lücken: Feldbereiche der Schlussphase (Spec A.2 „Bereich“), „nur angeboten, wo die Daten trennen und ein Nachlauf existiert“ und das Restrisiko „erstes Auftreten eines unbekannten Programms“. Alle drei stehen jetzt im Abschnitt „Schlussphase“ / „Final phase“, dazu `keepCurrentLevel` im Anlern-Abschnitt und der Satz „das Anlernen im Dialog folgt“ ist durch einen Verweis auf den Anlern-Dialog ersetzt.
+- „Phasen“ bleibt ein Unterkapitel von §8 (Entscheidung aus Task 20, damit die §-Nummern stabil bleiben).
+- Release-Notes: Typen → Vorlagen/Archiv, neue Zeilen zu Werten im Gerät, Phasen/Schlussphase, Laufprüfung, Optimierung; Altbegriffe „device type“ bereinigt.
+- Changelog: schon in Task 4–25 laufend umformuliert, weiterhin genau 6 Zeilen; keine Änderung nötig.
+- Neu: `test/docsCompleteness.test.js` (Pflichtbegriffe in beiden Sprachen, gleiche Kapitelzahl, genau 6 WIP-Zeilen, keine E-Mail-Adresse).
 
 ---
 
