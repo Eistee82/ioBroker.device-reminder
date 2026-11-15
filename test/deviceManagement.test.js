@@ -1434,9 +1434,8 @@ describe("deviceManagement", () => {
 				);
 				assert.strictEqual(d.old_startVal, "30 W", "the values of the template are the old ones");
 				const names = Object.keys(items).filter(k => /^phase_.+_name$/.test(k));
-				// the dialog learns from the stored values on the poll grid, which keeps more low bands than the raw
-				// values of phaseLearn.test.js (4–6 phases there)
-				assert.ok(names.length >= 3, names.join());
+				// few real phases: the short dips of the washing rhythm on the poll grid are no phases of their own
+				assert.ok(names.length >= 4 && names.length <= 6, names.join());
 				const ids = names.map(k => k.slice(6, -5));
 				for (const id of ids) {
 					for (const f of ["no", "power", "duration", "old"]) {

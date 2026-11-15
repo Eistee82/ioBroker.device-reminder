@@ -4,19 +4,20 @@ import { TEXT } from "../build/lib/dmTexts.js";
 
 const LANGS = ["en", "de", "ru", "pt", "nl", "fr", "it", "es", "pl", "uk", "zh-cn"];
 
-// The adapter is universal: no device-specific terms (e.g. "anti-crease") in the interface.
+// The adapter is universal: no device-specific terms (e.g. "anti-crease", or parts of a washing programme such as
+// soaking or spinning as examples) in the interface.
 const FORBIDDEN = {
-	de: ["knitterschutz"],
-	en: ["anti-crease", "anticrease", "anti crease"],
-	fr: ["anti-froissage", "antifroissage"],
-	it: ["antipiega", "anti-piega"],
-	es: ["antiarrugas", "anti-arrugas"],
-	nl: ["kreukbescherming", "anti-kreuk", "antikreuk"],
-	pl: ["przeciw zagnieceniom", "zagniece"],
-	pt: ["anti-rugas", "antirrugas"],
-	ru: ["от сминания", "сминан"],
-	uk: ["від зминання", "зминан"],
-	"zh-cn": ["防皱"],
+	de: ["knitterschutz", "einweich", "schleuder"],
+	en: ["anti-crease", "anticrease", "anti crease", "soaking", "spinning", "last spin"],
+	fr: ["anti-froissage", "antifroissage", "trempage", "essorage"],
+	it: ["antipiega", "anti-piega", "ammollo", "centrifuga"],
+	es: ["antiarrugas", "anti-arrugas", "remojo", "centrifugado"],
+	nl: ["kreukbescherming", "anti-kreuk", "antikreuk", "centrifuge"],
+	pl: ["przeciw zagnieceniom", "zagniece", "namaczanie", "wirowanie"],
+	pt: ["anti-rugas", "antirrugas", "centrifugação"],
+	ru: ["от сминания", "сминан", "замачиван", "отжим"],
+	uk: ["від зминання", "зминан", "замочуван", "віджим"],
+	"zh-cn": ["防皱", "浸泡", "脱水"],
 };
 // Numbered level/step names ("Level 3", "Stufe 3") are no phase names; phases are "Phase n".
 const PHASE_WORDS = {

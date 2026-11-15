@@ -52,6 +52,40 @@ function blockRun(k, sec, verdict = OK) {
 	};
 }
 
+/**
+ * A synthetic run of steps (power, seconds) between two rests; one run per day.
+ *
+ * @param {number} k day
+ * @param {[number, number][]} steps power in W and length in s
+ * @returns {{ sample: object, verdict: object }} unit
+ */
+function stepRun(k, steps) {
+	const start = BASE_TS + k * DAY;
+	const points = [{ ts: start - 60_000, val: 0 }];
+	let at = start;
+	for (const [val, sec] of steps) {
+		points.push({ ts: at, val });
+		at += sec * 1000;
+	}
+	points.push({ ts: at, val: 0 }, { ts: at + 60_000, val: 0 });
+	const sec = (at - start) / 1000;
+	const facts = { start, coreEnd: at, progEnd: at, runEnd: at, end: at, coreSec: sec, feat: null, offSec: null };
+	return {
+		sample: {
+			points,
+			from: start - 60_000,
+			to: at + 60_000,
+			key: `s@${k}`,
+			kind: "run",
+			src: "history",
+			info: null,
+			family: -1,
+			facts,
+		},
+		verdict: { ...OK, key: `s@${k}` },
+	};
+}
+
 describe("learn phases (Spec B.5)", function () {
 	this.timeout(600_000);
 	// Spec B.5 step 7 and 8.3: the cross-check of the learned phases agrees in ≥ 99 % outside the transition zones
@@ -345,6 +379,29 @@ describe("learn phases (Spec B.5)", function () {
 			[[], [], 0, 0],
 		);
 	});
+	it("a band below 3 % of every run is no phase of its own, it goes into its neighbour; a longer one stays", () => {
+		const ctx = { runLimitW: 5, unitFactor: 1, pollSec: 10, now: 0 };
+		const learn = sec =>
+			learnPhases(
+				[0, 1, 2, 3, 4, 5].map(k =>
+					stepRun(k, [
+						[1000, 1200],
+						[200, sec],
+						[1000, 1200],
+					]),
+				),
+				ctx,
+			).model;
+		const short = learn(60);
+		assert.deepStrictEqual([short.bands.length, short.phases.length], [1, 1], short.bands.map(b => b.name).join());
+		assert.strictEqual(short.bands[0].min, 5, "the transient belongs to the band above it");
+		const long = learn(600);
+		assert.deepStrictEqual(
+			long.phases.map(p => long.bands.find(b => b.id === p.band).name),
+			["≈ 1000 W", "≈ 200 W", "≈ 1000 W"],
+			"the band of its own between two positions of the band above",
+		);
+	});
 	it("scope continuous from the data; a kW state gives the same phases with bands in kW", () => {
 		const s = daySamples("kessel", B, { stepMs: 2000, src: "history", unitFactor: 1 });
 		const v = checkRuns(s, {
@@ -372,8 +429,8 @@ describe("learn phases (Spec B.5)", function () {
 		);
 		assert.deepStrictEqual(b.model.phases, a.model.phases, "same classes and names (≈ W) in kW");
 		assert.ok(
-			a.model.bands.some(x => x.smoothing === "level"),
-			"the washing rhythm is read as a level",
+			a.model.bands[0].min === w.runLimit && a.model.bands[0].max > 100,
+			"the dips of the washing rhythm are no bands of their own, they belong to the washing band",
 		);
 	});
 	it("an event phase that only passes in the timeline is not shown live", () => {

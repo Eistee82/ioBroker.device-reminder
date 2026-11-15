@@ -27,6 +27,7 @@ const AGREE_MIN = 0.99;
 const FLICKER_MAX = 1.2;
 const OPEN_FACTOR = 10;
 const START_SHARE = 0.5;
+const PHASE_SHARE_MIN = 0.03;
 const NEUTRAL_TEMPLATE = "Phase {n}";
 function templatePattern(template) {
     if (!template.includes("{n}")) {
@@ -341,6 +342,58 @@ function classesOf(k, segs) {
     });
     return out;
 }
+function shareOf(segs, k, pred) {
+    let best = 0;
+    for (const list of segs) {
+        let active = 0;
+        let own = 0;
+        for (const s of list) {
+            if (s.band < 0) {
+                continue;
+            }
+            const ms = s.to - s.from;
+            active += ms;
+            if (s.band === k && (pred === undefined || s.pred === pred)) {
+                own += ms;
+            }
+        }
+        if (active > 0) {
+            best = Math.max(best, own / active);
+        }
+    }
+    return best;
+}
+function shortBand(bands, segs) {
+    let best = -1;
+    let bestShare = PHASE_SHARE_MIN;
+    bands.forEach((b, k) => {
+        if (b.smoothing === "peak" || k === bands.length - 1) {
+            return;
+        }
+        const share = shareOf(segs, k);
+        if (share < bestShare) {
+            best = k;
+            bestShare = share;
+        }
+    });
+    return best;
+}
+function mergeBand(bands, k, segs) {
+    const time = (j) => j < 0 || j >= bands.length
+        ? -1
+        : segs.reduce((a, list) => a + list.reduce((b, s) => b + (s.band === j ? s.to - s.from : 0), 0), 0);
+    const j = time(k - 1) >= time(k + 1) ? k - 1 : k + 1;
+    const [lo, hi] = j < k ? [bands[j], bands[k]] : [bands[k], bands[j]];
+    const merged = {
+        id: bands[j].id,
+        min: lo.min,
+        max: hi.max,
+        segments: lo.segments + hi.segments,
+        activeShare: lo.activeShare + hi.activeShare,
+    };
+    const a = Math.min(j, k);
+    return [...bands.slice(0, a), merged, ...bands.slice(a + 2)];
+}
 function mergedOf(k, segs, scope) {
     const runs = segs.filter(list => list.length > 0).length;
     const list = segs.flat().filter(s => s.band === k && s.closed && s.to > s.from);
@@ -367,7 +420,7 @@ function mergedOf(k, segs, scope) {
     const active = list.filter(s => s.pred === "active");
     const enough = (m) => m.length >= MIN_UNITS && unitsOf(m) >= MIN_UNITS;
     const common = scope === "continuous" || unitsOf(idle) >= START_SHARE * runs;
-    if (enough(idle) && enough(active) && common) {
+    if (enough(idle) && enough(active) && common && shareOf(segs, k, "idle") >= PHASE_SHARE_MIN) {
         return [draft(idle, "idle"), draft(active, "active")];
     }
     return [draft(list)];
@@ -735,10 +788,16 @@ export function learnPhases(units, ctx) {
     const opts = raw
         ? { mode: "raw", dipSec: DEBOUNCE_SEC }
         : { mode: "median60", dipSec: MEDIAN_DIP_SEC };
-    const learned = learnBands(used, runLimit, opts);
-    const holds = holdProfile(used, learned);
-    const bands = smoothingOf(learned, used, raw, scope, pollSec, holds);
-    const segs = bandSegments(modelOf(scope, bands, []), used, pollSec, holds);
+    let learned = learnBands(used, runLimit, opts);
+    let holds = holdProfile(used, learned);
+    let bands = smoothingOf(learned, used, raw, scope, pollSec, holds);
+    let segs = bandSegments(modelOf(scope, bands, []), used, pollSec, holds);
+    for (let k = shortBand(bands, segs); k >= 0 && learned.length > 1; k = shortBand(bands, segs)) {
+        learned = mergeBand(learned, k, segs);
+        holds = holdProfile(used, learned);
+        bands = smoothingOf(learned, used, raw, scope, pollSec, holds);
+        segs = bandSegments(modelOf(scope, bands, []), used, pollSec, holds);
+    }
     const drafts = draftsOf(bands, segs, used, scope);
     const keys = drafts.map((_, i) => `k${i + 1}`);
     let full = modelOf(scope, bands, phasesOf(drafts, keys, bands, scope));

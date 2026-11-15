@@ -1,4 +1,4 @@
-import type { BandOptions, HoldProfile, Unit } from "../learn/bands.js";
+import type { Band, BandOptions, HoldProfile, Unit } from "../learn/bands.js";
 import { holdProfile, learnBands } from "../learn/bands.js";
 import type { RunSample, Verdict } from "../learn/quality.js";
 import { admitted } from "../learn/quality.js";
@@ -66,6 +66,11 @@ const FLICKER_MAX = 1.2;
 const OPEN_FACTOR = 10;
 /** Scope run: the begin of the run is a phase of its own in a band only when at least this share of the runs begins in it. */
 const START_SHARE = 0.5;
+/**
+ * A band (or the begin group of a band) is a phase of its own only when it makes up at least this share of the active
+ * time of one run or day; a shorter one (a transient between two phases) goes into its neighbour (Spec B.5 step 5).
+ */
+const PHASE_SHARE_MIN = 0.03;
 /** Default of the neutral name (i18n `phase_neutral`, English). */
 const NEUTRAL_TEMPLATE = "Phase {n}";
 
@@ -597,6 +602,85 @@ function classesOf(k: number, segs: readonly Seg[][]): Draft[] {
 }
 
 /**
+ * Largest share of the active time of a unit (time in a band) that the segments of band `k` (only those after
+ * `pred`, if given) make up.
+ *
+ * @param segs - Segments per unit
+ * @param k - Band index
+ * @param pred - Only segments with this predecessor
+ */
+function shareOf(segs: readonly Seg[][], k: number, pred?: "idle" | "active"): number {
+	let best = 0;
+	for (const list of segs) {
+		let active = 0;
+		let own = 0;
+		for (const s of list) {
+			if (s.band < 0) {
+				continue;
+			}
+			const ms = s.to - s.from;
+			active += ms;
+			if (s.band === k && (pred === undefined || s.pred === pred)) {
+				own += ms;
+			}
+		}
+		if (active > 0) {
+			best = Math.max(best, own / active);
+		}
+	}
+	return best;
+}
+
+/**
+ * The band to go into its neighbour (Spec B.5 step 5): the shortest band below `PHASE_SHARE_MIN` of the active time
+ * of every unit; never an event band (`peak`) and never the highest band (the peak of the device, e.g. an ignition,
+ * whose limits the final band also uses); -1 if there is none.
+ *
+ * @param bands - Bands
+ * @param segs - Segments per unit
+ */
+function shortBand(bands: readonly BandDef[], segs: readonly Seg[][]): number {
+	let best = -1;
+	let bestShare = PHASE_SHARE_MIN;
+	bands.forEach((b, k) => {
+		if (b.smoothing === "peak" || k === bands.length - 1) {
+			return;
+		}
+		const share = shareOf(segs, k);
+		if (share < bestShare) {
+			best = k;
+			bestShare = share;
+		}
+	});
+	return best;
+}
+
+/**
+ * Bands with band `k` merged into the neighbour with more time in the units.
+ *
+ * @param bands - Learned bands
+ * @param k - Band to merge
+ * @param segs - Segments per unit
+ */
+function mergeBand(bands: readonly Band[], k: number, segs: readonly Seg[][]): Band[] {
+	const time = (j: number): number =>
+		j < 0 || j >= bands.length
+			? -1
+			: segs.reduce((a, list) => a + list.reduce((b, s) => b + (s.band === j ? s.to - s.from : 0), 0), 0);
+	const j = time(k - 1) >= time(k + 1) ? k - 1 : k + 1;
+	const [lo, hi] = j < k ? [bands[j], bands[k]] : [bands[k], bands[j]];
+	const merged: Band = {
+		id: bands[j].id,
+		min: lo.min,
+		max: hi.max,
+		segments: lo.segments + hi.segments,
+		activeShare: lo.activeShare + hi.activeShare,
+	};
+	const a = Math.min(j, k);
+	return [...bands.slice(0, a), merged, ...bands.slice(a + 2)];
+}
+
+/**
  * One phase per band and position in the run (Spec B.5 steps 5–6): all closed segments of the band, split
  * by the predecessor (begin of the run or rest against another band) only when both groups have evidence
  * from at least 3 units and, with scope run, at least half of the runs begin in the band.
@@ -631,7 +715,7 @@ function mergedOf(k: number, segs: readonly Seg[][], scope: "run" | "continuous"
 	const active = list.filter(s => s.pred === "active");
 	const enough = (m: readonly Seg[]): boolean => m.length >= MIN_UNITS && unitsOf(m) >= MIN_UNITS;
 	const common = scope === "continuous" || unitsOf(idle) >= START_SHARE * runs;
-	if (enough(idle) && enough(active) && common) {
+	if (enough(idle) && enough(active) && common && shareOf(segs, k, "idle") >= PHASE_SHARE_MIN) {
 		// the predecessor separates two positions in the run
 		return [draft(idle, "idle"), draft(active, "active")];
 	}
@@ -1180,12 +1264,19 @@ export function learnPhases(units: readonly PhaseUnit[], ctx: PhaseLearnContext)
 	const opts: BandOptions = raw
 		? { mode: "raw", dipSec: DEBOUNCE_SEC }
 		: { mode: "median60", dipSec: MEDIAN_DIP_SEC };
-	const learned = learnBands(used, runLimit, opts);
-	const holds = holdProfile(used, learned);
+	let learned = learnBands(used, runLimit, opts);
+	let holds = holdProfile(used, learned);
 	// step 3: smoothing
-	const bands = smoothingOf(learned, used, raw, scope, pollSec, holds);
-	// steps 4–6: segments with the tracker code, classes, predecessors, event phases
-	const segs = bandSegments(modelOf(scope, bands, []), used, pollSec, holds);
+	let bands = smoothingOf(learned, used, raw, scope, pollSec, holds);
+	// steps 4–6: segments with the tracker code, classes, predecessors, event phases; a band too short for a phase of
+	// its own goes into its neighbour first (few real phases)
+	let segs = bandSegments(modelOf(scope, bands, []), used, pollSec, holds);
+	for (let k = shortBand(bands, segs); k >= 0 && learned.length > 1; k = shortBand(bands, segs)) {
+		learned = mergeBand(learned, k, segs);
+		holds = holdProfile(used, learned);
+		bands = smoothingOf(learned, used, raw, scope, pollSec, holds);
+		segs = bandSegments(modelOf(scope, bands, []), used, pollSec, holds);
+	}
 	const drafts = draftsOf(bands, segs, used, scope);
 	const keys = drafts.map((_, i) => `k${i + 1}`);
 	let full = modelOf(scope, bands, phasesOf(drafts, keys, bands, scope));
