@@ -392,6 +392,8 @@ export interface StoreFile {
 	newSinceChange: number;
 	/** Trusted runs in a row that the current values do not detect and no repair covers. */
 	failStreak: number;
+	/** Runs in a row with more than 10 % of their runtime in the phase "unknown" (Spec D.4; missing: 0). */
+	unknownRuns?: number;
 	/** Next free family id. */
 	nextFamily: number;
 	/** Status. */
@@ -1749,6 +1751,29 @@ function pointsOfStored(r: StoredRun, cells: readonly TickCell[]): { ts: number;
 }
 
 /**
+ * Number of reports that carried the value held before (the source also reports unchanged values): the cell of the
+ * report holds only that value (minimum = maximum = last) and the cell before ends with it. A source that reports
+ * only changes has none (Spec B.2 `gap` (2) needs reports of unchanged values).
+ *
+ * @param cells - Cells of the run
+ * @param rep - Report times in ms after cell 0
+ * @param step - Poll interval in ms
+ */
+function repeatsOf(cells: readonly TickCell[], rep: readonly number[], step: number): number {
+	let n = 0;
+	for (const t of rep) {
+		// a report belongs to the cell closed at the next poll
+		const k = Math.ceil(t / step);
+		const c = cells[k];
+		const before = cells[k - 1];
+		if (k >= 1 && c?.valid && before?.valid && c.min === c.max && c.last === c.min && before.last === c.last) {
+			n++;
+		}
+	}
+	return n;
+}
+
+/**
  * Sample of the run check from a stored run: the layout of its capture with the segmentation and the tail of the
  * store, its key, group, report log and events.
  *
@@ -1807,6 +1832,7 @@ function sampleOfStored(store: StoreFile, r: StoredRun): { sample: RunSample; se
 	const rep = r.src === "live" ? fromDiffs(r.rep) : undefined;
 	if (rep) {
 		sample.reports = rep.map(t => r.ts + t);
+		sample.repeats = repeatsOf(cells, rep, r.step);
 	}
 	sample.starts = r.ev.filter(e => e[1] === "s").map(e => e[0]);
 	if (r.ev.some(e => e[1] === "a")) {

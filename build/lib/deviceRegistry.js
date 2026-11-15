@@ -14,7 +14,9 @@ import { LearningRecorder, recordingChecks, suggestType } from "./learning.js";
 import { ReminderScheduler } from "./reminder.js";
 import { RunRecorder } from "./runRecorder.js";
 import { addRun, clearLearningData, convertRuns, decisionOf, detectionOf, emptyStore, finalSplitPairs, fitSize, joinedCapture, labelCapture, loadStore, markFinalResumed, markFinalSuspended, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, startOf, splitCapture, storeSamples, typeHash, upgradeStore, WINDOW_MS, } from "./runStore.js";
-import { errorMessage } from "./utils.js";
+import { errorMessage, formatTimestamp } from "./utils.js";
+const UNKNOWN_SHARE = 0.1;
+const UNKNOWN_RUNS = 3;
 const OPTIMIZE_BUDGET_MS = 30_000;
 export const BUDGET_WARN_JOBS = 3;
 const OUTAGE_MS = 60 * 60_000;
@@ -355,9 +357,28 @@ export class DeviceRegistry {
                 void runActions(this.host, cfg.actions, "end");
                 this.persistPending(entry);
                 this.judgeAtEnd(deviceId, entry);
+                this.countUnknown(entry).catch(err => this.host.log.debug(errorMessage(err)));
                 break;
             case "abort":
                 break;
+        }
+    }
+    async countUnknown(entry) {
+        const share = entry.runtime.lastUnknownShare;
+        if (share === null) {
+            return;
+        }
+        const store = entry.opt?.store;
+        const before = store ? (store.unknownRuns ?? 0) : (entry.unknownRuns ?? 0);
+        const n = share > UNKNOWN_SHARE ? before + 1 : 0;
+        if (store) {
+            store.unknownRuns = n;
+        }
+        else {
+            entry.unknownRuns = n;
+        }
+        if (n === UNKNOWN_RUNS) {
+            await this.notifyOptimization(entry, TEXT.phasesUnknown, { runs: UNKNOWN_RUNS }, "warn");
         }
     }
     whenOptimized() {
@@ -952,6 +973,11 @@ export class DeviceRegistry {
         const store = opt.store;
         const keepAboveW = entry.runtime.effective.endVal * cap.unitFactor;
         store.pending = null;
+        const lastStart = cap.ev.findLast(e => e[1] === "s");
+        const ended = lastStart !== undefined && cap.ev.some(e => e[1] !== "s" && e[0] >= lastStart[0]);
+        if (lastStart && !ended && entry.runtime.runStart === lastStart[0]) {
+            entry.stuckStart = lastStart[0];
+        }
         let stored = false;
         let endDelaySec = null;
         for (const part of splitCapture(cap)) {
@@ -1142,6 +1168,7 @@ export class DeviceRegistry {
         if (store.final) {
             entry.runtime.setFinalSuspended(store.final.state === "suspended");
         }
+        await this.finishStuck(entry, outcome);
         await this.saveOpt(entry);
         await this.syncFinalObjects(deviceId, entry, wasOn);
         await this.writeOptStates(deviceId, entry);
@@ -1155,6 +1182,20 @@ export class DeviceRegistry {
         }
         if (store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
             await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
+        }
+    }
+    async finishStuck(entry, outcome) {
+        const at = entry.stuckStart;
+        if (at === undefined || entry.runtime.runStart !== at) {
+            delete entry.stuckStart;
+            return;
+        }
+        if (outcome.kind !== "repair") {
+            return;
+        }
+        delete entry.stuckStart;
+        if (await entry.runtime.finishStuckRun(at)) {
+            this.host.log.info(`${entry.runtime.config.name}: the earlier values never reported the end of the run started at ${formatTimestamp(new Date(at))}; ended after the repair`);
         }
     }
     async reportOutcome(entry, outcome) {

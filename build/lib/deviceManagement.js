@@ -337,6 +337,12 @@ export class ReminderDeviceManagement extends DeviceManagement {
         else if ((this.adapter.registry.learningData(id)?.info.review?.length ?? 0) > 0) {
             warning = TEXT.reviewCard;
         }
+        else if (this.adapter.registry.learningData(id)?.info.status === "drift") {
+            warning = TEXT.driftCard;
+        }
+        else if (this.adapter.registry.learningData(id)?.info.status === "cannotCover") {
+            warning = TEXT.cannotCoverCard;
+        }
         else if ((this.adapter.registry.learningData(id)?.info.budget ?? 0) >= BUDGET_WARN_JOBS) {
             warning = TEXT.budgetCard;
         }

@@ -800,6 +800,28 @@ describe("optimisation over 30 days (Spec D.1–D.4)", function () {
 		);
 		assert.strictEqual((await ctx.reg.checkStoredRuns("dev")).ok, true, "the repaired values detect the end");
 	});
+	it("two runs grown together without comparison runs: merged; the repair keeps the end wait and separates them at the rest", async () => {
+		for (const gap of [180, 360]) {
+			// 30 and 60 min at the idle level of 0.5 W between the runs, above endVal 0.3: the old values never end
+			const ctx = await registrySetup({ detection: { ...WASHER, endVal: 0.3, standby: 0.2 } });
+			const a = runOf({ device: "washer", programme: "quick30", seed: 5, idle: 0.5, after: gap }).values;
+			const b = runOf({ device: "washer", programme: "quick30", seed: 6, idle: 0.5 }).values;
+			await feed(ctx, [...a, ...b, ...new Array(4400).fill(0.5)]);
+			const st = ctx.reg.learningData("dev");
+			const v = ctx.reg.devices.get("dev").opt.verdicts.get(st.runs[0].key);
+			assert.ok(
+				v.reasons.some(r => r.code === "merged"),
+				`${gap}: ${JSON.stringify(v.reasons)}`,
+			);
+			const repair = st.changes.find(c => c.kind === "repair");
+			assert.ok(repair, `${gap}: ${JSON.stringify(st.info)}`);
+			assert.ok(
+				(ctx.reg.get("dev").effective.endCount ?? 0) <= WASHER.endCount,
+				`${gap}: the end wait is not stretched over the rest between the runs (${repair.reason})`,
+			);
+			assert.strictEqual((await ctx.reg.checkStoredRuns("dev")).ok, true);
+		}
+	});
 	it("an end that is never reported is repaired at once (end not detected)", async () => {
 		// idle at 0.5 W stays above endVal 0.3: with the current values the run never ends
 		const ctx = await registrySetup({ detection: { ...WASHER, endVal: 0.3, standby: 0.2 } });
@@ -813,6 +835,62 @@ describe("optimisation over 30 days (Spec D.1–D.4)", function () {
 			st.changes.some(c => c.kind === "repair") || st.info.status === "cannotCover",
 			JSON.stringify(st.info),
 		);
+	});
+	it("a socket that reports only changes: a long constant value is a hold, no proven gap (Spec 3)", async () => {
+		const ctx = await registrySetup({ detection: WASHER });
+		const line = timelineOf(
+			["w01", "w03", "w05", "w06"].map(id => runWindow("washer30d", id)),
+			DAY,
+		);
+		const shift = ctx.host.now() + STEP - line[0].ts;
+		// only the changes reach the adapter (like a Zigbee socket whose state is written on change)
+		await feedPoints(
+			ctx,
+			line.map(p => ({ ts: p.ts + shift, val: p.val })),
+		);
+		const verdicts = ctx.reg.devices.get("dev").opt.verdicts;
+		const st = ctx.reg.learningData("dev");
+		assert.ok(st.runs.length >= 3, `${st.runs.length} runs`);
+		for (const r of st.runs) {
+			const v = verdicts.get(r.key);
+			assert.ok(!v.reasons.some(x => x.detail.startsWith("proven: no report")), JSON.stringify(v.reasons));
+			assert.notStrictEqual(v.stage, "unusable", JSON.stringify(v.reasons));
+		}
+	});
+	it("a run whose end is never reported is ended by the repair; the next runs report start and end", async () => {
+		// idle at 0.5 W stays above endVal 0.3: with the old values the run would stay "running" for good
+		const ctx = await registrySetup({ detection: { ...WASHER, endVal: 0.3, standby: 0.2 } });
+		const events = [];
+		const orig = ctx.reg.onRuntimeEvent.bind(ctx.reg);
+		ctx.reg.onRuntimeEvent = (id, e) => {
+			if (typeof e === "string") {
+				events.push(e);
+			}
+			return orig(id, e);
+		};
+		await feed(ctx, [
+			...runOf({ device: "washer", programme: "cotton60", seed: 3 }).values,
+			...new Array(4400).fill(0.5),
+		]);
+		const st = ctx.reg.learningData("dev");
+		assert.ok(
+			st.changes.some(c => c.kind === "repair"),
+			JSON.stringify(st.info),
+		);
+		const rt = ctx.reg.get("dev");
+		assert.strictEqual(rt.isRunning, false, "the run is ended after the repair");
+		assert.deepStrictEqual(events, ["start", "end"]);
+		assert.strictEqual(ctx.host.own("dev.running"), false);
+		assert.ok(ctx.host.logs.info.some(m => m.includes("ended after the repair")));
+		for (let k = 0; k < 2; k++) {
+			ctx.host.tickClock(DAY);
+			events.length = 0;
+			await feed(ctx, [
+				...runOf({ device: "washer", programme: "cotton60", seed: 20 + k, idle: 0.5 }).values,
+				...new Array(600).fill(0.5),
+			]);
+			assert.deepStrictEqual(events, ["start", "end"], `run ${k + 1} after the repair`);
+		}
 	});
 	it("w02 as a live capture: an end 10 s before the core end needs no repair (store.tail, endOk)", async () => {
 		const ctx = await registrySetup({ detection: WASHER });
@@ -1336,5 +1414,48 @@ describe("optimisation budget (Spec D.3)", function () {
 		await optimize(st, { ...c, now: c.now + 3_600_000 });
 		assert.strictEqual(st.checks.phases.ts, checked, "no second check on the same day");
 		assert.strictEqual(st.phaseTune.last, last);
+	});
+});
+
+describe("phases: much unknown in a row (Spec D.4)", () => {
+	it("unknownShareOf counts only the unknown segments inside the run", async () => {
+		const { unknownShareOf } = await import("../build/lib/deviceRuntime.js");
+		const segs = [
+			{ id: "p1", name: "a", from: 0, to: 600, final: true },
+			{ id: "unknown", name: "Unknown", from: 600, to: 800, final: true },
+			{ id: "unknown", name: "Unknown", from: 900, to: 1200, final: false },
+		];
+		assert.strictEqual(unknownShareOf(segs, 0, 1000), 0.3);
+		assert.strictEqual(unknownShareOf(segs, 0, 0), 0);
+	});
+	it("3 runs in a row with more than 10 % unknown give the hint once; a clean run starts the count again", async () => {
+		const ctx = await registrySetup({ detection: WASHER });
+		const rt = ctx.reg.get("dev");
+		let share = 0.2;
+		Object.defineProperty(rt, "lastUnknownShare", { get: () => share });
+		const hints = () => ctx.host.logs.warn.filter(m => m.includes("no known phase")).length;
+		const end = async () => {
+			ctx.reg.onRuntimeEvent("dev", "end");
+			await drain(ctx);
+		};
+		await end();
+		await end();
+		assert.strictEqual(hints(), 0);
+		await end();
+		assert.strictEqual(hints(), 1, "the hint at the 3rd run in a row");
+		await end();
+		assert.strictEqual(hints(), 1, "only once");
+		share = 0.05;
+		await end();
+		share = 0.2;
+		await end();
+		await end();
+		assert.strictEqual(hints(), 1, "a clean run starts the count again");
+		await end();
+		assert.strictEqual(hints(), 2);
+		assert.strictEqual(ctx.reg.learningData("dev").unknownRuns, 3);
+		share = null;
+		await end();
+		assert.strictEqual(ctx.reg.learningData("dev").unknownRuns, 3, "without phases nothing is counted");
 	});
 });

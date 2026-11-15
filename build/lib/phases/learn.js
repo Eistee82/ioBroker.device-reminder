@@ -726,7 +726,7 @@ export function learnPhases(units, ctx) {
         }
         for (const old of prev.phases) {
             if (!keep.has(old.id)) {
-                dropped.push({ id: old.id, actions: ctx.actionsOf?.(old.id) ?? 0 });
+                dropped.push({ id: old.id, name: old.name, actions: ctx.actionsOf?.(old.id) ?? 0 });
             }
         }
     }

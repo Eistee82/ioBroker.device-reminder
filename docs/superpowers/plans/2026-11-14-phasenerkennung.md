@@ -29,7 +29,7 @@
 - Jeder neue Text in 11 Sprachen (en, de, ru, pt, nl, fr, it, es, pl, uk, zh-cn): `admin/i18n/*.json` (de/en von Hand, Rest `npm run translate`), State-Namen über `t(...)` in `stateDefinitions.ts`, `dmTexts.ts` über `tr(...)`.
 - Verboten in `src/`: `console.log`, `process.exit()`, `eslint-disable`, `@ts-nocheck`, globales `setTimeout`/`setInterval` (nur `host.setTimeout` bzw. `this.setTimeout`); relative Imports mit `.js`; Fehler loggen mit `errorMessage(err)`.
 - Vor jedem Commit: `npm run build && npm run lint && npm test` grün, Lint 0 Warnings, Skill `precommit-check` (Checkliste `D:/Windows/Desktop/ioBroker-PR-Checkliste.md`) komplett; nie `--no-verify`.
-- Branch `feature/v4`; kein PR, kein Push ohne ausdrückliche Anweisung. Commit-Nachrichten englisch (`feat:`/`fix:`/`test:`/`docs:`), letzte Zeile `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Branch `feature/v4`; kein PR, kein Push ohne ausdrückliche Anweisung. Commit-Nachrichten englisch (`feat:`/`fix:`/`test:`/`docs:`), letzte Zeile: die Co-Authored-By-Zeile aus der Attribution-Vorgabe der Sitzung (ohne Adresse in diesem Dokument).
 - Changelog nur in `README.md` unter `### **WORK IN PROGRESS**`, Format `- (Eistee82) …`, höchstens 6 Einträge (dort stehen schon 6: bestehende Zeilen umformulieren statt anhängen), nutzerverständlich.
 - Doku `docs/de/README.md` und `docs/en/README.md` bei jeder nutzerseitigen Änderung; keine E-Mail-Adressen in Dateien.
 - **Doku und Changelog im selben Commit (CLAUDE.md Regel 1):** Jeder Task mit sichtbarer Änderung (Bedienung, State, Meldung, Verhalten, Migration) aktualisiert im eigenen Commit die betroffenen Abschnitte in `docs/de/README.md` und `docs/en/README.md` sowie die passende WIP-Zeile im Changelog (umformulieren, weiterhin höchstens 6). Jeder Task-Schritt „Commit“ schließt das ein; in den Tasks steht unter **Doku** jeweils, was zu ändern ist. Task 26 ist nur noch der abschließende Gesamtabgleich.
@@ -3630,7 +3630,7 @@ it("clear keeps decisions unless 'also discard decisions' is ticked", async () =
 - **Abweichung (Undo-Barriere):** `reconcileBase` schreibt jetzt auch ohne Override einen Eintrag `baseChanged`, sonst gäbe es nach einem Undo und einer Grundwert-Änderung keine Grenze, hinter die „Rückgängig“ nicht zurückgreift (Plan-Test 4). Nachrichten an Empfänger bleiben davon unberührt (nur mit Override, wie bisher).
 - **Folge für bestehende Tests:** Undo ist jetzt gate-geprüft. `autoOptimize.test.js` („undo and reset“, Statebutton wird gesperrt, dann Undo mit Ausschluss; `deleteLearningData` behält die Entscheidung, also eine Datei) und `optimizationIntegration.test.js` (Undo im laufenden Job mit einer unschädlichen `tighten`-Änderung, `discardRun` → `setRunUse`, `.ok`) wurden angepasst. Die Dialogtests in `deviceManagement.test.js` und die neuen Registrytests lassen die Fake-Timer mitlaufen (die Prüfungen geben Rechenzeit ab, unter `c8` hing der Test sonst).
 - **Texte:** de/en von Hand, 9 Sprachen per `npm run translate`; die Übersetzungen für „Lauf/run“ (maschinell „Rennen“) und die geänderten Texte habe ich von Hand korrigiert. `dm_optInfo` nennt jetzt 8 statt 4 Läufe. Entfernt: `dm_optDiscard`, `dm_optDiscardRun`, `dm_optRunDelay`, `dm_optRunLabel`, `TEXT.optDiscarded`.
-- **Offen:** Die Spalte „Grenzlauf“ zeigt die Grenzen der Hülle (`maxPauseSec`, …) mit ihren technischen Namen.
+- **Behoben in 971b2d5:** Die Spalte „Grenzlauf“ zeigt die Grenzen der Hülle mit lesbaren Namen (`dm_optLimit_<Grenze>`, 11 Sprachen) statt der technischen Namen (`maxPauseSec`, …).
 
 ---
 

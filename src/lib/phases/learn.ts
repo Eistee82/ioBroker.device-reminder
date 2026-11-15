@@ -107,8 +107,8 @@ export interface PhaseLearnResult {
 	looAgreement: number;
 	/** Event phases that did not pass the cross-check: named in the timeline only, not live. */
 	retroOnly: string[];
-	/** Phases of `previous` without a partner, with the number of actions that use them. */
-	dropped: { id: string; actions: number }[];
+	/** Phases of `previous` without a partner, with their name and the number of actions that use them. */
+	dropped: { id: string; name: string; actions: number }[];
 }
 
 /**
@@ -1061,7 +1061,7 @@ export function learnPhases(units: readonly PhaseUnit[], ctx: PhaseLearnContext)
 	// phases: previous phases to learned ones by band overlap and duration
 	const phaseIds = new Map<string, string>();
 	const keep = new Map<string, PhaseDef>();
-	const dropped: { id: string; actions: number }[] = [];
+	const dropped: { id: string; name: string; actions: number }[] = [];
 	if (prev) {
 		const pairs: { key: string; old: PhaseDef; score: number }[] = [];
 		for (const old of prev.phases) {
@@ -1089,7 +1089,7 @@ export function learnPhases(units: readonly PhaseUnit[], ctx: PhaseLearnContext)
 		}
 		for (const old of prev.phases) {
 			if (!keep.has(old.id)) {
-				dropped.push({ id: old.id, actions: ctx.actionsOf?.(old.id) ?? 0 });
+				dropped.push({ id: old.id, name: old.name, actions: ctx.actionsOf?.(old.id) ?? 0 });
 			}
 		}
 	}

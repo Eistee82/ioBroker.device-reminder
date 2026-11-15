@@ -16,6 +16,7 @@ import {
 	median,
 	mergeBlocks,
 	quantile,
+	SPLIT_GAP_MIN_MS,
 	SUSTAINED_MS,
 } from "./runs.js";
 import type { TickSeries } from "./ticks.js";
@@ -120,6 +121,8 @@ export interface RunSample extends Unit {
 	family: number;
 	/** Report times in ms (live report log), also for unchanged values. */
 	reports?: number[];
+	/** Live: reports that carried the value held before (the source also reports unchanged values). */
+	repeats?: number;
 	/** Live: the run was aborted. */
 	aborted?: boolean;
 	/** Live: the adapter restarted during the run. */
@@ -166,6 +169,12 @@ const RELOG_GAP_FACTOR = 2;
 const REPORT_GAP_FACTOR = 3;
 /** … and at least this long. */
 const REPORT_GAP_MIN_MS = 2 * 60_000;
+/**
+ * The report log proves a gap only if the source also reports unchanged values: at least this many such reports …
+ */
+const REPEAT_MIN = 10;
+/** … and at least this share of all reports of the live samples (a source reporting only changes has none). */
+const REPEAT_MIN_SHARE = 0.01;
 /** Stuck: at least this many reports with the same value … */
 const STUCK_MIN_REPORTS = 20;
 /** … in a band whose values otherwise vary by more than this (coefficient of variation). */
@@ -188,8 +197,19 @@ const FOREIGN_TOP_FACTOR = 1.5;
 const SPIKE_FACTOR = 3;
 /** Quantile of the values of the runs for spikes and the highest band. */
 const TOP_Q = 0.999;
-/** Test: a run shorter than this. */
+/** Rest between two runs grown together: at most this multiple of the level after the end … */
+const REST_LEVEL_FACTOR = 1.25;
+/** … plus this many W. */
+const REST_LEVEL_W = 0.1;
+/** Test: a run shorter than this … */
 const TEST_RUN_MS = 10 * 60_000;
+/**
+ * … while the other clean runs of the device last at least this multiple of it (median; without TEST_REF_MIN of them
+ * always): a device whose programmes are all short (kettle, coffee machine) keeps its runs.
+ */
+const TEST_SHORT_RATIO = 3;
+/** Fewest other clean runs for the comparison of `test` (2). */
+const TEST_REF_MIN = 3;
 /** Test: a short activity longer than this multiple of the second longest. */
 const TEST_SPIKE_RATIO = 2;
 /** Test: a band of the typical sequence is touched by at least this share of the clean runs. */
@@ -1040,7 +1060,8 @@ function reportsOf(s: RunSample, ctx: QualityContext): number[] | null {
  *
  * @param x - Sample
  * @param ctx - Context
- * @param reportP999 - p99.9 of the report intervals of all live samples in ms (0 = none)
+ * @param reportP999 - p99.9 of the report intervals of all live samples in ms (0 = none; also when the source reports
+ * only changes: a long silence is then a hold, found only by the hold time profile)
  * @param cv - Coefficient of variation per band index
  */
 function checkData(x: Work, ctx: QualityContext, reportP999: number, cv: number[]): void {
@@ -1068,7 +1089,7 @@ function checkData(x: Work, ctx: QualityContext, reportP999: number, cv: number[
 			});
 		}
 	}
-	// (2) live report log: no report, not even with the same value
+	// (2) live report log: no report, not even with the same value (only for a source that reports unchanged values)
 	if (s.reports && s.reports.length >= 2 && reportP999 > 0) {
 		const limit = Math.max(REPORT_GAP_MIN_MS, REPORT_GAP_FACTOR * reportP999);
 		let longest = 0;
@@ -1314,8 +1335,11 @@ function checkForm(w: Work[], clean: Work[], ctx: QualityContext): void {
 				}
 			}
 		}
-		// test (2): shorter than 10 min
-		if (f.coreSec * 1000 < TEST_RUN_MS) {
+		// test (2): shorter than 10 min, unless the device runs that short (geräteunabhängig: only against the other
+		// clean runs; without enough of them every short run)
+		const durations = clean.filter(y => y !== x).map(y => y.s.facts.coreSec);
+		const shortDevice = durations.length >= TEST_REF_MIN && median(durations) < TEST_SHORT_RATIO * f.coreSec;
+		if (f.coreSec * 1000 < TEST_RUN_MS && !shortDevice) {
 			x.reasons.push({ code: "test", detail: `run of ${fmt(f.coreSec)} s` });
 		} else if (common !== null && ctx.bands !== null) {
 			// test (3): no typical band sequence
@@ -1356,16 +1380,97 @@ function groupsOf(clean: Work[]): Map<Work, number> {
  * @param bands - Base bands or null
  */
 function endLikeBlocks(f: SampleFacts, bands: BaseBands | null): number {
+	return endLikeOf(f, bands).length;
+}
+
+/**
+ * Sustained blocks of a run at the level of its end block (`endLikeBlocks`).
+ *
+ * @param f - Facts
+ * @param bands - Base bands or null
+ */
+function endLikeOf(f: SampleFacts, bands: BaseBands | null): SampleFacts["endBlocks"] {
 	const end = f.endBlocks.at(-1);
 	if (!end) {
-		return 0;
+		return [];
 	}
 	const endBand = bands ? bandOf(bands, end.level) : null;
 	return f.endBlocks.filter(b =>
 		endBand !== null && bands !== null
 			? bandOf(bands, b.level) === endBand
 			: b.level >= end.level / END_LEVEL_RATIO && b.level <= end.level * END_LEVEL_RATIO,
-	).length;
+	);
+}
+
+/**
+ * Longest rest of a sample in [from, to] at the level after the end of the run (at most 1.25 × that level + 0.1 W),
+ * in ms; 0 without a level after the end.
+ *
+ * @param s - Sample
+ * @param from - Begin in ms
+ * @param to - End in ms
+ * @param unitFactor - W per unit of the state
+ */
+function longestRest(s: RunSample, from: number, to: number, unitFactor: number): number {
+	const level = s.facts.restLevel;
+	if (level === null) {
+		return 0;
+	}
+	const limit = REST_LEVEL_FACTOR * level + REST_LEVEL_W / (unitFactor > 0 ? unitFactor : 1);
+	let best = 0;
+	let since: number | null = null;
+	for (const [v, ms, at] of heldSpans(s, from, to)) {
+		if (v <= limit) {
+			since ??= at;
+			best = Math.max(best, at + ms - since);
+		} else {
+			since = null;
+		}
+	}
+	return best;
+}
+
+/**
+ * Two runs grown together by the rest between them (Spec B.2 `merged`, decision 9): two end blocks and between the
+ * first of them and the last one a rest at the level after the end of at least SPLIT_GAP_MIN_MS (like the rest
+ * between two runs that `splitCapture` cuts at), longer than every such rest inside the programmes of the comparison
+ * runs (a pause inside a programme lies above the level after the end, or the comparison runs have it too).
+ *
+ * @param x - Run
+ * @param ref - Comparison runs (may be empty)
+ * @param bands - Base bands or null
+ * @param unitFactor - W per unit of the state
+ */
+function restBetweenEnds(x: Work, ref: readonly Work[], bands: BaseBands | null, unitFactor: number): boolean {
+	const ends = endLikeOf(x.s.facts, bands);
+	if (ends.length < 2) {
+		return false;
+	}
+	const rest = longestRest(x.s, ends[0].to, ends[ends.length - 1].from, unitFactor);
+	return (
+		rest >= SPLIT_GAP_MIN_MS &&
+		ref.every(y => longestRest(y.s, y.s.facts.start, y.s.facts.coreEnd, unitFactor) < rest)
+	);
+}
+
+/**
+ * Held values of a sample in [from, to] with their durations and begins.
+ *
+ * @param u - Sample
+ * @param from - Begin in ms
+ * @param to - End in ms
+ */
+function heldSpans(u: Unit, from: number, to: number): [number, number, number][] {
+	const out: [number, number, number][] = [];
+	const p = u.points;
+	for (let i = 0; i < p.length; i++) {
+		const a = Math.max(p[i].ts, from);
+		const b = Math.min(i + 1 < p.length ? p[i + 1].ts : u.to, to);
+		if (b > a) {
+			out.push([p[i].val, b - a, a]);
+		}
+	}
+	return out;
 }
 
 /**
@@ -1434,11 +1539,13 @@ function checkShape(runs: Work[], clean: Work[], ctx: QualityContext): void {
 		}
 		// grown together: much longer than its group (all runs for a group of its own) and two end blocks
 		const longest = Math.max(0, ...ref.map(y => y.s.facts.coreSec));
-		const merged = ref.length > 0 && f.coreSec > MERGED_FACTOR * longest && endLikeBlocks(f, ctx.bands) >= 2;
-		if (merged) {
+		const longer = ref.length > 0 && f.coreSec > MERGED_FACTOR * longest && endLikeBlocks(f, ctx.bands) >= 2;
+		if (longer || restBetweenEnds(x, ref, ctx.bands, ctx.unitFactor)) {
 			x.reasons.push({
 				code: "merged",
-				detail: `${fmt(f.coreSec)} s, longest of its group ${fmt(longest)} s, two end blocks`,
+				detail: longer
+					? `${fmt(f.coreSec)} s, longest of its group ${fmt(longest)} s, two end blocks`
+					: `${fmt(f.coreSec)} s, two end blocks with a rest at the level after the end between them`,
 			});
 			continue;
 		}
@@ -1487,17 +1594,21 @@ function checkShape(runs: Work[], clean: Work[], ctx: QualityContext): void {
 export function checkRuns(runs: readonly RunSample[], ctx: QualityContext): Verdict[] {
 	const w: Work[] = runs.map(s => ({ s, reasons: [] }));
 	checkGlobal(w, ctx);
-	// report intervals of all live samples
+	// report intervals of all live samples; a silence proves a gap only if the source also reports unchanged values
+	// (Spec B.2 `gap` (2); a socket that reports only changes holds a constant value without a report)
 	const intervals: number[] = [];
+	let repeats = 0;
 	for (const x of w) {
 		const r = x.s.reports;
 		if (r && r.length >= 2) {
 			for (let i = 1; i < r.length; i++) {
 				intervals.push(r[i] - r[i - 1]);
 			}
+			repeats += x.s.repeats ?? 0;
 		}
 	}
-	const reportP999 = intervals.length > 0 ? quantile(intervals, TOP_Q) : 0;
+	const repeating = repeats >= REPEAT_MIN && repeats >= REPEAT_MIN_SHARE * intervals.length;
+	const reportP999 = intervals.length > 0 && repeating ? quantile(intervals, TOP_Q) : 0;
 	// variation of the stored values per band (stuck needs a band that otherwise varies)
 	const cv: number[] = [];
 	if (ctx.bands !== null) {

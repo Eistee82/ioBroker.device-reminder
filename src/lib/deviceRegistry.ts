@@ -54,7 +54,7 @@ import {
 	upgradeStore,
 	WINDOW_MS,
 } from "./runStore.js";
-import { errorMessage } from "./utils.js";
+import { errorMessage, formatTimestamp } from "./utils.js";
 
 interface Entry {
 	runtime: DeviceRuntime;
@@ -66,7 +66,19 @@ interface Entry {
 	opt: OptEntry | null;
 	/** The stored optimised values failed the check at load: not used until the optimisation ran again. */
 	holdOverride?: boolean;
+	/**
+	 * Start of the run in progress whose capture closed without an end (the values in use never reported it): a
+	 * repair ends this run at once (`finishStuckRun`).
+	 */
+	stuckStart?: number;
+	/** Runs in a row with much "unknown" (devices without learning data; otherwise `StoreFile.unknownRuns`). */
+	unknownRuns?: number;
 }
+
+/** A run with more than this share of its runtime in the phase "unknown" counts for the hint (Spec D.4). */
+const UNKNOWN_SHARE = 0.1;
+/** Runs in a row with much "unknown" before the hint. */
+const UNKNOWN_RUNS = 3;
 
 interface OptEntry {
 	store: StoreFile;
@@ -583,9 +595,35 @@ export class DeviceRegistry implements RuntimeListener {
 				void runActions(this.host, cfg.actions, "end");
 				this.persistPending(entry);
 				this.judgeAtEnd(deviceId, entry);
+				this.countUnknown(entry).catch(err => this.host.log.debug(errorMessage(err)));
 				break;
 			case "abort":
 				break;
+		}
+	}
+
+	/**
+	 * After a run with phases (Spec D.4): runs in a row with more than 10 % of their runtime "unknown" give, at the 3rd,
+	 * only the hint that the device behaves differently (log warning; a message only with `optimizeNotify`). The
+	 * values are not touched.
+	 *
+	 * @param entry - Entry
+	 */
+	private async countUnknown(entry: Entry): Promise<void> {
+		const share = entry.runtime.lastUnknownShare;
+		if (share === null) {
+			return;
+		}
+		const store = entry.opt?.store;
+		const before = store ? (store.unknownRuns ?? 0) : (entry.unknownRuns ?? 0);
+		const n = share > UNKNOWN_SHARE ? before + 1 : 0;
+		if (store) {
+			store.unknownRuns = n;
+		} else {
+			entry.unknownRuns = n;
+		}
+		if (n === UNKNOWN_RUNS) {
+			await this.notifyOptimization(entry, TEXT.phasesUnknown, { runs: UNKNOWN_RUNS }, "warn");
 		}
 	}
 
@@ -1422,6 +1460,12 @@ export class DeviceRegistry implements RuntimeListener {
 		const store = opt.store;
 		const keepAboveW = entry.runtime.effective.endVal * cap.unitFactor;
 		store.pending = null;
+		// the capture closed while its last start is still the run in progress: the end was never reported
+		const lastStart = cap.ev.findLast(e => e[1] === "s");
+		const ended = lastStart !== undefined && cap.ev.some(e => e[1] !== "s" && e[0] >= lastStart[0]);
+		if (lastStart && !ended && entry.runtime.runStart === lastStart[0]) {
+			entry.stuckStart = lastStart[0];
+		}
 		let stored = false;
 		let endDelaySec: number | null = null;
 		// two real runs shortly one after the other, or a run after an early end, are stored as runs of their own
@@ -1715,6 +1759,7 @@ export class DeviceRegistry implements RuntimeListener {
 		if (store.final) {
 			entry.runtime.setFinalSuspended(store.final.state === "suspended");
 		}
+		await this.finishStuck(entry, outcome);
 		await this.saveOpt(entry);
 		await this.syncFinalObjects(deviceId, entry, wasOn);
 		await this.writeOptStates(deviceId, entry);
@@ -1728,6 +1773,31 @@ export class DeviceRegistry implements RuntimeListener {
 		}
 		if (store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
 			await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
+		}
+	}
+
+	/**
+	 * After a repair: end the run in progress whose capture closed without an end (Spec D.3 point 3, decision 8). The
+	 * repaired values detect the end of that capture, so the run is over; with the values in use it would never end and
+	 * the detector would never be rebuilt (it waits for the end of the run).
+	 *
+	 * @param entry - Entry
+	 * @param outcome - Result of the optimisation job
+	 */
+	private async finishStuck(entry: Entry, outcome: OptimizeOutcome): Promise<void> {
+		const at = entry.stuckStart;
+		if (at === undefined || entry.runtime.runStart !== at) {
+			delete entry.stuckStart;
+			return;
+		}
+		if (outcome.kind !== "repair") {
+			return;
+		}
+		delete entry.stuckStart;
+		if (await entry.runtime.finishStuckRun(at)) {
+			this.host.log.info(
+				`${entry.runtime.config.name}: the earlier values never reported the end of the run started at ${formatTimestamp(new Date(at))}; ended after the repair`,
+			);
 		}
 	}
 

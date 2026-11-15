@@ -1,5 +1,6 @@
 import * as I18n from "@iobroker/adapter-core/i18n";
 import type { JsonFormData, JsonFormSchema } from "@iobroker/dm-utils";
+import { LOCK_DEFAULT_SEC } from "./detector/finalPhase.js";
 import { formatDate } from "./deviceRegistry.js";
 import { fill, TEXT } from "./dmTexts.js";
 import type { HistoryClean, HistoryMeta } from "./historySource.js";
@@ -513,7 +514,12 @@ export function finalText(c: FinalCandidate): ioBroker.Translated {
 		});
 		const reasons = c.reasons.map(r => reasonText(r, lang)).join(", ");
 		if (c.ok) {
-			out[lang] = figures;
+			// exit f off (the data do not separate it): a programme started right after clearing out waits longer
+			// (Spec risk 3)
+			out[lang] =
+				c.values.finalActVal > 0 && c.values.finalActShare > 0
+					? figures
+					: `${figures}. ${fill(TEXT.finalNoActivity, lang, { lock: Math.round((c.values.finalLockSec > 0 ? c.values.finalLockSec : LOCK_DEFAULT_SEC) / 60) })}`;
 		} else {
 			out[lang] = c.endRuns === 0 ? reasons : `${figures} – ${reasons}`;
 		}
@@ -586,6 +592,23 @@ export function finalAllowed(model: PhaseModel, p: PhaseDef, final: FinalCandida
 }
 
 /**
+ * Hint on the phases of the previous model that fall away (Spec B.5 step 8): their names and, if actions use them, how
+ * many actions no longer fire.
+ *
+ * @param dropped - Phases of the old model that fall away
+ */
+export function droppedText(dropped: readonly { id: string; name: string; actions: number }[]): ioBroker.Translated {
+	const phases = dropped.map(d => d.name || d.id).join(", ");
+	const n = dropped.reduce((a, d) => a + d.actions, 0);
+	const out: Record<string, string> = {};
+	for (const lang of Object.keys(TEXT.phasesDropped)) {
+		const text = fill(TEXT.phasesDropped, lang, { phases });
+		out[lang] = n > 0 ? `${text} ${fill(TEXT.phasesDroppedActions, lang, { n })}` : text;
+	}
+	return out as ioBroker.Translated;
+}
+
+/**
  * Items of the phases step: the checkbox "show phases" and, below it, one block per phase (name, shown, messages,
  * finished afterwards); all hidden while phases are off.
  *
@@ -598,7 +621,7 @@ export function phaseItems(
 	model: PhaseModel,
 	final: FinalCandidate | null,
 	retro: readonly string[],
-	dropped: readonly { id: string; actions: number }[],
+	dropped: readonly { id: string; name: string; actions: number }[],
 ): PanelItems {
 	const hidden = "!data.showPhases";
 	const items: PanelItems = {
@@ -620,8 +643,8 @@ export function phaseItems(
 	if (dropped.length > 0) {
 		items.phasesDropped = {
 			type: "infoBox",
-			boxType: "warning",
-			text: I18n.getTranslatedObject("dm_learnPhaseDropped"),
+			boxType: dropped.some(d => d.actions > 0) ? "warning" : "info",
+			text: droppedText(dropped),
 			hidden,
 			newLine: true,
 			xs: 12,

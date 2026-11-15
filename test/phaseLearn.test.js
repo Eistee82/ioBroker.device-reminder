@@ -142,7 +142,7 @@ describe("learn phases (Spec B.5)", function () {
 		});
 		const p4 = r.model.phases.find(p => p.id === "p4");
 		assert.deepStrictEqual([p4?.name, p4?.notify], ["Final", { end: true, text: "Fertig geschleudert" }]);
-		assert.deepStrictEqual(r.dropped, [{ id: "p9", actions: 2 }]);
+		assert.deepStrictEqual(r.dropped, [{ id: "p9", name: "Trocknen", actions: 2 }]);
 	});
 	it("neutral names without a vocabulary, from the translated template", () => {
 		const { units, runLimit } = phaseInput(W);

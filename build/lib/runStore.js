@@ -890,6 +890,18 @@ function pointsOfStored(r, cells) {
     });
     return out;
 }
+function repeatsOf(cells, rep, step) {
+    let n = 0;
+    for (const t of rep) {
+        const k = Math.ceil(t / step);
+        const c = cells[k];
+        const before = cells[k - 1];
+        if (k >= 1 && c?.valid && before?.valid && c.min === c.max && c.last === c.min && before.last === c.last) {
+            n++;
+        }
+    }
+    return n;
+}
 function sampleOfStored(store, r) {
     const dec = seriesOf(r);
     if (!dec) {
@@ -943,6 +955,7 @@ function sampleOfStored(store, r) {
     const rep = r.src === "live" ? fromDiffs(r.rep) : undefined;
     if (rep) {
         sample.reports = rep.map(t => r.ts + t);
+        sample.repeats = repeatsOf(cells, rep, r.step);
     }
     sample.starts = r.ev.filter(e => e[1] === "s").map(e => e[0]);
     if (r.ev.some(e => e[1] === "a")) {

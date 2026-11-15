@@ -28,6 +28,30 @@ describe("device manager texts", () => {
 		assert.deepStrictEqual(same, []);
 	});
 
+	it("a run is a cycle, not a race, and the final band no music band (machine translations)", () => {
+		// the terms of dmTexts.ts: ciclo, cycle, ciclo, ciclo, cykl, цикл, цикл, 运行
+		const wrong = {
+			es: /carrera/i,
+			fr: /\bcourses?\b/i,
+			it: /\bcors[ae]\b/i,
+			pt: /corrida/i,
+			pl: /\bbieg/i,
+			ru: /пробег|забег|\bбег\b/i,
+			uk: /\bбіг\b|біжать|забіг/i,
+			"zh-cn": /跑步|比赛|乐队/,
+			nl: /rennen/i,
+		};
+		for (const [lang, bad] of Object.entries(wrong)) {
+			const dict = JSON.parse(readFileSync(new URL(`../admin/i18n/${lang}.json`, import.meta.url), "utf8"));
+			for (const [k, v] of Object.entries(dict)) {
+				assert.doesNotMatch(v, bad, `${lang}:${k}`);
+			}
+			for (const [k, v] of Object.entries(TEXT)) {
+				const text = typeof v === "function" ? v("x") : v;
+				assert.doesNotMatch(text[lang], bad, `TEXT.${k}.${lang}`);
+			}
+		}
+	});
 	it("plain repeats a text in all languages", () => {
 		const text = plain("x");
 		assert.ok(LANGS.every(l => text[l] === "x"));

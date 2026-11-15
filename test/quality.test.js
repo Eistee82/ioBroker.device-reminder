@@ -197,6 +197,26 @@ describe("run check (Spec B.2)", () => {
 		const r = judge(pts);
 		assert.ok(r.v.every(x => !x.reasons.some(y => y.code === "test")));
 	});
+	it("a device whose runs are all short (kettle) keeps its runs (5–9 min): no test by feature 2", () => {
+		const pts = [];
+		for (let k = 0; k < 12; k++) {
+			const t0 = BASE_TS + k * 86_400_000;
+			const len = (5 + (k % 5)) * 60_000;
+			pts.push({ ts: t0, val: 0.4 });
+			for (let x = 0; x < len; x += 5_000) {
+				pts.push({ ts: t0 + 3_600_000 + x, val: 1800 + ((k * 37 + x / 5_000) % 7) * 40 });
+			}
+			pts.push({ ts: t0 + 3_600_000 + len, val: 0.4 });
+		}
+		pts.push({ ts: BASE_TS + 12 * 86_400_000, val: 0.4 });
+		const r = judge(pts);
+		const runs = r.v.filter((x, i) => r.samples[i].kind === "run");
+		assert.ok(runs.length >= 10, `${runs.length} runs`);
+		assert.ok(
+			runs.every(x => !x.reasons.some(y => y.code === "test") && x.stage !== "quarantine"),
+			JSON.stringify(runs.map(x => x.reasons)),
+		);
+	});
 	it("hand tests of 3 min 2000 W and 5 min 300 W are test (quarantine)", () => {
 		const end = W.at(-1).ts + 3_600_000;
 		// the recording goes on after the second test (otherwise it touches the data end and is incomplete)
@@ -294,7 +314,8 @@ describe("run check – further findings", () => {
 					reports.push(t);
 				}
 			}
-			return { ...x, reports };
+			// the source reports at every poll, also unchanged values
+			return { ...x, reports, repeats: reports.length };
 		});
 		const v = checkRuns(s, { ...ctx0, bands: liveBands });
 		assert.ok(
@@ -309,6 +330,25 @@ describe("run check – further findings", () => {
 		});
 		assert.strictEqual(o[k08].stage, "unusable");
 		assert.strictEqual(checkRuns(live.samples, { ...ctx0, bands: liveBands })[k08].stage, "ok");
+	});
+	it("a source that reports only changes: a long silence is a hold, no proven gap (Spec 3, B.2 gap (2))", () => {
+		// the same report log, but no report carried an unchanged value: 25 min without a report at a constant value
+		const from = live.samples[k08].facts.start;
+		const s = live.samples.map(x => {
+			const reports = [];
+			for (let t = x.facts.start; t <= x.facts.end; t += 10_000) {
+				if (x !== live.samples[k08] || t < from + 3_600_000 || t >= from + 5_100_000) {
+					reports.push(t);
+				}
+			}
+			return { ...x, reports, repeats: 0 };
+		});
+		const v = checkRuns(s, { ...ctx0, bands: liveBands });
+		assert.ok(
+			!v[k08].reasons.some(r => r.code === "gap" && r.detail.startsWith("proven: no report")),
+			JSON.stringify(v[k08].reasons),
+		);
+		assert.notStrictEqual(v[k08].stage, "unusable");
 	});
 	it("invalid values above 1 % and a jump back in time are limited; the jump makes its range unknown", () => {
 		const t0 = day("w08") + 3_600_000;

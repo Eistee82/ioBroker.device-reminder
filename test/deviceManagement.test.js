@@ -4,7 +4,7 @@ import { decisionOf, detectionOf } from "../build/lib/runStore.js";
 import { DRYER, WASHER } from "./helpers/devices.js";
 import { WM_FINAL } from "./helpers/final.js";
 import { loadSeries } from "./helpers/fixtures.js";
-import { usesOfAnswer } from "../build/lib/learnDialog.js";
+import { droppedText, finalText, phaseItems, usesOfAnswer } from "../build/lib/learnDialog.js";
 import { recordingChecks } from "../build/lib/learning.js";
 import { DeviceRegistry } from "../build/lib/deviceRegistry.js";
 import {
@@ -356,6 +356,23 @@ describe("deviceManagement", () => {
 			st.final = { state: "suspended", splits: ["trockner@1"], suspendedAt: 1, reason: "finalSplit" };
 			[info] = await load(ctx);
 			assert.deepStrictEqual(info.status.warning, TEXT.finalSuspendedCard);
+		});
+
+		it("card warning: no setting detects every admitted run (cannotCover) and drift (Spec D.3 point 3, D.4)", async () => {
+			const ctx = setup({ files: memoryFiles() });
+			await addDevice(ctx, "trockner", deviceCfg({ detection: DRYER, autoOptimize: true }));
+			const st = ctx.registry.learningData("trockner");
+			let [info] = await load(ctx);
+			assert.notDeepStrictEqual(info.status.warning, TEXT.cannotCoverCard);
+			st.info.status = "cannotCover";
+			[info] = await load(ctx);
+			assert.deepStrictEqual(info.status.warning, TEXT.cannotCoverCard);
+			st.info.status = "drift";
+			[info] = await load(ctx);
+			assert.deepStrictEqual(info.status.warning, TEXT.driftCard);
+			st.info.status = "ok";
+			[info] = await load(ctx);
+			assert.notDeepStrictEqual(info.status.warning, TEXT.driftCard);
 		});
 
 		it("card warning: optimisation too slow from the 3rd job in a row stopped by the time budget (Spec D.3)", async () => {
@@ -1853,5 +1870,50 @@ describe("optimisation in the device manager", function () {
 				assert.ok(text[lang] && text[lang] !== id, `${id}.${lang}`);
 			}
 		}
+	});
+});
+
+describe("learn dialog texts", () => {
+	const candidate = values => ({
+		values: { finalActVal: 40, finalActShare: 0.3, finalLockSec: 2700, ...values },
+		ok: true,
+		reasons: [],
+		covered: 11,
+		gainSec: 1700,
+		gainMedianSec: 1680,
+		endRuns: 12,
+		earlyEnds: 0,
+		fallbacks: 0,
+		perGroup: {},
+	});
+	it("names a switched-off exit f (activity) and the longest wait (Spec risk 3)", () => {
+		const off = finalText(candidate({ finalActVal: 0, finalActShare: 0 }));
+		assert.match(off.en, /^Finished 28 min earlier/);
+		assert.match(off.en, /Exit f \(activity\) is off.*45 min/);
+		assert.match(off.de, /Ausgang f \(Aktivität\) ist aus.*45 min/);
+		const fourHours = finalText(candidate({ finalActVal: 0, finalActShare: 0, finalLockSec: 0 }));
+		assert.match(fourHours.en, /240 min/);
+		assert.doesNotMatch(finalText(candidate({})).en, /Exit f/);
+	});
+	it("lists the phases that fall away and the number of actions that no longer fire (Spec B.5 step 8)", () => {
+		const both = droppedText([
+			{ id: "p3", name: "Final spin", actions: 1 },
+			{ id: "p4", name: "Rinse", actions: 0 },
+		]);
+		assert.match(both.en, /Final spin, Rinse/);
+		assert.match(both.en, /1 action\(s\)/);
+		assert.match(both.de, /Final spin, Rinse.*1 Aktion/);
+		const none = droppedText([{ id: "p4", name: "Rinse", actions: 0 }]);
+		assert.match(none.en, /Rinse/);
+		assert.doesNotMatch(none.en, /action/);
+		const model = { enabled: true, scope: "run", phases: [] };
+		assert.strictEqual(
+			phaseItems(model, null, [], [{ id: "p3", name: "x", actions: 2 }]).phasesDropped.boxType,
+			"warning",
+		);
+		assert.strictEqual(
+			phaseItems(model, null, [], [{ id: "p3", name: "x", actions: 0 }]).phasesDropped.boxType,
+			"info",
+		);
 	});
 });

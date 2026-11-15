@@ -1,4 +1,5 @@
 import * as I18n from "@iobroker/adapter-core/i18n";
+import { LOCK_DEFAULT_SEC } from "./detector/finalPhase.js";
 import { formatDate } from "./deviceRegistry.js";
 import { fill, TEXT } from "./dmTexts.js";
 import { baseBandsOf } from "./learn/bands.js";
@@ -288,7 +289,10 @@ export function finalText(c) {
         });
         const reasons = c.reasons.map(r => reasonText(r, lang)).join(", ");
         if (c.ok) {
-            out[lang] = figures;
+            out[lang] =
+                c.values.finalActVal > 0 && c.values.finalActShare > 0
+                    ? figures
+                    : `${figures}. ${fill(TEXT.finalNoActivity, lang, { lock: Math.round((c.values.finalLockSec > 0 ? c.values.finalLockSec : LOCK_DEFAULT_SEC) / 60) })}`;
         }
         else {
             out[lang] = c.endRuns === 0 ? reasons : `${figures} – ${reasons}`;
@@ -337,6 +341,16 @@ export function finalAllowed(model, p, final) {
     const high = final.values.finalHotVal > 0 ? final.values.finalHotVal : Number.POSITIVE_INFINITY;
     return band.max > low && band.min < high;
 }
+export function droppedText(dropped) {
+    const phases = dropped.map(d => d.name || d.id).join(", ");
+    const n = dropped.reduce((a, d) => a + d.actions, 0);
+    const out = {};
+    for (const lang of Object.keys(TEXT.phasesDropped)) {
+        const text = fill(TEXT.phasesDropped, lang, { phases });
+        out[lang] = n > 0 ? `${text} ${fill(TEXT.phasesDroppedActions, lang, { n })}` : text;
+    }
+    return out;
+}
 export function phaseItems(model, final, retro, dropped) {
     const hidden = "!data.showPhases";
     const items = {
@@ -358,8 +372,8 @@ export function phaseItems(model, final, retro, dropped) {
     if (dropped.length > 0) {
         items.phasesDropped = {
             type: "infoBox",
-            boxType: "warning",
-            text: I18n.getTranslatedObject("dm_learnPhaseDropped"),
+            boxType: dropped.some(d => d.actions > 0) ? "warning" : "info",
+            text: droppedText(dropped),
             hidden,
             newLine: true,
             xs: 12,

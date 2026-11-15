@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -28,6 +28,9 @@ const COMMON_TERMS = [
 	"Pushover",
 ];
 
+/** Longest changelog entry in characters. */
+const CHANGELOG_MAX = 300;
+
 describe("documentation completeness", () => {
 	for (const lang of ["en", "de"]) {
 		it(`${lang} documentation mentions every required term`, () => {
@@ -52,10 +55,22 @@ describe("documentation completeness", () => {
 			.split("\n")
 			.filter(line => line.startsWith("- (Eistee82) "));
 		assert.strictEqual(lines.length, 6);
+		// each entry short (one line, no list of details; PR checklist)
+		for (const line of lines) {
+			assert.ok(line.length <= CHANGELOG_MAX, `${line.length} characters: ${line.slice(0, 60)}`);
+		}
 	});
 
-	it("no e-mail address in the documentation", () => {
-		for (const file of ["docs/de/README.md", "docs/en/README.md", "README.md", "docs/release-notes-4.0.0.md"]) {
+	it("no e-mail address in the documentation (README and every Markdown file under docs/)", () => {
+		const files = [
+			"README.md",
+			...readdirSync(fileURLToPath(new URL("../docs/", import.meta.url)), { recursive: true })
+				.map(f => String(f).replaceAll("\\", "/"))
+				.filter(f => f.endsWith(".md"))
+				.map(f => `docs/${f}`),
+		];
+		assert.ok(files.includes("docs/superpowers/plans/2026-11-14-phasenerkennung.md"), files.join());
+		for (const file of files) {
 			assert.doesNotMatch(read(file), /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}/, file);
 		}
 	});

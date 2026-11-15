@@ -1,7 +1,7 @@
 import { bandOf, bandSegmentsOf, suspectLimitOf, unitsOf } from "./bands.js";
 import { cleanPoints } from "./clean.js";
 import { assignFamilies, FAMILY_DISTANCE, featuresOf } from "./families.js";
-import { blocksOf, buildLayout, END_BLOCK_BRIDGE_MS, END_BLOCK_SHARE, LEVEL_SEP_W, median, mergeBlocks, quantile, SUSTAINED_MS, } from "./runs.js";
+import { blocksOf, buildLayout, END_BLOCK_BRIDGE_MS, END_BLOCK_SHARE, LEVEL_SEP_W, median, mergeBlocks, quantile, SPLIT_GAP_MIN_MS, SUSTAINED_MS, } from "./runs.js";
 import { fromPoints, markInvalid } from "./ticks.js";
 const SAME_RUN_MIN = 5;
 const AROUND_MS = 30 * 60_000;
@@ -9,6 +9,8 @@ const OFF_SCAN_MS = 6 * 60 * 60_000;
 const RELOG_GAP_FACTOR = 2;
 const REPORT_GAP_FACTOR = 3;
 const REPORT_GAP_MIN_MS = 2 * 60_000;
+const REPEAT_MIN = 10;
+const REPEAT_MIN_SHARE = 0.01;
 const STUCK_MIN_REPORTS = 20;
 const STUCK_MIN_CV = 0.05;
 const SPARSE_FACTOR = 4;
@@ -20,7 +22,11 @@ const FOREIGN_TOP_SHARE = 0.05;
 const FOREIGN_TOP_FACTOR = 1.5;
 const SPIKE_FACTOR = 3;
 const TOP_Q = 0.999;
+const REST_LEVEL_FACTOR = 1.25;
+const REST_LEVEL_W = 0.1;
 const TEST_RUN_MS = 10 * 60_000;
+const TEST_SHORT_RATIO = 3;
+const TEST_REF_MIN = 3;
 const TEST_SPIKE_RATIO = 2;
 const COMMON_SHARE = 0.5;
 const TRAILER_SHARE = 0.5;
@@ -758,7 +764,9 @@ function checkForm(w, clean, ctx) {
                 }
             }
         }
-        if (f.coreSec * 1000 < TEST_RUN_MS) {
+        const durations = clean.filter(y => y !== x).map(y => y.s.facts.coreSec);
+        const shortDevice = durations.length >= TEST_REF_MIN && median(durations) < TEST_SHORT_RATIO * f.coreSec;
+        if (f.coreSec * 1000 < TEST_RUN_MS && !shortDevice) {
             x.reasons.push({ code: "test", detail: `run of ${fmt(f.coreSec)} s` });
         }
         else if (common !== null && ctx.bands !== null) {
@@ -779,14 +787,57 @@ function groupsOf(clean) {
     return new Map(clean.map((x, k) => [x, families[k]]));
 }
 function endLikeBlocks(f, bands) {
+    return endLikeOf(f, bands).length;
+}
+function endLikeOf(f, bands) {
     const end = f.endBlocks.at(-1);
     if (!end) {
-        return 0;
+        return [];
     }
     const endBand = bands ? bandOf(bands, end.level) : null;
     return f.endBlocks.filter(b => endBand !== null && bands !== null
         ? bandOf(bands, b.level) === endBand
-        : b.level >= end.level / END_LEVEL_RATIO && b.level <= end.level * END_LEVEL_RATIO).length;
+        : b.level >= end.level / END_LEVEL_RATIO && b.level <= end.level * END_LEVEL_RATIO);
+}
+function longestRest(s, from, to, unitFactor) {
+    const level = s.facts.restLevel;
+    if (level === null) {
+        return 0;
+    }
+    const limit = REST_LEVEL_FACTOR * level + REST_LEVEL_W / (unitFactor > 0 ? unitFactor : 1);
+    let best = 0;
+    let since = null;
+    for (const [v, ms, at] of heldSpans(s, from, to)) {
+        if (v <= limit) {
+            since ??= at;
+            best = Math.max(best, at + ms - since);
+        }
+        else {
+            since = null;
+        }
+    }
+    return best;
+}
+function restBetweenEnds(x, ref, bands, unitFactor) {
+    const ends = endLikeOf(x.s.facts, bands);
+    if (ends.length < 2) {
+        return false;
+    }
+    const rest = longestRest(x.s, ends[0].to, ends[ends.length - 1].from, unitFactor);
+    return (rest >= SPLIT_GAP_MIN_MS &&
+        ref.every(y => longestRest(y.s, y.s.facts.start, y.s.facts.coreEnd, unitFactor) < rest));
+}
+function heldSpans(u, from, to) {
+    const out = [];
+    const p = u.points;
+    for (let i = 0; i < p.length; i++) {
+        const a = Math.max(p[i].ts, from);
+        const b = Math.min(i + 1 < p.length ? p[i + 1].ts : u.to, to);
+        if (b > a) {
+            out.push([p[i].val, b - a, a]);
+        }
+    }
+    return out;
 }
 function checkShape(runs, clean, ctx) {
     const groups = groupsOf(clean);
@@ -838,11 +889,13 @@ function checkShape(runs, clean, ctx) {
             }
         }
         const longest = Math.max(0, ...ref.map(y => y.s.facts.coreSec));
-        const merged = ref.length > 0 && f.coreSec > MERGED_FACTOR * longest && endLikeBlocks(f, ctx.bands) >= 2;
-        if (merged) {
+        const longer = ref.length > 0 && f.coreSec > MERGED_FACTOR * longest && endLikeBlocks(f, ctx.bands) >= 2;
+        if (longer || restBetweenEnds(x, ref, ctx.bands, ctx.unitFactor)) {
             x.reasons.push({
                 code: "merged",
-                detail: `${fmt(f.coreSec)} s, longest of its group ${fmt(longest)} s, two end blocks`,
+                detail: longer
+                    ? `${fmt(f.coreSec)} s, longest of its group ${fmt(longest)} s, two end blocks`
+                    : `${fmt(f.coreSec)} s, two end blocks with a rest at the level after the end between them`,
             });
             continue;
         }
@@ -877,15 +930,18 @@ export function checkRuns(runs, ctx) {
     const w = runs.map(s => ({ s, reasons: [] }));
     checkGlobal(w, ctx);
     const intervals = [];
+    let repeats = 0;
     for (const x of w) {
         const r = x.s.reports;
         if (r && r.length >= 2) {
             for (let i = 1; i < r.length; i++) {
                 intervals.push(r[i] - r[i - 1]);
             }
+            repeats += x.s.repeats ?? 0;
         }
     }
-    const reportP999 = intervals.length > 0 ? quantile(intervals, TOP_Q) : 0;
+    const repeating = repeats >= REPEAT_MIN && repeats >= REPEAT_MIN_SHARE * intervals.length;
+    const reportP999 = intervals.length > 0 && repeating ? quantile(intervals, TOP_Q) : 0;
     const cv = [];
     if (ctx.bands !== null) {
         const per = ctx.bands.bands.map(() => ({ n: 0, sum: 0, sq: 0 }));

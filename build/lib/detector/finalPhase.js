@@ -1,7 +1,7 @@
 export const FINAL_ACT_WINDOW_MS = 5 * 60_000;
 const QUIET_DEFAULT_SEC = 120;
 const CHECK_DEFAULT_SEC = 1800;
-const LOCK_DEFAULT_SEC = 14_400;
+export const LOCK_DEFAULT_SEC = 14_400;
 export function finalFloors(f, pollSec, standby) {
     const poll = Math.max(1, pollSec);
     const dip = Math.max(f.finalDipSec > 0 ? f.finalDipSec : Math.max(60, 2 * poll), 2 * poll);

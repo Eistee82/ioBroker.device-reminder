@@ -1,7 +1,7 @@
 import * as I18n from "@iobroker/adapter-core/i18n";
 import { createDetector, finalOn, finalValuesOf, TrailerFilter } from "./detector/index.js";
 import { renderHistoryHtml } from "./historyHtml.js";
-import { PHASE_NOTIFY_MIN_MS, PHASES_CONTINUOUS_MS, PHASES_MAX, systemPhaseNames } from "./phases/model.js";
+import { PHASE_NOTIFY_MIN_MS, PHASES_CONTINUOUS_MS, PHASES_MAX, systemPhaseNames, UNKNOWN_PHASE, } from "./phases/model.js";
 import { applyPhaseTune, phaseTuneBase } from "./phases/learn.js";
 import { PhaseTracker, phaseHolds } from "./phases/tracker.js";
 import { detectionOf, typeHash } from "./runStore.js";
@@ -12,6 +12,18 @@ function isTrue(val) {
     return val === true || val === 1 || val === "true" || val === "1";
 }
 const EXITS = ["a", "b", "c", "d", "e", "f", "g"];
+export function unknownShareOf(segs, from, to) {
+    if (to <= from) {
+        return 0;
+    }
+    let unknown = 0;
+    for (const s of segs) {
+        if (s.id === UNKNOWN_PHASE) {
+            unknown += Math.max(0, Math.min(s.to, to) - Math.max(s.from, from));
+        }
+    }
+    return unknown / (to - from);
+}
 export class DeviceRuntime {
     host;
     deviceId;
@@ -53,6 +65,7 @@ export class DeviceRuntime {
     shownPhase = null;
     timelineSig = null;
     phaseNotified = new Map();
+    unknownShare = null;
     constructor(host, deviceId, cfg, inst, sink, listener) {
         this.host = host;
         this.deviceId = deviceId;
@@ -175,6 +188,28 @@ export class DeviceRuntime {
     }
     get isRunning() {
         return this.detector.started;
+    }
+    get lastUnknownShare() {
+        return this.unknownShare;
+    }
+    get runStart() {
+        return this.detector.started ? this.startedAt : null;
+    }
+    async finishStuckRun(startedAt) {
+        let done = false;
+        await this.enqueue(async () => {
+            if (!this.detector.started || this.detector.settling === true || this.startedAt !== startedAt) {
+                return;
+            }
+            this.detector = this.buildDetector();
+            this.rebuildPending = false;
+            const power = this.power ?? 0;
+            await this.setState("status", this.inst.statusTexts[power < (this.active.standby || 1) ? "off" : "standby"]);
+            await this.onFinished(this.host.now());
+            this.rebuildIfDue();
+            done = true;
+        });
+        return done;
     }
     get lastPower() {
         return this.power;
@@ -628,6 +663,10 @@ export class DeviceRuntime {
         const now = at;
         this.record("f", at);
         this.tracker?.onRun("end", at);
+        this.unknownShare =
+            this.tracker && this.phaseModel?.scope === "run"
+                ? unknownShareOf(this.tracker.timeline(), this.startedAt, at)
+                : null;
         const runtime = formatDuration(Math.max(0, now - this.startedAt));
         if (this.cfg.endText) {
             await this.notify(this.cfg.endText);

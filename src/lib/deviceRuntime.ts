@@ -12,11 +12,17 @@ import type {
 import { renderHistoryHtml } from "./historyHtml.js";
 import type { DeviceHost, MessageSink, RuntimeEvent, RuntimeListener } from "./host.js";
 import type { BaseBands } from "./learn/bands.js";
-import { PHASE_NOTIFY_MIN_MS, PHASES_CONTINUOUS_MS, PHASES_MAX, systemPhaseNames } from "./phases/model.js";
+import {
+	PHASE_NOTIFY_MIN_MS,
+	PHASES_CONTINUOUS_MS,
+	PHASES_MAX,
+	systemPhaseNames,
+	UNKNOWN_PHASE,
+} from "./phases/model.js";
 import { applyPhaseTune, phaseTuneBase } from "./phases/learn.js";
 import type { PhaseModel } from "./phases/model.js";
 import { PhaseTracker, phaseHolds } from "./phases/tracker.js";
-import type { PhaseEdge } from "./phases/tracker.js";
+import type { PhaseEdge, Segment } from "./phases/tracker.js";
 import type { CaptureEvent, RunRecorder } from "./runRecorder.js";
 import type { PhaseTuneState } from "./runStore.js";
 import { detectionOf, typeHash } from "./runStore.js";
@@ -47,6 +53,26 @@ interface AutoOffWait {
 	until: number;
 	/** Since when the power is below the rest level (rest proof), or null. */
 	restSince: number | null;
+}
+
+/**
+ * Share of a run in the phase "unknown" (Spec D.4).
+ *
+ * @param segs - Timeline of the run
+ * @param from - Start of the run (ms)
+ * @param to - End of the run (ms)
+ */
+export function unknownShareOf(segs: readonly Segment[], from: number, to: number): number {
+	if (to <= from) {
+		return 0;
+	}
+	let unknown = 0;
+	for (const s of segs) {
+		if (s.id === UNKNOWN_PHASE) {
+			unknown += Math.max(0, Math.min(s.to, to) - Math.max(s.from, from));
+		}
+	}
+	return unknown / (to - from);
 }
 
 /**
@@ -109,6 +135,8 @@ export class DeviceRuntime {
 	private timelineSig: string | null = null;
 	/** Phase messages sent: "<phase>:<edge>" to the time of the edge. */
 	private phaseNotified = new Map<string, number>();
+	/** Share of the runtime of the last finished run in the phase "unknown" (scope run), or null. */
+	private unknownShare: number | null = null;
 
 	/**
 	 * @param host - Adapter access
@@ -319,6 +347,50 @@ export class DeviceRuntime {
 	/** Whether a run is in progress. */
 	public get isRunning(): boolean {
 		return this.detector.started;
+	}
+
+	/**
+	 * Share of the runtime of the last finished run in the phase "unknown" (phases on, scope run; Spec D.4), or null
+	 * without phases. Set before the event `end`.
+	 */
+	public get lastUnknownShare(): number | null {
+		return this.unknownShare;
+	}
+
+	/** Time the run in progress was reported as started, or null without a run. */
+	public get runStart(): number | null {
+		return this.detector.started ? this.startedAt : null;
+	}
+
+	/**
+	 * End a run whose end the values it was detected with never report (Spec D.3 point 3, decision 8): its capture
+	 * closed without an end and a repair made values that detect the end of that run. The run ends now with the usual
+	 * end (message, `lastOperations`, actions, auto-off), and the detector is rebuilt with the values in use at once;
+	 * if the device is active again, the new values detect a new run. Does nothing if this run is no longer in progress
+	 * or a lock phase is active.
+	 *
+	 * @param startedAt - Start of the run (`runStart` when its capture closed)
+	 * @returns whether the run was ended
+	 */
+	public async finishStuckRun(startedAt: number): Promise<boolean> {
+		let done = false;
+		await this.enqueue(async () => {
+			if (!this.detector.started || this.detector.settling === true || this.startedAt !== startedAt) {
+				return;
+			}
+			this.detector = this.buildDetector();
+			this.rebuildPending = false;
+			// like the end detection: off below the standby value, otherwise standby
+			const power = this.power ?? 0;
+			await this.setState(
+				"status",
+				this.inst.statusTexts[power < (this.active.standby || 1) ? "off" : "standby"],
+			);
+			await this.onFinished(this.host.now());
+			this.rebuildIfDue();
+			done = true;
+		});
+		return done;
 	}
 
 	/** Last valid power value in W, or null if none is known. */
@@ -913,6 +985,10 @@ export class DeviceRuntime {
 		const now = at;
 		this.record("f", at);
 		this.tracker?.onRun("end", at);
+		this.unknownShare =
+			this.tracker && this.phaseModel?.scope === "run"
+				? unknownShareOf(this.tracker.timeline(), this.startedAt, at)
+				: null;
 		const runtime = formatDuration(Math.max(0, now - this.startedAt));
 		if (this.cfg.endText) {
 			await this.notify(this.cfg.endText);

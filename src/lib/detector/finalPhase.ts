@@ -16,7 +16,7 @@ const QUIET_DEFAULT_SEC = 120;
 /** Default of `finalCheckSec` in s. */
 const CHECK_DEFAULT_SEC = 1800;
 /** Default of `finalLockSec` in s. */
-const LOCK_DEFAULT_SEC = 14_400;
+export const LOCK_DEFAULT_SEC = 14_400;
 
 /**
  * Defaults for the value 0 and the per-poll floors of the final phase (Spec A.2). The floors only make
