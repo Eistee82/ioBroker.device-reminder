@@ -4,6 +4,8 @@ import {
 	checkSet,
 	FINAL_ENABLE_MIN_PER_GROUP,
 	FINAL_ENABLE_MIN_RUNS,
+	JOB_STEPS,
+	optimize,
 	replayPick,
 	stepLimitFinal,
 	targetSet,
@@ -17,6 +19,7 @@ import {
 	emptyStore,
 	MAX_CHANGES,
 	pushChange,
+	recompute,
 	saveStore,
 	setDecision,
 	typeHash,
@@ -43,7 +46,9 @@ import {
 	windowsFeed,
 } from "./helpers/devices.js";
 import { soaking, syntheticRun, WM_FINAL } from "./helpers/final.js";
-import { layoutOf, loadSeries, restartScenarios, runWindow, sparse } from "./helpers/fixtures.js";
+import { WM_PHASES } from "./helpers/phases.js";
+import { phaseTuneBase } from "../build/lib/phases/learn.js";
+import { layoutOf, loadSeries, restartScenarios, runWindow, sparse, timelineOf } from "./helpers/fixtures.js";
 import { historyOf, runStarts } from "./helpers/history.js";
 import { runOf } from "./helpers/programmes.js";
 
@@ -1082,5 +1087,174 @@ describe("final phase in the optimisation (Spec D.5)", function () {
 		assert.strictEqual(st.final.state, "on");
 		assert.strictEqual(st.changes.at(-1).kind, "finalResume");
 		assert.ok(ctx.host.logs.info.some(m => m.includes("final phase used again (endOk)")));
+	});
+});
+
+// 30 washer runs of 3 programme groups (w01, w03, w11), one a day, read from the history at the start (Spec D.3 budget)
+const CLONE_IDS = ["w01", "w03", "w11"];
+async function thirtyRuns(o = {}) {
+	const host = createFakeHost({ objects: { [P]: "number" } });
+	const wins = Array.from({ length: 30 }, (_, k) => runWindow("washer30d", CLONE_IDS[k % 3]));
+	const pts = timelineOf(wins, DAY).map(p => ({ ts: p.ts - wins[0][0].ts + host.now() - 31 * DAY, val: p.val }));
+	const ctx = await registrySetup({ host, history: historyEnv(pts), ...o });
+	await drain(ctx);
+	return ctx;
+}
+/**
+ * Context of an optimisation job on the learning data of the registry, 2 days later with 2 new runs (the tightening
+ * and the tuning of the final phase may run).
+ *
+ * @param {object} ctx registry context
+ * @param {number} budgetMs budget
+ * @param {() => number} clock clock
+ * @returns {object} context
+ */
+function optCtx(ctx, budgetMs, clock) {
+	const st = ctx.reg.learningData("dev");
+	st.newSinceChange = Math.max(st.newSinceChange, 2);
+	const quality = {
+		bands: st.bands,
+		unitFactor: 1,
+		unit: "W",
+		settings: null,
+		pollMs: STEP,
+		outages: [],
+		scope: "run",
+	};
+	return {
+		type: ctx.reg.get("dev").baseDetection,
+		pollSec: 10,
+		abort: false,
+		abortFixed: false,
+		yieldFn: async () => {},
+		now: ctx.host.now() + 2 * DAY,
+		budgetMs,
+		clock,
+		quality,
+		verdicts: recompute(structuredClone(st), quality),
+	};
+}
+describe("optimisation budget (Spec D.3)", function () {
+	this.timeout(900_000);
+	it("an interrupted step changes nothing and the next job resumes it", async () => {
+		const ctx = await thirtyRuns();
+		const st = ctx.reg.learningData("dev");
+		assert.strictEqual(st.runs.length, 29, "the runs of the last 30 days taken over from the history");
+		const before = structuredClone(st.override);
+		let t = 0;
+		const r1 = await optimize(
+			st,
+			optCtx(ctx, 50, () => (t += 10)),
+		);
+		assert.deepStrictEqual([r1.kind, st.override], ["budget", before]);
+		assert.strictEqual(r1.interrupted, true);
+		assert.strictEqual(st.info.status, "budget");
+		assert.strictEqual(st.info.budget, 1);
+		// progress: a step done (the steps in turn) or units of the step done
+		const cursor = structuredClone(st.job);
+		assert.ok(cursor && (JOB_STEPS.indexOf(cursor.step) > 0 || cursor.cursor > 0), JSON.stringify(cursor));
+		const r2 = await optimize(
+			st,
+			optCtx(ctx, 30_000, () => (t += 1)),
+		);
+		assert.notStrictEqual(r2.kind, "budget");
+		assert.ok(!st.job || st.job.step !== cursor.step || st.job.cursor !== cursor.cursor);
+		assert.strictEqual(st.info.budget, st.job ? 2 : 0);
+		assert.strictEqual(st.info.jobMs, r2.activeMs);
+	});
+	it("wall time spent in yields does not count", async () => {
+		const ctx = await thirtyRuns();
+		const st = ctx.reg.learningData("dev");
+		let wall = 0;
+		let yields = 0;
+		const c = {
+			...optCtx(ctx, 30_000, () => wall),
+			yieldFn: async () => {
+				yields++;
+				wall += 3_600_000;
+			},
+		};
+		const r = await optimize(st, c);
+		assert.notStrictEqual(r.kind, "budget");
+		assert.ok(yields > 0, "the job yields");
+		assert.strictEqual(r.activeMs, 0);
+	});
+	it("every expensive step completes within at most 3 jobs (30 washer runs, 3 groups, 30 s)", async () => {
+		const ctx = await thirtyRuns();
+		const st = ctx.reg.learningData("dev");
+		assert.strictEqual(new Set(st.runs.map(r => r.family)).size, 3);
+		let jobs = 0;
+		// injected clock: 1 ms per clock read stands for the work between two yields; no wall time under c8 (cf. 5684124)
+		let t = 0;
+		do {
+			await optimize(
+				st,
+				optCtx(ctx, 30_000, () => (t += 1)),
+			);
+			jobs++;
+		} while (st.job && jobs < 3);
+		assert.ok(!st.job, `still at ${JSON.stringify(st.job)} after ${jobs} jobs`);
+		assert.ok(st.checks?.final && st.checks?.tighten, "the final phase and the tightening were searched");
+		assert.strictEqual(st.info.budget, 0);
+	});
+	it("budget status counts in a row; warning from the 3rd", async () => {
+		// no budget used up while the history is read (the clock stands still), then 1 ms per clock read
+		let cost = 0;
+		let t = 0;
+		const ctx = await thirtyRuns({ budgetMs: 1, clock: () => (t += cost) });
+		const st = ctx.reg.learningData("dev");
+		assert.strictEqual(st.info.budget ?? 0, 0);
+		// the tightening may run (the final phase was checked today)
+		st.lastChangeTs = 0;
+		st.newSinceChange = 10;
+		cost = 1;
+		for (let k = 1; k <= 3; k++) {
+			await windowsFeed(ctx, [CLONE_IDS[k % 3]]);
+			assert.strictEqual(st.info.budget, k, `job ${k}`);
+			assert.strictEqual(st.info.status, "budget");
+		}
+		assert.ok(ctx.host.logs.warn.some(m => m.includes("optimisation too slow on this system (3 jobs in a row)")));
+		assert.strictEqual(
+			ctx.host.logs.warn.filter(m => m.includes("optimisation too slow")).length,
+			1,
+			"warned once",
+		);
+	});
+	it("a store of an earlier job resumes from JSON (progress survives a restart)", async () => {
+		const ctx = await thirtyRuns();
+		const st = ctx.reg.learningData("dev");
+		let t = 0;
+		await optimize(
+			st,
+			optCtx(ctx, 50, () => (t += 10)),
+		);
+		assert.ok(st.job);
+		const copy = JSON.parse(JSON.stringify(st));
+		const a = await optimize(
+			st,
+			optCtx(ctx, 30_000, () => (t += 1)),
+		);
+		const b = await optimize(
+			copy,
+			optCtx(ctx, 30_000, () => (t += 1)),
+		);
+		assert.deepStrictEqual([b.kind, b.override], [a.kind, a.override]);
+	});
+	it("phase fine tuning runs as a step: proposal kept for its model, at most once a day (Spec D.6)", async () => {
+		const ctx = await thirtyRuns();
+		const st = ctx.reg.learningData("dev");
+		let t = 0;
+		const c = { ...optCtx(ctx, 30_000, () => (t += 1)), phases: WM_PHASES };
+		const r1 = await optimize(st, c);
+		assert.ok(!st.job, "round complete");
+		assert.strictEqual(st.phaseTune.base, phaseTuneBase(WM_PHASES));
+		assert.ok(st.phaseTune.last?.hash, "proposal of the first check");
+		assert.strictEqual(st.phaseTune.applied, undefined, "one proposal is not taken over");
+		assert.ok(!r1.phases.includes("tuned"));
+		const checked = st.checks.phases.ts;
+		const last = st.phaseTune.last;
+		await optimize(st, { ...c, now: c.now + 3_600_000 });
+		assert.strictEqual(st.checks.phases.ts, checked, "no second check on the same day");
+		assert.strictEqual(st.phaseTune.last, last);
 	});
 });

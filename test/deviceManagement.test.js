@@ -352,6 +352,18 @@ describe("deviceManagement", () => {
 			assert.deepStrictEqual(info.status.warning, TEXT.finalSuspendedCard);
 		});
 
+		it("card warning: optimisation too slow from the 3rd job in a row stopped by the time budget (Spec D.3)", async () => {
+			const ctx = setup({ files: memoryFiles() });
+			await addDevice(ctx, "trockner", deviceCfg({ detection: DRYER, autoOptimize: true }));
+			const st = ctx.registry.learningData("trockner");
+			st.info.budget = 2;
+			let [info] = await load(ctx);
+			assert.notDeepStrictEqual(info.status.warning, TEXT.budgetCard);
+			st.info.budget = 3;
+			[info] = await load(ctx);
+			assert.deepStrictEqual(info.status.warning, TEXT.budgetCard);
+		});
+
 		it("card model: an active override of the optimisation counts as learned", async () => {
 			const ctx = setup();
 			await addDevice(ctx, "a", deviceCfg({ name: "A" }));

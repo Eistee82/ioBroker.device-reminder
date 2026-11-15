@@ -2,6 +2,7 @@ import * as I18n from "@iobroker/adapter-core/i18n";
 import { createDetector, finalOn, finalValuesOf, TrailerFilter } from "./detector/index.js";
 import { renderHistoryHtml } from "./historyHtml.js";
 import { PHASE_NOTIFY_MIN_MS, PHASES_CONTINUOUS_MS, PHASES_MAX, systemPhaseNames } from "./phases/model.js";
+import { applyPhaseTune, phaseTuneBase } from "./phases/learn.js";
 import { PhaseTracker, phaseHolds } from "./phases/tracker.js";
 import { detectionOf, typeHash } from "./runStore.js";
 import { errorMessage, formatDuration, formatTimestamp, parseNumber } from "./utils.js";
@@ -47,6 +48,8 @@ export class DeviceRuntime {
     trackerBuilds = 0;
     trackerPending = false;
     holdBands = null;
+    phaseTune = null;
+    phaseModel;
     shownPhase = null;
     timelineSig = null;
     phaseNotified = new Map();
@@ -57,6 +60,7 @@ export class DeviceRuntime {
         this.sink = sink;
         this.listener = listener;
         this.cfg = cfg;
+        this.phaseModel = cfg.phases;
         this.detector = this.buildDetector();
         this.tracker = this.buildTracker();
     }
@@ -129,8 +133,32 @@ export class DeviceRuntime {
             return;
         }
         this.holdBands = bands;
-        if (this.tracker && this.cfg.phases) {
-            this.tracker.setHolds(phaseHolds(this.cfg.phases, bands));
+        if (this.tracker && this.phaseModel) {
+            this.tracker.setHolds(phaseHolds(this.phaseModel, bands));
+        }
+    }
+    setPhaseTune(tune) {
+        if (tune === this.phaseTune) {
+            return;
+        }
+        this.phaseTune = tune;
+        this.refreshPhaseModel();
+    }
+    get phases() {
+        return this.phaseModel;
+    }
+    tunedModel() {
+        const model = this.cfg.phases;
+        const tune = this.phaseTune;
+        return model && tune?.applied && tune.base === phaseTuneBase(model)
+            ? applyPhaseTune(model, tune.applied)
+            : model;
+    }
+    refreshPhaseModel() {
+        const next = this.tunedModel();
+        if (JSON.stringify(next) !== JSON.stringify(this.phaseModel)) {
+            this.phaseModel = next;
+            this.rebuildTracker();
         }
     }
     get detectorRev() {
@@ -330,6 +358,9 @@ export class DeviceRuntime {
         const switchChanged = next.switchId !== this.cfg.switchId;
         const phasesChanged = JSON.stringify(next.phases) !== JSON.stringify(this.cfg.phases);
         this.cfg = next;
+        if (phasesChanged) {
+            this.phaseModel = this.tunedModel();
+        }
         if (detectorChanged) {
             this.rebuildDetector();
         }
@@ -360,7 +391,7 @@ export class DeviceRuntime {
     buildTracker() {
         this.shownPhase = null;
         this.timelineSig = null;
-        const model = this.cfg.phases;
+        const model = this.phaseModel;
         if (!model?.enabled) {
             return null;
         }
@@ -377,7 +408,7 @@ export class DeviceRuntime {
     }
     async publishPhases() {
         const tr = this.tracker;
-        const model = this.cfg.phases;
+        const model = this.phaseModel;
         if (!tr || !model || this.disposed) {
             return;
         }
@@ -415,7 +446,7 @@ export class DeviceRuntime {
         this.timelineSig = sig;
     }
     async notifyPhase(edge) {
-        const model = this.cfg.phases;
+        const model = this.phaseModel;
         const def = model?.phases.find(p => p.id === edge.id);
         if (!model || !def?.notify || !def.notify[edge.edge]) {
             return;
@@ -568,7 +599,7 @@ export class DeviceRuntime {
     async onStarted(at) {
         this.startedAt = at;
         this.tracker?.onRun("start", at);
-        if (this.cfg.phases?.scope === "run") {
+        if (this.phaseModel?.scope === "run") {
             this.phaseNotified.clear();
         }
         this.record("s", at, this.detector.finalExit ?? null);

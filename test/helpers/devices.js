@@ -175,6 +175,8 @@ async function advanceTo(host, ts) {
  * @param {(deviceId: string) => Promise<void>} [o.beforeOptimizeWrite] test hook between the result of an
  * optimisation and its write
  * @param {object} [o.objects] object writer of the registry (states created again by the optimisation)
+ * @param {number} [o.budgetMs] time budget of an optimisation job in ms
+ * @param {() => number} [o.clock] clock of the time budget
  * @returns {Promise<object>} `{ host, files, inst, reg, cfg }`
  */
 export async function registrySetup(o = {}) {
@@ -186,6 +188,8 @@ export async function registrySetup(o = {}) {
 		...(o.history ? { history: o.history } : {}),
 		...(o.beforeOptimizeWrite ? { beforeOptimizeWrite: o.beforeOptimizeWrite } : {}),
 		...(o.objects ? { objects: o.objects } : {}),
+		...(o.budgetMs !== undefined ? { budgetMs: o.budgetMs } : {}),
+		...(o.clock ? { clock: o.clock } : {}),
 	});
 	const cfg = deviceConfig({
 		name: "Waschmaschine",

@@ -4,7 +4,7 @@ import { DEFAULT_REMINDER, normalizeDetection, normalizeDeviceConfig } from "./c
 import { buildDeviceSchema, buildSourceSchema, DEFAULT_SOURCE, deviceConfigToForm, formToDeviceConfig, parseSourceChoice, } from "./deviceForm.js";
 import { ensureDeviceObjects } from "./deviceObjects.js";
 import { enumLabel, membershipOf, planEnumUpdate } from "./enums.js";
-import { formatDate } from "./deviceRegistry.js";
+import { BUDGET_WARN_JOBS, formatDate } from "./deviceRegistry.js";
 import { fill, plain, TEMPLATE_NAMES, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import { FINAL_KEYS } from "./detector/types.js";
@@ -329,6 +329,9 @@ export class ReminderDeviceManagement extends DeviceManagement {
         }
         else if ((this.adapter.registry.learningData(id)?.info.review?.length ?? 0) > 0) {
             warning = TEXT.reviewCard;
+        }
+        else if ((this.adapter.registry.learningData(id)?.info.budget ?? 0) >= BUDGET_WARN_JOBS) {
+            warning = TEXT.budgetCard;
         }
         const learning = (await this.adapter.getStateAsync(`${id}.learning.active`))?.val === true;
         const dnd = runtime?.doNotDisturb ?? false;

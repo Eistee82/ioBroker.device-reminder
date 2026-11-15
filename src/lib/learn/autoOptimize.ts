@@ -3,7 +3,10 @@ import { finalOn } from "../detector/index.js";
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import { FINAL_KEYS } from "../detector/types.js";
 import type { DetectionSettings, FinalSettings } from "../detector/types.js";
-import type { BaseKey, Change, OptimizeInfo, StoredRun, StoreFile } from "../runStore.js";
+import type { PhaseModel } from "../phases/model.js";
+import { applyPhaseTune, phaseTuneBase, tunePhases } from "../phases/learn.js";
+import { phaseHolds } from "../phases/tracker.js";
+import type { BaseKey, Change, JobStep, JobUnit, OptimizeInfo, StoredRun, StoreFile } from "../runStore.js";
 import {
 	BASE_KEYS,
 	boundaryRuns,
@@ -17,6 +20,7 @@ import {
 	refreshInfo,
 	REPLAY_PICK_MAX,
 	storeSamples,
+	typeHash,
 	WINDOW_MS,
 } from "../runStore.js";
 import type { HistorySuggestion } from "./analyze.js";
@@ -57,8 +61,17 @@ const MODE_CHANGE_RUNS = 6;
 const FILTER_RUNS = 2;
 /** Separator between two stored runs when they are analysed together. */
 const SEPARATOR_MS = MAX_PAUSE_MS + 10 * 60_000;
-/** Yield at least this often. */
+/** Yield at least this often (active computing time) … */
 const YIELD_MS = 20;
+/** … and at least every this many ticks. */
+const YIELD_TICKS = 256;
+/**
+ * Expensive steps of a job in turn (Spec D.3 budget): switch the final phase on or tune it, tighten the base values,
+ * fine-tune the phases. A step interrupted by the budget goes on in the next job where it stopped.
+ */
+export const JOB_STEPS: readonly JobStep[] = ["final", "tighten", "phases"];
+/** A cross-check (release of the final phase, phase fine tuning) runs at most once in this time … */
+export const CROSS_CHECK_SPACING_MS = 24 * 60 * 60_000;
 /** Most keys of runs that got a hint and are remembered (`StoreFile.hinted`). */
 const HINTED_MAX = 50;
 /** Findings of a data error (Spec B.3): the hint says the recording is disturbed, without asking to use the run. */
@@ -101,10 +114,15 @@ export interface OptimizeContext {
 	yieldFn: () => Promise<void>;
 	/** Current time in ms. */
 	now: number;
-	/** Time budget of the job in ms. */
+	/**
+	 * Time budget of the job in ms: active computing time (the sum of the stretches between two yields, Spec D.3);
+	 * the cheap part of a job (gate, repair, suspending) always runs, the expensive steps stop when it is used up.
+	 */
 	budgetMs: number;
-	/** Clock for the budget. */
+	/** Clock for the budget (ms; only the time between two yields counts). */
 	clock: () => number;
+	/** Phase model of the device (fine tuning, Spec D.6), if phases are on. */
+	phases?: PhaseModel;
 	/**
 	 * Verdicts of the run check by key (`recompute`). Without them every stored run counts as admitted (only the
 	 * decisions of the user count).
@@ -188,6 +206,12 @@ export interface OptimizeOutcome {
 	hints: Hint[];
 	/** What happened with the final phase (in this order). */
 	final: FinalEvent[];
+	/** What the phase fine tuning did: `tuned` (new limits in use), `newPattern` (a new phase found, once). */
+	phases: ("tuned" | "newPattern")[];
+	/** The expensive steps were stopped by the time budget (`info.budget` counts these jobs in a row). */
+	interrupted: boolean;
+	/** Active computing time of the job in ms. */
+	activeMs: number;
 }
 
 class BudgetExceeded extends Error {}
@@ -402,8 +426,20 @@ export function noRegression(c: ReadonlyMap<string, boolean>, p0: ReadonlyMap<st
 class Data {
 	private readonly cells = new WeakMap<StoredRun, TickCell[]>();
 	private readonly series = new WeakMap<StoredRun, Map<Perturbation, TickSeries>>();
-	private lastYield: number;
-	private readonly start: number;
+	/** Active computing time until the last yield (ms). */
+	private activeBefore = 0;
+	/** Clock after the last yield. */
+	private resumedAt: number;
+	private ticks = 0;
+	/** Expensive part of the job: the budget applies. */
+	public budgeted = false;
+	/** Units of expensive steps finished in this job (the first one always finishes, so every job makes progress). */
+	private finished = 0;
+	/** Results of the finished units of the expensive step in progress (`StoreFile.job.memo`). */
+	public memo: JobUnit[] = [];
+	private pos = 0;
+	/** A unit result of the step in progress comes from an earlier job (checked again before it is taken over). */
+	public reused = false;
 	/** Admitted runs of the replay pick with cells (gate). */
 	public readonly runs: StoredRun[];
 	/** Admitted false starts with cells. */
@@ -424,8 +460,7 @@ class Data {
 		public readonly store: StoreFile,
 		public readonly ctx: OptimizeContext,
 	) {
-		this.start = ctx.clock();
-		this.lastYield = this.start;
+		this.resumedAt = ctx.clock();
 		const pick = replayPick(store, ctx.now, ctx.verdicts).filter(r => inUse(store, r));
 		this.runs = pick.filter(r => r.label !== "spike");
 		this.spikes = pick.filter(r => r.label === "spike");
@@ -572,15 +607,68 @@ class Data {
 		return s;
 	}
 
+	/** Active computing time of the job so far (ms): the time spent in yields does not count. */
+	public get activeMs(): number {
+		return this.activeBefore + Math.max(0, this.ctx.clock() - this.resumedAt);
+	}
+
+	/**
+	 * Whether the budget is used up in the expensive part (never before the first unit of the job is finished).
+	 *
+	 * @param run - Active time since the last yield (ms)
+	 */
+	private overBudget(run: number): boolean {
+		return this.budgeted && this.finished > 0 && this.activeBefore + run > this.ctx.budgetMs;
+	}
+
 	public async tick(): Promise<void> {
-		const now = this.ctx.clock();
-		if (now - this.start > this.ctx.budgetMs) {
+		const run = Math.max(0, this.ctx.clock() - this.resumedAt);
+		if (this.overBudget(run)) {
 			throw new BudgetExceeded("budget");
 		}
-		if (now - this.lastYield >= YIELD_MS) {
-			this.lastYield = now;
+		this.ticks++;
+		if (run >= YIELD_MS || this.ticks % YIELD_TICKS === 0) {
+			this.activeBefore += run;
 			await this.ctx.yieldFn();
+			this.resumedAt = this.ctx.clock();
 		}
+	}
+
+	/**
+	 * Start an expensive step with the results of its units from an earlier job.
+	 *
+	 * @param memo - Results of the finished units (empty: from the beginning)
+	 */
+	public beginStep(memo: JobUnit[]): void {
+		this.memo = memo;
+		this.pos = 0;
+		this.reused = false;
+	}
+
+	/**
+	 * One unit of an expensive step: its result is kept in the progress of the job, so that a step stopped by the
+	 * budget goes on in the next job where it stopped. A unit finished before (same key at the same place) is not
+	 * computed again; a different key drops the results from there on. Results are kept as JSON.
+	 *
+	 * @param key - Key of the unit (what it computes)
+	 * @param fn - Computation
+	 */
+	public async unit<T>(key: string, fn: () => Promise<T>): Promise<T> {
+		const m = this.memo[this.pos];
+		if (m && m.k === key) {
+			this.pos++;
+			this.reused = true;
+			return m.v as T;
+		}
+		this.memo = this.memo.slice(0, this.pos);
+		if (this.overBudget(Math.max(0, this.ctx.clock() - this.resumedAt))) {
+			throw new BudgetExceeded("budget");
+		}
+		const v = JSON.parse(JSON.stringify((await fn()) ?? null)) as T;
+		this.memo = [...this.memo, { k: key, v }];
+		this.pos++;
+		this.finished++;
+		return v;
 	}
 
 	/**
@@ -1251,6 +1339,7 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 	const data = new Data(store, ctx);
 	let hints: Hint[] = [];
 	const events: FinalEvent[] = [];
+	const phaseEvents: OptimizeOutcome["phases"] = [];
 	const vetoes: string[] = [];
 	const build: Done = (kind, change = null, extra = {}) => ({
 		kind,
@@ -1262,6 +1351,9 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 		vetoClear: [],
 		hints,
 		final: events,
+		phases: phaseEvents,
+		interrupted: false,
+		activeMs: 0,
 		...extra,
 	});
 	const finish = (o: OptimizeOutcome): OptimizeOutcome => {
@@ -1276,12 +1368,16 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 		if ((info.review?.length ?? 0) > 0 && (info.status === "ok" || info.status === "collecting")) {
 			info.status = "review";
 		}
+		const activeMs = Math.round(data.activeMs);
+		info.jobMs = activeMs;
 		return {
 			...o,
 			override: store.override,
 			hints,
 			final: events,
+			phases: phaseEvents,
 			vetoes: [...new Set([...vetoes, ...o.vetoes])],
+			activeMs,
 		};
 	};
 	if (data.runs.length === 0 && data.spikes.length === 0 && data.quarantined.length === 0) {
@@ -1292,63 +1388,290 @@ export async function optimize(store: StoreFile, ctx: OptimizeContext): Promise<
 		return finish(build("none"));
 	}
 	const p0 = effectiveOf(ctx.type, store.override);
-	try {
-		let r0 = await gateOn(data, p0, "none");
-		let q0 = await quarantineOn(data, p0);
-		let failing = failingOf(r0);
-		if (failing.length > 0 && finalOn(p0) && !data.suspended) {
-			// an admitted run reported too early by the final phase (Spec D.3 point 3): suspend it at once, the base
-			// values are then checked as the runtime uses them (without the final phase)
-			const off = await gateOn(data, { ...p0, finalMinVal: 0 }, "none");
-			const okOff = new Set(off.perRun.filter(r => r.ok).map(r => r.key));
-			const byFinal = failing.filter(
-				k =>
-					okOff.has(k) ||
-					r0.joined.some(j => j.key === k) ||
-					(r0.spikeKeys.includes(k) && !off.spikeKeys.includes(k)),
-			);
-			if (byFinal.length > 0) {
-				const key = newestOf(data, byFinal);
-				markFinalSuspended(store, "earlyEnd", key, ctx.now, true);
-				data.suspended = true;
-				events.push({ kind: "suspended", reason: "earlyEnd", key });
-				vetoes.push(...byFinal);
-				r0 = off;
-				q0 = await quarantineOn(data, p0);
-				failing = failingOf(off);
-			}
+	// the cheap part of every job (Spec D.3 budget): gate, repair, suspending; never stopped by the budget
+	let r0 = await gateOn(data, p0, "none");
+	let q0 = await quarantineOn(data, p0);
+	let failing = failingOf(r0);
+	if (failing.length > 0 && finalOn(p0) && !data.suspended) {
+		// an admitted run reported too early by the final phase (Spec D.3 point 3): suspend it at once, the base
+		// values are then checked as the runtime uses them (without the final phase)
+		const off = await gateOn(data, { ...p0, finalMinVal: 0 }, "none");
+		const okOff = new Set(off.perRun.filter(r => r.ok).map(r => r.key));
+		const byFinal = failing.filter(
+			k =>
+				okOff.has(k) ||
+				r0.joined.some(j => j.key === k) ||
+				(r0.spikeKeys.includes(k) && !off.spikeKeys.includes(k)),
+		);
+		if (byFinal.length > 0) {
+			const key = newestOf(data, byFinal);
+			markFinalSuspended(store, "earlyEnd", key, ctx.now, true);
+			data.suspended = true;
+			events.push({ kind: "suspended", reason: "earlyEnd", key });
+			vetoes.push(...byFinal);
+			r0 = off;
+			q0 = await quarantineOn(data, p0);
+			failing = failingOf(off);
 		}
-		hints = hintsOf(data, q0);
-		let out: OptimizeOutcome | null = null;
-		if (failing.length > 0) {
-			// repair first, also during a drift and a lock
-			out = await repair(data, p0, r0, q0, failing, build);
-		} else {
-			store.failStreak = 0;
-		}
-		const drift = info.status === "drift";
-		if (data.suspended) {
-			// repair of the final phase right after the run, without minimum count, lock or step limits
-			await recoverFinal(data, q0, events, vetoes);
-		} else if (!out && !drift) {
-			// switching it on and tuning it: like a tightening, only over many runs
-			const change = await finalStep(data, p0, r0, q0, events);
-			if (change) {
-				out = build("none", change);
-			}
-		}
-		if (!out) {
-			// a drift stops only the tightening
-			out = drift ? build("drift") : await tighten(data, p0, r0, q0, build);
-		}
-		return finish(out);
-	} catch (err) {
-		if (err instanceof BudgetExceeded) {
-			info.status = "budget";
-			return finish(build("budget"));
-		}
-		throw err;
 	}
+	hints = hintsOf(data, q0);
+	let out: OptimizeOutcome | null = null;
+	if (failing.length > 0) {
+		// repair first, also during a drift and a lock
+		out = await repair(data, p0, r0, q0, failing, build);
+	} else {
+		store.failStreak = 0;
+	}
+	if (data.suspended) {
+		// repair of the final phase right after the run, without minimum count, lock or step limits
+		await recoverFinal(data, q0, events, vetoes);
+	}
+	if (!out) {
+		if (info.status === "drift") {
+			// a drift stops the tightening, switching the final phase on and tuning it, and the phase fine tuning
+			info.budget = 0;
+			out = build("drift");
+		} else {
+			out = await expensiveSteps(data, { p0, r0, q0 }, events, phaseEvents, build);
+		}
+	}
+	return finish(out);
+}
+
+/** Values in use and their gate result while the expensive steps of a job run (a step that changes them updates it). */
+interface StepState {
+	/** Values in use. */
+	p0: DetectionSettings;
+	/** Gate result of the values in use. */
+	r0: GateResult;
+	/** Result per key of the values in use on the runs in quarantine. */
+	q0: ReadonlyMap<string, boolean>;
+}
+
+/**
+ * Hash of a text (FNV-1a, 8 hex digits).
+ *
+ * @param text - Text
+ */
+function hashText(text: string): string {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) {
+		h ^= text.charCodeAt(i);
+		h = Math.imul(h, 0x01000193) >>> 0;
+	}
+	return h.toString(16).padStart(8, "0");
+}
+
+/**
+ * What an expensive step works with besides the stored runs: the values in use as the runtime builds them (a step
+ * stopped by the budget starts again with other values).
+ *
+ * @param data - Decoded data
+ * @param p - Values in use
+ */
+function basisOf(data: Data, p: DetectionSettings): string {
+	const { store, ctx } = data;
+	return `${typeHash(p)}|${data.suspended ? 1 : 0}|${ctx.pollSec}|${store.unitFactor}|${store.step}`;
+}
+
+/**
+ * Signature of the input of an expensive step: values in use and the runs it uses (target set, replay pick, false
+ * starts, runs in quarantine, split programmes).
+ *
+ * @param data - Decoded data
+ * @param p - Values in use
+ * @param extra - More input of the step
+ */
+function sigOf(data: Data, p: DetectionSettings, extra = ""): string {
+	const keys = (runs: readonly StoredRun[]): string[] => runs.map(r => r.key);
+	return hashText(
+		JSON.stringify([
+			basisOf(data, p),
+			keys(data.target),
+			keys(data.runs),
+			keys(data.spikes),
+			keys(data.quarantined),
+			data.joined.map(j => j.key),
+			extra,
+		]),
+	);
+}
+
+/**
+ * Whether a step searched the same input before; a cross-check (`daily`) also when it ran less than a day ago
+ * (Spec D.3 budget: at most once a day and only with new admitted runs).
+ *
+ * @param data - Decoded data
+ * @param step - Step
+ * @param sig - Signature of the input (`sigOf`)
+ * @param daily - At most once a day
+ */
+function checkedBefore(data: Data, step: JobStep, sig: string, daily: boolean): boolean {
+	const c = data.store.checks?.[step];
+	return c !== undefined && (c.sig === sig || (daily && data.ctx.now - c.ts < CROSS_CHECK_SPACING_MS));
+}
+
+/**
+ * Remember that a step searched its input (`checkedBefore`).
+ *
+ * @param data - Decoded data
+ * @param step - Step
+ * @param sig - Signature of the input
+ */
+function markChecked(data: Data, step: JobStep, sig: string): void {
+	data.store.checks = { ...data.store.checks, [step]: { ts: data.ctx.now, sig } };
+}
+
+/**
+ * Status of the optimisation without a finding: locked, collecting runs or ok.
+ *
+ * @param data - Decoded data
+ */
+function plainStatus(data: Data): OptimizeInfo["status"] {
+	const { store, ctx } = data;
+	if (store.lockRuns > 0 || ctx.now < store.lockUntilTs) {
+		return "locked";
+	}
+	return data.target.filter(trustedOf(data)).length >= TIGHTEN_MIN_RUNS ? "ok" : "collecting";
+}
+
+/**
+ * The expensive steps of a job in turn (Spec D.3 budget, `JOB_STEPS`): switch the final phase on or tune it, tighten
+ * the base values, fine-tune the phases. A job goes on with the step the last job stopped at, with the units it
+ * finished; the budget (active computing time) stops a step without a change from it and keeps the progress
+ * (`store.job`, `info.budget` counts these jobs in a row, status `budget`). A round that reaches its end clears the
+ * progress and sets `info.budget` to 0. A step that changes the values in use updates `st` for the steps after it.
+ *
+ * @param data - Decoded data
+ * @param st - Values in use and their gate results
+ * @param events - What happened with the final phase
+ * @param phaseEvents - What the phase fine tuning did
+ * @param build - Result
+ */
+async function expensiveSteps(
+	data: Data,
+	st: StepState,
+	events: FinalEvent[],
+	phaseEvents: OptimizeOutcome["phases"],
+	build: Done,
+): Promise<OptimizeOutcome> {
+	const { store, ctx } = data;
+	const job = store.job;
+	const at = job ? JOB_STEPS.indexOf(job.step) : -1;
+	const startedTs = job && at >= 0 ? job.startedTs : ctx.now;
+	let change: Change | null = null;
+	let tightened: OptimizeOutcome | null = null;
+	const vetoes: string[] = [];
+	const vetoClear: string[] = [];
+	const result = (kind: OptimizeOutcome["kind"]): OptimizeOutcome =>
+		tightened ?? build(kind, change, { vetoes, vetoClear });
+	data.budgeted = true;
+	try {
+		for (let i = Math.max(0, at); i < JOB_STEPS.length; i++) {
+			const step = JOB_STEPS[i];
+			const basis = basisOf(data, st.p0);
+			data.beginStep(i === at && job?.basis === basis ? (job.memo ?? []) : []);
+			try {
+				if (step === "final") {
+					change = (await finalStep(data, st, events)) ?? change;
+				} else if (step === "tighten") {
+					const t = await tighten(data, st.p0, st.r0, st.q0, build);
+					vetoes.push(...t.vetoes);
+					vetoClear.push(...t.vetoClear);
+					if (t.kind === "tighten") {
+						tightened = { ...t, vetoes, vetoClear };
+					}
+				} else {
+					phaseEvents.push(...(await phaseStep(data)));
+				}
+			} catch (err) {
+				if (!(err instanceof BudgetExceeded)) {
+					throw err;
+				}
+				store.job = { step, cursor: data.memo.length, startedTs, basis, memo: data.memo };
+				store.info.status = "budget";
+				store.info.budget = (store.info.budget ?? 0) + 1;
+				return { ...result(change ? "none" : "budget"), interrupted: true };
+			}
+		}
+	} finally {
+		data.budgeted = false;
+	}
+	delete store.job;
+	store.info.budget = 0;
+	if (store.info.status === "budget") {
+		store.info.status = plainStatus(data);
+	}
+	return result("none");
+}
+
+/**
+ * Phase fine tuning (Spec D.6) in the optimisation: only with phases on and the run check; the cross-check runs at
+ * most once a day and only with new admitted runs. The limits of the existing phases are taken over after two equal
+ * proposals in a row when the agreement of the cross-check does not drop (`tunePhases`); they are kept in the store
+ * (`phaseTune`, only for the phase model they were computed for) and never change the detection. A new pattern gives
+ * one hint.
+ *
+ * @param data - Decoded data
+ */
+async function phaseStep(data: Data): Promise<OptimizeOutcome["phases"]> {
+	const { store, ctx } = data;
+	const model = ctx.phases;
+	if (!model?.enabled || !ctx.quality) {
+		return [];
+	}
+	const quality = ctx.quality;
+	const base = phaseTuneBase(model);
+	const tune = store.phaseTune?.base === base ? store.phaseTune : undefined;
+	const tuned = applyPhaseTune(model, tune?.applied);
+	const current: PhaseModel =
+		tune?.applied && typeof tune.agreement === "number"
+			? { ...tuned, quality: { ...tuned.quality, agreement: tune.agreement } }
+			: tuned;
+	const sig = sigOf(data, ctx.type, `${base}|${tune?.applied?.hash ?? ""}`);
+	if (checkedBefore(data, "phases", sig, true)) {
+		return [];
+	}
+	const res = await data.unit("phases:tune", async () => {
+		const keys = new Set(data.target.map(r => r.key));
+		const units = storeSamples(store, quality)
+			.filter(x => keys.has(x.run.key) && inUse(store, x.run))
+			.map(x => ({ sample: x.sample, verdict: x.verdict }));
+		await data.tick();
+		const r = tunePhases(current, units, tune?.last ?? null, {
+			pollSec: ctx.pollSec,
+			holds: phaseHolds(current, store.bands ?? null) ?? [],
+		});
+		return {
+			proposal: r.proposal,
+			apply: r.model !== null,
+			agreement: r.model?.quality.agreement ?? null,
+			newPattern: r.newPattern,
+		};
+	});
+	const out: OptimizeOutcome["phases"] = [];
+	const next: NonNullable<StoreFile["phaseTune"]> = { base, last: res.proposal };
+	if (res.apply) {
+		next.applied = res.proposal;
+		if (res.agreement !== null) {
+			next.agreement = res.agreement;
+		}
+		out.push("tuned");
+	} else if (tune?.applied) {
+		next.applied = tune.applied;
+		if (tune.agreement !== undefined) {
+			next.agreement = tune.agreement;
+		}
+	}
+	if (res.newPattern) {
+		next.newPattern = true;
+		if (tune?.newPattern !== true) {
+			out.push("newPattern");
+		}
+	}
+	store.phaseTune = next;
+	markChecked(data, "phases", sig);
+	return out;
 }
 
 /**
@@ -1437,35 +1760,58 @@ async function learnedFinal(data: Data, p: DetectionSettings): Promise<FinalCand
  * (and FINAL_ENABLE_MIN_PER_GROUP per group, checked by `learnFinal`) outside the lock; tuned only when a tightening
  * may run, within the step limits of `stepLimitFinal`. `learnFinal` must release the final phase on the check set
  * (cross-check, robustness, gain) and the gate over every admitted run must pass; no run may end later, no run in
- * quarantine get worse.
+ * quarantine get worse. The release check runs at most once a day and only with new admitted runs (Spec D.3 budget);
+ * learning it is one unit of the step.
  *
  * @param data - Decoded data
- * @param p0 - Values in use
- * @param r0 - Gate result of the values in use
- * @param q0 - Result per key of the values in use on the runs in quarantine
+ * @param st - Values in use and their gate results (updated by a change)
  * @param events - What happened with the final phase
  * @returns the change, or null
  */
-async function finalStep(
-	data: Data,
-	p0: DetectionSettings,
-	r0: GateResult,
-	q0: ReadonlyMap<string, boolean>,
-	events: FinalEvent[],
-): Promise<Change | null> {
+async function finalStep(data: Data, st: StepState, events: FinalEvent[]): Promise<Change | null> {
 	const { store, ctx } = data;
+	const p0 = st.p0;
 	const admittedRuns = data.target.filter(trustedOf(data)).length;
 	const on = finalOn(p0);
 	const allowed = on
 		? tightenAllowed(store, admittedRuns, ctx.now) && admittedRuns >= FINAL_ENABLE_MIN_RUNS
 		: store.lockRuns <= 0 && ctx.now >= store.lockUntilTs && admittedRuns >= FINAL_ENABLE_MIN_RUNS;
-	if (!allowed) {
+	if (!allowed || !ctx.quality || !store.bands || store.bands.bands.length === 0) {
 		return null;
 	}
-	const learned = await learnedFinal(data, p0);
-	if (!learned) {
+	const sig = sigOf(data, p0);
+	if (checkedBefore(data, "final", sig, true)) {
 		return null;
 	}
+	const learned = await data.unit("final:learn", async () => {
+		const l = await learnedFinal(data, p0);
+		return l ? { values: l.values, covered: l.covered } : null;
+	});
+	const change = learned ? await finalApply(data, st, learned, events) : null;
+	markChecked(data, "final", sig);
+	return change;
+}
+
+/**
+ * Take over the final phase learned by `finalStep` when it passes the gate over every admitted run, ends no run later
+ * and makes no run in quarantine worse.
+ *
+ * @param data - Decoded data
+ * @param st - Values in use and their gate results (updated by a change)
+ * @param learned - Learned values and covered runs
+ * @param learned.values - Values of the final phase
+ * @param learned.covered - Runs it covers
+ * @param events - What happened with the final phase
+ */
+async function finalApply(
+	data: Data,
+	st: StepState,
+	learned: { values: FinalSettings; covered: number },
+	events: FinalEvent[],
+): Promise<Change | null> {
+	const { store, ctx } = data;
+	const { p0, r0, q0 } = st;
+	const on = finalOn(p0);
 	const values = on ? stepLimitFinal(learned.values, p0, learned.covered) : learned.values;
 	if (!values) {
 		return null;
@@ -1485,11 +1831,15 @@ async function finalStep(
 	if (g.perRun.some((r, i) => r.delaySec > (r0.perRun[i]?.delaySec ?? Number.POSITIVE_INFINITY) + ctx.pollSec)) {
 		return null;
 	}
-	if (!noRegression(await quarantineOn(data, c), q0)) {
+	const q = await quarantineOn(data, c);
+	if (!noRegression(q, q0)) {
 		return null;
 	}
 	const before = store.override;
 	store.override = diffOf(c, ctx.type);
+	st.p0 = c;
+	st.r0 = g;
+	st.q0 = q;
 	const change: Change = {
 		ts: ctx.now,
 		kind: on ? "finalTune" : "finalOn",
@@ -1918,11 +2268,87 @@ interface Recipe {
 	filter: number;
 }
 
+/** What the tightening keeps of an analysis (JSON, a unit of the step). */
+interface StoredAnalysis {
+	/** Candidate values of the analysis (the final phase as in the values in use). */
+	analysis: DetectionSettings;
+	/** Anti-crease phase of the analysis. */
+	trailer: string;
+	/** Runs detected in the leave-one-out check of the analysis, or null. */
+	looDetected: number | null;
+	/** Runs of the analysis. */
+	runs: number;
+}
+
+/** Result of the gate of a tightening candidate (a unit of the step). */
+interface CandidateCheck {
+	/** Passes the gate, ends no run later, makes no run in quarantine worse. */
+	pass: boolean;
+	/** The one run that stopped it (veto), or null. */
+	veto: string | null;
+	/** Starts in the false start windows. */
+	falseStarts: number;
+	/** Mean end delay in s. */
+	delay: number;
+}
+
+/**
+ * Analysis of stored runs as the tightening keeps it.
+ *
+ * @param data - Decoded data
+ * @param p0 - Values in use
+ * @param keep - Which runs to take
+ */
+async function storedAnalysis(
+	data: Data,
+	p0: DetectionSettings,
+	keep: (r: StoredRun) => boolean,
+): Promise<StoredAnalysis | null> {
+	const sg = await analyzeStored(data, p0, keep);
+	return sg
+		? {
+				analysis: fromSuggestion(sg, p0),
+				trailer: sg.trailer ?? "none",
+				looDetected: sg.looDetected ?? null,
+				runs: sg.runs,
+			}
+		: null;
+}
+
+/**
+ * Gate of a tightening candidate: every admitted run, no more false starts, no run later, no run in quarantine worse.
+ *
+ * @param data - Decoded data
+ * @param c - Candidate
+ * @param r0 - Gate result of the values in use
+ * @param q0 - Result per key of the values in use on the runs in quarantine
+ */
+async function candidateCheck(
+	data: Data,
+	c: DetectionSettings,
+	r0: GateResult,
+	q0: ReadonlyMap<string, boolean>,
+): Promise<CandidateCheck> {
+	const poll = data.ctx.pollSec;
+	const g = await gateOn(data, c, "none");
+	const delay = mean(g.perRun.map(r => r.delaySec));
+	if (!g.ok || g.falseStarts > r0.falseStarts) {
+		// a candidate that passes every other run of the check set: the one run that stops it is a boundary run
+		const bad = failingOf(g);
+		return { pass: false, veto: bad.length === 1 ? bad[0] : null, falseStarts: g.falseStarts, delay };
+	}
+	const later = g.perRun.some((r, i) => r.delaySec > (r0.perRun[i]?.delaySec ?? Number.POSITIVE_INFINITY) + poll);
+	const pass = !later && noRegression(await quarantineOn(data, c), q0);
+	return { pass, veto: null, falseStarts: g.falseStarts, delay };
+}
+
 /**
  * Tightening (Spec D.3 point 4): only with TIGHTEN_MIN_RUNS admitted runs in the 30-day window, TIGHTEN_NEW_RUNS new
  * ones and TIGHTEN_SPACING_MS since the last change, outside the lock; targets are the admitted runs of the window
  * (no run grown together), the gate covers the check set and the runs in quarantine must not get worse. A run that
- * alone stops a candidate gets a veto.
+ * alone stops a candidate gets a veto. The analysis, the gate of each candidate, the analyses without a programme
+ * group and the robustness check are units of the step (Spec D.3 budget); the same input is not searched again, and
+ * a candidate checked in an earlier job is checked again before it is taken over.
  *
  * @param data - Decoded data
  * @param p0 - Values in use
@@ -1938,7 +2364,6 @@ async function tighten(
 	done: Done,
 ): Promise<OptimizeOutcome> {
 	const { store, ctx } = data;
-	const poll = ctx.pollSec;
 	const target = new Set(data.target);
 	const isTrusted = (r: StoredRun): boolean =>
 		r.label === "run" && !r.postTruncated && !data.merged.has(r.key) && target.has(r);
@@ -1957,7 +2382,40 @@ async function tighten(
 	) {
 		return done("none");
 	}
-	const sg = await analyzeStored(data, p0, isTrusted);
+	const sig = sigOf(data, p0, store.override === null ? "" : JSON.stringify(store.override));
+	if (checkedBefore(data, "tighten", sig, false)) {
+		return done("none");
+	}
+	const result = await tightenSearch(data, p0, r0, q0, done, { admittedRuns, trusted, isTrusted });
+	markChecked(data, "tighten", sig);
+	return result;
+}
+
+/**
+ * Search of the tightening (`tighten`, after its conditions).
+ *
+ * @param data - Decoded data
+ * @param p0 - Values in use
+ * @param r0 - Gate result of the values in use
+ * @param q0 - Result per key of the values in use on the runs in quarantine
+ * @param done - Result
+ * @param runs - Admitted runs
+ * @param runs.admittedRuns - Admitted runs in the 30-day window
+ * @param runs.trusted - Admitted runs of the replay pick
+ * @param runs.isTrusted - Which runs the tightening may aim at
+ */
+async function tightenSearch(
+	data: Data,
+	p0: DetectionSettings,
+	r0: GateResult,
+	q0: ReadonlyMap<string, boolean>,
+	done: Done,
+	runs: { admittedRuns: number; trusted: StoredRun[]; isTrusted: (r: StoredRun) => boolean },
+): Promise<OptimizeOutcome> {
+	const { store, ctx } = data;
+	const poll = ctx.pollSec;
+	const { admittedRuns, trusted, isTrusted } = runs;
+	const sg = await data.unit("tighten:analysis", () => storedAnalysis(data, p0, isTrusted));
 	if (!sg) {
 		return done("none");
 	}
@@ -1973,7 +2431,6 @@ async function tighten(
 		const base = recipe.base === "current" ? detectionOf(p0) : analysis;
 		return shape(recipe.filter >= 0 && variants[recipe.filter] ? { ...base, ...variants[recipe.filter] } : base);
 	};
-	const analysis = fromSuggestion(sg, p0);
 	const variants = filterOptions(trusted, store, p0, withTrailer, poll);
 	const recipes: Recipe[] = [{ base: "analysis", filter: -1 }];
 	variants.forEach((_, i) => {
@@ -1981,54 +2438,62 @@ async function tighten(
 	});
 
 	// candidates that pass the gate and are never worse on any run, fastest first
-	const passing: { recipe: Recipe; c: DetectionSettings; g: GateResult; delay: number }[] = [];
+	const passing: { recipe: Recipe; c: DetectionSettings; key: string; check: CandidateCheck }[] = [];
 	const seen = new Set<string>();
 	const vetoes = new Set<string>();
 	for (const recipe of recipes) {
-		const c = build(recipe, analysis, variants);
-		const key = JSON.stringify(c);
-		if (seen.has(key) || !withinBounds(c, poll) || unguardedFilterOn(c, p0) || silentFinalOff(c, p0)) {
+		const c = build(recipe, detectionOf(sg.analysis), variants);
+		const json = JSON.stringify(c);
+		if (seen.has(json) || !withinBounds(c, poll) || unguardedFilterOn(c, p0) || silentFinalOff(c, p0)) {
 			continue;
 		}
-		seen.add(key);
-		const g = await gateOn(data, c, "none");
-		if (!g.ok || g.falseStarts > r0.falseStarts) {
-			// a candidate that passes every other run of the check set: the one run that stops it is a boundary run
-			const bad = failingOf(g);
-			if (bad.length === 1) {
-				vetoes.add(bad[0]);
-			}
-			continue;
+		seen.add(json);
+		const key = hashText(json);
+		const check = await data.unit(`tighten:gate:${key}`, () => candidateCheck(data, c, r0, q0));
+		if (check.veto !== null) {
+			vetoes.add(check.veto);
 		}
-		if (g.perRun.some((r, i) => r.delaySec > r0.perRun[i].delaySec + poll)) {
-			continue;
+		if (check.pass) {
+			passing.push({ recipe, c, key, check });
 		}
-		if (!noRegression(await quarantineOn(data, c), q0)) {
-			continue;
-		}
-		passing.push({ recipe, c, g, delay: mean(g.perRun.map(r => r.delaySec)) });
 	}
 	const extra = (): Partial<OptimizeOutcome> => ({ vetoes: [...vetoes] });
-	passing.sort((a, b) => a.delay - b.delay);
+	passing.sort((a, b) => a.check.delay - b.check.delay);
 	const families = [...new Set(trusted.map(r => r.family))];
 	const d0 = mean(r0.perRun.map(r => r.delaySec));
+	// analysis without one programme group, once per group in a job (cross-check)
+	const without = new Map<number, DetectionSettings | null>();
+	const analysisWithout = async (fam: number): Promise<DetectionSettings | null> => {
+		if (!without.has(fam)) {
+			const a = await data.unit(`tighten:without:${fam}`, () =>
+				storedAnalysis(data, p0, r => isTrusted(r) && r.family !== fam),
+			);
+			without.set(fam, a ? detectionOf(a.analysis) : null);
+		}
+		return without.get(fam) ?? null;
+	};
 	for (const cand of passing) {
-		const gain = d0 - cand.delay;
-		const fewerFalse = cand.g.falseStarts < r0.falseStarts;
+		const gain = d0 - cand.check.delay;
+		const fewerFalse = cand.check.falseStarts < r0.falseStarts;
 		if (!fewerFalse && gain < Math.max(60, 0.1 * d0)) {
 			break;
 		}
-		if (!(await crossCheck(data, p0, cand.recipe, families, sg, isTrusted, build))) {
+		if (!(await crossCheck(data, p0, cand.recipe, families, sg, isTrusted, build, analysisWithout))) {
 			continue;
 		}
-		let robust = true;
-		for (const p of ["scale09", "scale11", "shift1", "stale5"] as const) {
-			if (!(await gateOn(data, cand.c, p)).ok) {
-				robust = false;
-				break;
+		const robust = await data.unit(`tighten:robust:${cand.key}`, async () => {
+			for (const p of ["scale09", "scale11", "shift1", "stale5"] as const) {
+				if (!(await gateOn(data, cand.c, p)).ok) {
+					return false;
+				}
 			}
-		}
+			return true;
+		});
 		if (!robust) {
+			continue;
+		}
+		// a result of an earlier job: checked again against the runs stored now
+		if (data.reused && !(await candidateCheck(data, cand.c, r0, q0)).pass) {
 			continue;
 		}
 		const next = diffOf(cand.c, ctx.type);
@@ -2066,32 +2531,34 @@ async function tighten(
  * @param sg - Analysis of all trusted runs
  * @param isTrusted - Which runs are trusted
  * @param build - Builds a candidate from a recipe
+ * @param analysisWithout - Analysis without one programme group
  */
 async function crossCheck(
 	data: Data,
 	p0: DetectionSettings,
 	recipe: Recipe,
 	families: readonly number[],
-	sg: HistorySuggestion,
+	sg: StoredAnalysis,
 	isTrusted: (r: StoredRun) => boolean,
 	build: (recipe: Recipe, analysis: DetectionSettings, variants: Partial<DetectionSettings>[]) => DetectionSettings,
+	analysisWithout: (fam: number) => Promise<DetectionSettings | null>,
 ): Promise<boolean> {
 	const { store, ctx } = data;
 	if (families.length < 3) {
-		return recipe.base === "current" || sg.looDetected === undefined || sg.looDetected >= sg.runs;
+		return recipe.base === "current" || sg.looDetected === null || sg.looDetected >= sg.runs;
 	}
 	for (const fam of families) {
 		const keep = (r: StoredRun): boolean => isTrusted(r) && r.family !== fam;
 		const rest = data.runs.filter(keep);
-		const sgF = recipe.base === "analysis" ? await analyzeStored(data, p0, keep) : null;
-		if (recipe.base === "analysis" && !sgF) {
+		const aF = recipe.base === "analysis" ? await analysisWithout(fam) : null;
+		if (recipe.base === "analysis" && !aF) {
 			continue;
 		}
 		const variants =
 			recipe.filter >= 0
 				? filterOptions(rest, store, p0, rest.filter(r => r.feat.trailer).length, ctx.pollSec)
 				: [];
-		const cF = build(recipe, sgF ? fromSuggestion(sgF, p0) : detectionOf(p0), variants);
+		const cF = build(recipe, aF ?? detectionOf(p0), variants);
 		const gF = await gateOn(data, cF, "none", r => isTrusted(r) && r.family === fam);
 		if (!gF.ok) {
 			return false;

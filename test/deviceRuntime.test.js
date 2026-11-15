@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { renderHistoryHtml } from "../build/lib/historyHtml.js";
 import { washingMachine } from "./helpers/curves.js";
+import { phaseTuneBase } from "../build/lib/phases/learn.js";
 import { saveStore } from "../build/lib/runStore.js";
 import { createFakeHost } from "./helpers/fakeHost.js";
 import { syntheticRun, WM_FINAL } from "./helpers/final.js";
@@ -755,5 +756,34 @@ describe("phase outputs", function () {
 		await playPoints(ctx, pts.slice(mid));
 		assert.ok(ctx.rt.phaseRev > builds, "rebuilt after the run");
 		assert.ok(ctx.events.includes("washer:end"));
+	});
+	it("fine-tuned phase limits are used only for the phase model they belong to (Spec D.6)", async () => {
+		const ctx = runtimeSetup({ host: w08Host(), cfg: { phases: WM_PHASES } });
+		await ctx.rt.init();
+		const proposal = {
+			hash: "x",
+			bands: WM_PHASES.bands.map(b =>
+				b.id === "spin" ? { ...b, min: 140 } : b.id === "wash" ? { ...b, max: 140 } : b,
+			),
+			phases: WM_PHASES.phases.map(p => ({ id: p.id, minSec: p.minSec, maxSec: p.id === "p3" ? 120 : p.maxSec })),
+		};
+		const builds = ctx.rt.phaseRev;
+		ctx.rt.setPhaseTune({ base: phaseTuneBase(WM_PHASES), applied: proposal });
+		assert.strictEqual(ctx.rt.phases.bands.find(b => b.id === "spin").min, 140);
+		assert.strictEqual(ctx.rt.phases.phases.find(p => p.id === "p3").maxSec, 120);
+		assert.deepStrictEqual(
+			ctx.rt.phases.phases.map(p => [p.id, p.name]),
+			WM_PHASES.phases.map(p => [p.id, p.name]),
+		);
+		assert.ok(ctx.rt.phaseRev > builds, "tracker rebuilt between runs");
+		// another model of the device (learned again): the tuning does not belong to it
+		ctx.rt.updateConfig(deviceConfig({ phases: { ...WM_PHASES, bands: WM_PHASES.bands.map(b => ({ ...b })) } }));
+		assert.strictEqual(ctx.rt.phases.bands.find(b => b.id === "spin").min, 140, "same model: still tuned");
+		const other = { ...WM_PHASES, phases: WM_PHASES.phases.filter(p => p.id !== "p3") };
+		ctx.rt.updateConfig(deviceConfig({ phases: other }));
+		assert.strictEqual(ctx.rt.phases.bands.find(b => b.id === "spin").min, 150);
+		ctx.rt.updateConfig(deviceConfig({ phases: WM_PHASES }));
+		ctx.rt.setPhaseTune(null);
+		assert.deepStrictEqual(ctx.rt.phases, WM_PHASES);
 	});
 });

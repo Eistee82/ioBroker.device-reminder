@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { runActions } from "./actions.js";
 import type { DeviceConfig, InstanceConfig } from "./config.js";
 import { finalOn, finalValuesOf } from "./detector/index.js";
@@ -23,7 +24,7 @@ import type { Notifier } from "./notifier.js";
 import { ReminderScheduler } from "./reminder.js";
 import type { Capture } from "./runRecorder.js";
 import { RunRecorder } from "./runRecorder.js";
-import type { FinalState, FinalSplitPair, StoredRun, StoreFile } from "./runStore.js";
+import type { FinalState, FinalSplitPair, PhaseTuneState, StoredRun, StoreFile } from "./runStore.js";
 import {
 	addRun,
 	clearLearningData,
@@ -73,8 +74,10 @@ interface OptEntry {
 	verdicts?: ReadonlyMap<string, Verdict>;
 }
 
-/** Time budget of one optimisation job. */
+/** Time budget of one optimisation job (active computing time, Spec D.3). */
 const OPTIMIZE_BUDGET_MS = 30_000;
+/** Jobs in a row stopped by the time budget before a warning (log, card; a message only with `optimizeNotify`). */
+export const BUDGET_WARN_JOBS = 3;
 /** A device not seen for longer than this reads the history of the outage (Spec D.2). */
 const OUTAGE_MS = 60 * 60_000;
 /** Most keys of runs judged afterwards that are remembered (`FinalState.checked`). */
@@ -106,8 +109,10 @@ export interface RegistryOptions {
 	 * meanwhile (without it nothing differs).
 	 */
 	beforeOptimizeWrite?: (deviceId: string) => Promise<void>;
-	/** Time budget of one optimisation job in ms (default 30 000; for tests). */
+	/** Time budget of one optimisation job in ms (active computing time, default 30 000; for tests). */
 	budgetMs?: number;
+	/** Clock of the time budget in ms (default `performance.now`; for tests). */
+	clock?: () => number;
 	/**
 	 * Objects of the adapter: the states of a device are created again when the automatic optimisation switches its
 	 * final phase on or off (`settlingUntil`, Spec 7.1). Without it the objects are left as they are.
@@ -423,6 +428,7 @@ export class DeviceRegistry implements RuntimeListener {
 					store.lastSeenTs = this.host.now();
 				}
 				entry.runtime.setHoldBands(entry.opt?.store.bands ?? null);
+				entry.runtime.setPhaseTune(this.phaseTuneOf(entry));
 				await entry.runtime.tick();
 				if (entry.opt) {
 					const cap = entry.opt.recorder.closeIfDue(this.host.now(), entry.runtime.effective.endVal);
@@ -762,6 +768,11 @@ export class DeviceRegistry implements RuntimeListener {
 			gainSec: 0,
 		});
 		store.override = override;
+		delete store.job;
+		if (kind === "reset") {
+			delete store.phaseTune;
+			delete store.checks;
+		}
 		store.lockUntilTs = now + LOCK_MS;
 		store.lockRuns = LOCK_RUNS;
 		store.lastChangeTs = now;
@@ -769,6 +780,7 @@ export class DeviceRegistry implements RuntimeListener {
 		store.failStreak = 0;
 		store.info.status = "locked";
 		entry.runtime.setOverride(override);
+		entry.runtime.setPhaseTune(this.phaseTuneOf(entry));
 	}
 
 	/**
@@ -997,7 +1009,7 @@ export class DeviceRegistry implements RuntimeListener {
 		const eff = entry.runtime.effective;
 		const factor = store.unitFactor;
 		const now = this.host.now();
-		const layout = buildLayout(series, { keepAbove: eff.endVal * factor });
+		const layout = buildLayout(series, { keepAbove: eff.endVal * factor, maxRuns: Number.POSITIVE_INFINITY });
 		const sim = factor === 1 ? series : scaled(series, 1 / factor);
 		let runs = 0;
 		let spikes = 0;
@@ -1110,7 +1122,8 @@ export class DeviceRegistry implements RuntimeListener {
 				}),
 			now: this.host.now(),
 			budgetMs: this.opts.budgetMs ?? OPTIMIZE_BUDGET_MS,
-			clock: () => this.host.now(),
+			clock: this.opts.clock ?? (() => performance.now()),
+			...(cfg.phases?.enabled ? { phases: cfg.phases } : {}),
 			...(entry.opt?.verdicts ? { verdicts: entry.opt.verdicts } : {}),
 			finalSuspended: entry.opt?.store.final?.state === "suspended",
 			...(entry.opt ? { quality: this.qualityContext(entry.opt.store) } : {}),
@@ -1459,9 +1472,14 @@ export class DeviceRegistry implements RuntimeListener {
 		await this.saveOpt(entry);
 		await this.syncFinalObjects(deviceId, entry, wasOn);
 		await this.writeOptStates(deviceId, entry);
+		entry.runtime.setPhaseTune(this.phaseTuneOf(entry));
 		await this.reportHints(entry, outcome.hints);
 		await this.reportOutcome(entry, outcome);
 		await this.reportFinal(entry, outcome.final);
+		await this.reportPhases(entry, outcome.phases);
+		if (outcome.interrupted && store.info.budget === BUDGET_WARN_JOBS) {
+			await this.notifyOptimization(entry, TEXT.optTooSlow, { jobs: BUDGET_WARN_JOBS }, "warn");
+		}
 		if (store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
 			await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
 		}
@@ -1506,10 +1524,38 @@ export class DeviceRegistry implements RuntimeListener {
 				}
 				break;
 			case "budget":
-				this.host.log.debug(`${entry.runtime.config.name}: optimisation stopped (time budget)`);
+				this.host.log.debug(
+					`${entry.runtime.config.name}: optimisation stopped by the time budget, it goes on with the next run`,
+				);
 				break;
 			default:
 				break;
+		}
+	}
+
+	/**
+	 * Fine tuning of the phases a device uses: only with the automatic optimisation on (like the optimised values).
+	 *
+	 * @param entry - Entry
+	 */
+	private phaseTuneOf(entry: Entry): PhaseTuneState | null {
+		return this.modeOf(entry.runtime.config) === "full" ? (entry.opt?.store.phaseTune ?? null) : null;
+	}
+
+	/**
+	 * Log (and optionally send) what the phase fine tuning did (Spec D.6): new limits in use (log only), a new phase
+	 * found (hint, a message to the recipients only with `optimizeNotify`).
+	 *
+	 * @param entry - Entry
+	 * @param events - Events
+	 */
+	private async reportPhases(entry: Entry, events: OptimizeOutcome["phases"]): Promise<void> {
+		for (const ev of events) {
+			if (ev === "tuned") {
+				this.host.log.info(`${entry.runtime.config.name}: limits of the phases fine-tuned`);
+			} else {
+				await this.notifyOptimization(entry, TEXT.phaseNewPattern, {});
+			}
 		}
 	}
 
@@ -1740,9 +1786,15 @@ function mergeFork(store: StoreFile, fork: StoreFork): void {
 		const d = dst as Record<string, unknown>;
 		const s = src as Record<string, unknown>;
 		const w = was as Record<string, unknown>;
-		for (const key of Object.keys(s)) {
-			if (key !== "info" && key !== "changes" && s[key] !== w[key]) {
+		for (const key of new Set([...Object.keys(s), ...Object.keys(w)])) {
+			if (key === "info" || key === "changes" || s[key] === w[key]) {
+				continue;
+			}
+			if (key in s) {
 				d[key] = s[key];
+			} else {
+				// removed by the job (e.g. the progress of a step that is done)
+				delete d[key];
 			}
 		}
 	};

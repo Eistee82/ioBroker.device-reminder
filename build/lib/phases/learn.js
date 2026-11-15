@@ -786,4 +786,200 @@ export function learnPhases(units, ctx) {
         dropped,
     };
 }
+const TUNE_STEP = 0.15;
+function fnv(s) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, "0");
+}
+function round3(x) {
+    if (!Number.isFinite(x) || x === 0) {
+        return x;
+    }
+    const e = Math.floor(Math.log10(Math.abs(x))) - 2;
+    return e >= 0 ? Math.round(x / 10 ** e) * 10 ** e : Math.round(x * 10 ** -e) / 10 ** -e;
+}
+function stepTo(from, to) {
+    if (!(from > 0) || !Number.isFinite(to)) {
+        return from;
+    }
+    return Math.min(from * (1 + TUNE_STEP), Math.max(from * (1 - TUNE_STEP), to));
+}
+export function phaseTuneBase(model) {
+    return fnv(JSON.stringify([
+        model.scope,
+        model.bands.map(b => [b.id, b.min, b.max, b.smoothing, b.dipSec, b.windowSec]),
+        model.phases.map(p => [p.id, p.band, p.minSec, p.maxSec, p.after ?? null, p.decided, p.trigger ?? null]),
+    ]));
+}
+export function applyPhaseTune(model, p) {
+    if (!p) {
+        return model;
+    }
+    const fin = (x, keep) => (typeof x === "number" && Number.isFinite(x) ? x : keep);
+    const bands = model.bands.map(b => {
+        const t = p.bands.find(x => x.id === b.id);
+        return t ? { ...b, min: fin(t.min, b.min), max: Number.isFinite(b.max) ? fin(t.max, b.max) : b.max } : b;
+    });
+    if (bands.some((b, i) => !(b.max > b.min) || (i > 0 && b.min < bands[i - 1].max))) {
+        return model;
+    }
+    const phases = model.phases.map(ph => {
+        const t = p.phases.find(x => x.id === ph.id);
+        if (!t) {
+            return ph;
+        }
+        const out = { ...ph, minSec: fin(t.minSec, ph.minSec), maxSec: fin(t.maxSec, ph.maxSec) };
+        if (ph.trigger) {
+            out.trigger = {
+                ...ph.trigger,
+                confirmSec: fin(t.confirmSec, ph.trigger.confirmSec),
+                tailSec: fin(t.tailSec, ph.trigger.tailSec),
+            };
+        }
+        return out;
+    });
+    return { ...model, bands, phases };
+}
+function tunedBands(model, used) {
+    const out = model.bands.map(b => ({ id: b.id, min: b.min, max: b.max }));
+    if (used.length < MIN_UNITS || model.bands.length < 2) {
+        return out;
+    }
+    const raw = model.bands.some(b => b.smoothing === "debounce" || b.smoothing === "peak");
+    const learned = learnBands(used, model.bands[0].min, raw ? { mode: "raw", dipSec: DEBOUNCE_SEC } : { mode: "median60", dipSec: MEDIAN_DIP_SEC });
+    const found = learned.slice(1).map(b => b.min);
+    for (let i = 0; i + 1 < out.length; i++) {
+        const v = model.bands[i].max;
+        if (v !== model.bands[i + 1].min || !Number.isFinite(v)) {
+            continue;
+        }
+        const near = found
+            .filter(x => x >= v * (1 - TUNE_STEP) && x <= v * (1 + TUNE_STEP))
+            .sort((a, b) => Math.abs(Math.log(a / v)) - Math.abs(Math.log(b / v)))[0];
+        if (near === undefined) {
+            continue;
+        }
+        const x = round3(near);
+        if (x > out[i].min && x < out[i + 1].max) {
+            out[i].max = x;
+            out[i + 1].min = x;
+        }
+    }
+    return out;
+}
+function classLimits(a, c, durations) {
+    if (!(a.maxSec > 0) || !(c.minSec >= a.maxSec)) {
+        return null;
+    }
+    const mid = Math.sqrt(a.maxSec * c.minSec);
+    const shorter = durations.filter(d => d <= mid);
+    const longer = durations.filter(d => d > mid);
+    if (shorter.length === 0 || longer.length === 0) {
+        return null;
+    }
+    const hiA = Math.max(...shorter);
+    const loC = Math.min(...longer);
+    if (!(hiA < loC)) {
+        return null;
+    }
+    const g = Math.sqrt(hiA * loC);
+    const gap = Math.sqrt(c.minSec / a.maxSec);
+    const maxA = Math.round(stepTo(a.maxSec, Math.min(g, Math.max(hiA, g / gap))));
+    const minC = Math.round(stepTo(c.minSec, Math.max(g, Math.min(loC, g * gap))));
+    return maxA >= 1 && minC >= maxA ? [maxA, minC] : null;
+}
+function proposalOf(model, used, pollSec, holds) {
+    const bands = tunedBands(model, used);
+    const tuned = applyPhaseTune(model, { hash: "", bands, phases: [] });
+    const phases = model.phases.map(p => ({
+        id: p.id,
+        minSec: p.minSec,
+        maxSec: p.maxSec,
+        ...(p.trigger ? { confirmSec: p.trigger.confirmSec, tailSec: p.trigger.tailSec } : {}),
+    }));
+    if (used.length < MIN_UNITS) {
+        return { bands, phases };
+    }
+    const segs = bandSegments({ ...tuned, phases: [] }, used, pollSec, holds);
+    tuned.bands.forEach((b, k) => {
+        const durations = segs
+            .flat()
+            .filter(s => s.band === k && s.closed)
+            .map(s => (s.to - s.from) / 1000)
+            .filter(sec => sec > 0);
+        const own = model.phases
+            .map((p, i) => ({ p, i }))
+            .filter(x => x.p.band === b.id && !x.p.trigger && !x.p.after)
+            .sort((x, y) => x.p.minSec - y.p.minSec);
+        for (let j = 0; j + 1 < own.length; j++) {
+            const lim = classLimits(own[j].p, own[j + 1].p, durations);
+            if (lim) {
+                phases[own[j].i].maxSec = lim[0];
+                phases[own[j + 1].i].minSec = lim[1];
+            }
+        }
+        const ev = b.smoothing === "peak" ? eventOf(k, segs, used) : null;
+        const trigger = ev?.trigger;
+        if (!trigger) {
+            return;
+        }
+        const confirm = JSON.stringify(trigger.confirm.map(x => tuned.bands[x].id).sort());
+        model.phases.forEach((p, i) => {
+            if (p.band === b.id && p.trigger && JSON.stringify([...p.trigger.confirm].sort()) === confirm) {
+                phases[i].confirmSec = Math.max(1, Math.round(stepTo(p.trigger.confirmSec, trigger.confirmSec)));
+                phases[i].tailSec = Math.max(1, Math.round(stepTo(p.trigger.tailSec, trigger.tailSec)));
+            }
+        });
+    });
+    return { bands, phases };
+}
+export function tunePhases(model, units, prev, opts = {}) {
+    const pollSec = Math.max(1, opts.pollSec ?? 10);
+    const holds = opts.holds ?? [];
+    const used = units
+        .filter(u => u.sample.kind === "run" && admitted(u.verdict, "phases"))
+        .map(u => u.sample)
+        .sort((a, b) => a.facts.start - b.facts.start);
+    const body = proposalOf(model, used, pollSec, holds);
+    const proposal = { hash: fnv(JSON.stringify(body)), ...body };
+    let newPattern = false;
+    if (used.length >= MIN_UNITS) {
+        const segs = bandSegments({ ...model, phases: [] }, used, pollSec, holds);
+        newPattern = model.bands.some((b, k) => {
+            const own = model.phases.filter(p => p.band === b.id);
+            return classesOf(k, segs).some(d => d.units.size >= MIN_UNITS &&
+                !own.some(p => {
+                    const [lo, hi] = rangeOf(p);
+                    return d.hi >= lo && d.lo <= hi;
+                }));
+        });
+    }
+    const tuned = applyPhaseTune(model, proposal);
+    if (prev?.hash !== proposal.hash || phaseTuneBase(tuned) === phaseTuneBase(model)) {
+        return { model: null, proposal, newPattern };
+    }
+    const self = crossCheck(model, used.map(() => model), used, pollSec, holds);
+    const stored = model.quality?.agreement;
+    const before = {
+        agreement: typeof stored === "number" && stored > 0 && stored <= 1 ? stored : self.agreement,
+        flicker: self.flicker,
+    };
+    const folds = used.map((_, n) => applyPhaseTune(model, {
+        hash: "",
+        ...proposalOf(model, used.filter((__, i) => i !== n), pollSec, holds),
+    }));
+    const after = crossCheck(tuned, folds, used, pollSec, holds);
+    if (after.agreement + 1e-9 < before.agreement || after.flicker > Math.max(FLICKER_MAX, before.flicker)) {
+        return { model: null, proposal, newPattern };
+    }
+    return {
+        model: { ...tuned, quality: { agreement: after.agreement, runsUsed: used.length } },
+        proposal,
+        newPattern,
+    };
+}
 //# sourceMappingURL=learn.js.map

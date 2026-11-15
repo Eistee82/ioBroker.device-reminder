@@ -2,7 +2,9 @@ import { finalViolations } from "../config.js";
 import { finalOn } from "../detector/index.js";
 import { TRAILER_MAX_DEFAULT_SEC } from "../detector/trailer.js";
 import { FINAL_KEYS } from "../detector/types.js";
-import { BASE_KEYS, boundaryRuns, decisionOf, DETECTION_KEYS, detectionOf, inUse, markFinalResumed, markFinalSuspended, pushChange, refreshInfo, REPLAY_PICK_MAX, storeSamples, WINDOW_MS, } from "../runStore.js";
+import { applyPhaseTune, phaseTuneBase, tunePhases } from "../phases/learn.js";
+import { phaseHolds } from "../phases/tracker.js";
+import { BASE_KEYS, boundaryRuns, decisionOf, DETECTION_KEYS, detectionOf, inUse, markFinalResumed, markFinalSuspended, pushChange, refreshInfo, REPLAY_PICK_MAX, storeSamples, typeHash, WINDOW_MS, } from "../runStore.js";
 import { analyzeTicks } from "./analyze.js";
 import { learnFinal } from "./finalLearn.js";
 import { margin, minEndSec } from "./optimize.js";
@@ -22,6 +24,9 @@ const MODE_CHANGE_RUNS = 6;
 const FILTER_RUNS = 2;
 const SEPARATOR_MS = MAX_PAUSE_MS + 10 * 60_000;
 const YIELD_MS = 20;
+const YIELD_TICKS = 256;
+export const JOB_STEPS = ["final", "tighten", "phases"];
+export const CROSS_CHECK_SPACING_MS = 24 * 60 * 60_000;
 const HINTED_MAX = 50;
 const DATA_ERRORS = new Set(["gap", "stuck", "sparse", "incomplete", "unit", "counter"]);
 export const FINAL_ENABLE_MIN_RUNS = 10;
@@ -151,8 +156,14 @@ class Data {
     ctx;
     cells = new WeakMap();
     series = new WeakMap();
-    lastYield;
-    start;
+    activeBefore = 0;
+    resumedAt;
+    ticks = 0;
+    budgeted = false;
+    finished = 0;
+    memo = [];
+    pos = 0;
+    reused = false;
     runs;
     spikes;
     quarantined;
@@ -164,8 +175,7 @@ class Data {
     constructor(store, ctx) {
         this.store = store;
         this.ctx = ctx;
-        this.start = ctx.clock();
-        this.lastYield = this.start;
+        this.resumedAt = ctx.clock();
         const pick = replayPick(store, ctx.now, ctx.verdicts).filter(r => inUse(store, r));
         this.runs = pick.filter(r => r.label !== "spike");
         this.spikes = pick.filter(r => r.label === "spike");
@@ -261,15 +271,45 @@ class Data {
         byP.set(p, s);
         return s;
     }
+    get activeMs() {
+        return this.activeBefore + Math.max(0, this.ctx.clock() - this.resumedAt);
+    }
+    overBudget(run) {
+        return this.budgeted && this.finished > 0 && this.activeBefore + run > this.ctx.budgetMs;
+    }
     async tick() {
-        const now = this.ctx.clock();
-        if (now - this.start > this.ctx.budgetMs) {
+        const run = Math.max(0, this.ctx.clock() - this.resumedAt);
+        if (this.overBudget(run)) {
             throw new BudgetExceeded("budget");
         }
-        if (now - this.lastYield >= YIELD_MS) {
-            this.lastYield = now;
+        this.ticks++;
+        if (run >= YIELD_MS || this.ticks % YIELD_TICKS === 0) {
+            this.activeBefore += run;
             await this.ctx.yieldFn();
+            this.resumedAt = this.ctx.clock();
         }
+    }
+    beginStep(memo) {
+        this.memo = memo;
+        this.pos = 0;
+        this.reused = false;
+    }
+    async unit(key, fn) {
+        const m = this.memo[this.pos];
+        if (m && m.k === key) {
+            this.pos++;
+            this.reused = true;
+            return m.v;
+        }
+        this.memo = this.memo.slice(0, this.pos);
+        if (this.overBudget(Math.max(0, this.ctx.clock() - this.resumedAt))) {
+            throw new BudgetExceeded("budget");
+        }
+        const v = JSON.parse(JSON.stringify((await fn()) ?? null));
+        this.memo = [...this.memo, { k: key, v }];
+        this.pos++;
+        this.finished++;
+        return v;
     }
     combined(keep) {
         const items = [...this.runs.filter(keep), ...this.spikes].sort((a, b) => a.ts - b.ts);
@@ -679,6 +719,7 @@ export async function optimize(store, ctx) {
     const data = new Data(store, ctx);
     let hints = [];
     const events = [];
+    const phaseEvents = [];
     const vetoes = [];
     const build = (kind, change = null, extra = {}) => ({
         kind,
@@ -690,6 +731,9 @@ export async function optimize(store, ctx) {
         vetoClear: [],
         hints,
         final: events,
+        phases: phaseEvents,
+        interrupted: false,
+        activeMs: 0,
         ...extra,
     });
     const finish = (o) => {
@@ -705,12 +749,16 @@ export async function optimize(store, ctx) {
         if ((info.review?.length ?? 0) > 0 && (info.status === "ok" || info.status === "collecting")) {
             info.status = "review";
         }
+        const activeMs = Math.round(data.activeMs);
+        info.jobMs = activeMs;
         return {
             ...o,
             override: store.override,
             hints,
             final: events,
+            phases: phaseEvents,
             vetoes: [...new Set([...vetoes, ...o.vetoes])],
+            activeMs,
         };
     };
     if (data.runs.length === 0 && data.spikes.length === 0 && data.quarantined.length === 0) {
@@ -721,57 +769,197 @@ export async function optimize(store, ctx) {
         return finish(build("none"));
     }
     const p0 = effectiveOf(ctx.type, store.override);
-    try {
-        let r0 = await gateOn(data, p0, "none");
-        let q0 = await quarantineOn(data, p0);
-        let failing = failingOf(r0);
-        if (failing.length > 0 && finalOn(p0) && !data.suspended) {
-            const off = await gateOn(data, { ...p0, finalMinVal: 0 }, "none");
-            const okOff = new Set(off.perRun.filter(r => r.ok).map(r => r.key));
-            const byFinal = failing.filter(k => okOff.has(k) ||
-                r0.joined.some(j => j.key === k) ||
-                (r0.spikeKeys.includes(k) && !off.spikeKeys.includes(k)));
-            if (byFinal.length > 0) {
-                const key = newestOf(data, byFinal);
-                markFinalSuspended(store, "earlyEnd", key, ctx.now, true);
-                data.suspended = true;
-                events.push({ kind: "suspended", reason: "earlyEnd", key });
-                vetoes.push(...byFinal);
-                r0 = off;
-                q0 = await quarantineOn(data, p0);
-                failing = failingOf(off);
-            }
+    let r0 = await gateOn(data, p0, "none");
+    let q0 = await quarantineOn(data, p0);
+    let failing = failingOf(r0);
+    if (failing.length > 0 && finalOn(p0) && !data.suspended) {
+        const off = await gateOn(data, { ...p0, finalMinVal: 0 }, "none");
+        const okOff = new Set(off.perRun.filter(r => r.ok).map(r => r.key));
+        const byFinal = failing.filter(k => okOff.has(k) ||
+            r0.joined.some(j => j.key === k) ||
+            (r0.spikeKeys.includes(k) && !off.spikeKeys.includes(k)));
+        if (byFinal.length > 0) {
+            const key = newestOf(data, byFinal);
+            markFinalSuspended(store, "earlyEnd", key, ctx.now, true);
+            data.suspended = true;
+            events.push({ kind: "suspended", reason: "earlyEnd", key });
+            vetoes.push(...byFinal);
+            r0 = off;
+            q0 = await quarantineOn(data, p0);
+            failing = failingOf(off);
         }
-        hints = hintsOf(data, q0);
-        let out = null;
-        if (failing.length > 0) {
-            out = await repair(data, p0, r0, q0, failing, build);
+    }
+    hints = hintsOf(data, q0);
+    let out = null;
+    if (failing.length > 0) {
+        out = await repair(data, p0, r0, q0, failing, build);
+    }
+    else {
+        store.failStreak = 0;
+    }
+    if (data.suspended) {
+        await recoverFinal(data, q0, events, vetoes);
+    }
+    if (!out) {
+        if (info.status === "drift") {
+            info.budget = 0;
+            out = build("drift");
         }
         else {
-            store.failStreak = 0;
+            out = await expensiveSteps(data, { p0, r0, q0 }, events, phaseEvents, build);
         }
-        const drift = info.status === "drift";
-        if (data.suspended) {
-            await recoverFinal(data, q0, events, vetoes);
-        }
-        else if (!out && !drift) {
-            const change = await finalStep(data, p0, r0, q0, events);
-            if (change) {
-                out = build("none", change);
+    }
+    return finish(out);
+}
+function hashText(text) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, "0");
+}
+function basisOf(data, p) {
+    const { store, ctx } = data;
+    return `${typeHash(p)}|${data.suspended ? 1 : 0}|${ctx.pollSec}|${store.unitFactor}|${store.step}`;
+}
+function sigOf(data, p, extra = "") {
+    const keys = (runs) => runs.map(r => r.key);
+    return hashText(JSON.stringify([
+        basisOf(data, p),
+        keys(data.target),
+        keys(data.runs),
+        keys(data.spikes),
+        keys(data.quarantined),
+        data.joined.map(j => j.key),
+        extra,
+    ]));
+}
+function checkedBefore(data, step, sig, daily) {
+    const c = data.store.checks?.[step];
+    return c !== undefined && (c.sig === sig || (daily && data.ctx.now - c.ts < CROSS_CHECK_SPACING_MS));
+}
+function markChecked(data, step, sig) {
+    data.store.checks = { ...data.store.checks, [step]: { ts: data.ctx.now, sig } };
+}
+function plainStatus(data) {
+    const { store, ctx } = data;
+    if (store.lockRuns > 0 || ctx.now < store.lockUntilTs) {
+        return "locked";
+    }
+    return data.target.filter(trustedOf(data)).length >= TIGHTEN_MIN_RUNS ? "ok" : "collecting";
+}
+async function expensiveSteps(data, st, events, phaseEvents, build) {
+    const { store, ctx } = data;
+    const job = store.job;
+    const at = job ? JOB_STEPS.indexOf(job.step) : -1;
+    const startedTs = job && at >= 0 ? job.startedTs : ctx.now;
+    let change = null;
+    let tightened = null;
+    const vetoes = [];
+    const vetoClear = [];
+    const result = (kind) => tightened ?? build(kind, change, { vetoes, vetoClear });
+    data.budgeted = true;
+    try {
+        for (let i = Math.max(0, at); i < JOB_STEPS.length; i++) {
+            const step = JOB_STEPS[i];
+            const basis = basisOf(data, st.p0);
+            data.beginStep(i === at && job?.basis === basis ? (job.memo ?? []) : []);
+            try {
+                if (step === "final") {
+                    change = (await finalStep(data, st, events)) ?? change;
+                }
+                else if (step === "tighten") {
+                    const t = await tighten(data, st.p0, st.r0, st.q0, build);
+                    vetoes.push(...t.vetoes);
+                    vetoClear.push(...t.vetoClear);
+                    if (t.kind === "tighten") {
+                        tightened = { ...t, vetoes, vetoClear };
+                    }
+                }
+                else {
+                    phaseEvents.push(...(await phaseStep(data)));
+                }
+            }
+            catch (err) {
+                if (!(err instanceof BudgetExceeded)) {
+                    throw err;
+                }
+                store.job = { step, cursor: data.memo.length, startedTs, basis, memo: data.memo };
+                store.info.status = "budget";
+                store.info.budget = (store.info.budget ?? 0) + 1;
+                return { ...result(change ? "none" : "budget"), interrupted: true };
             }
         }
-        if (!out) {
-            out = drift ? build("drift") : await tighten(data, p0, r0, q0, build);
-        }
-        return finish(out);
     }
-    catch (err) {
-        if (err instanceof BudgetExceeded) {
-            info.status = "budget";
-            return finish(build("budget"));
-        }
-        throw err;
+    finally {
+        data.budgeted = false;
     }
+    delete store.job;
+    store.info.budget = 0;
+    if (store.info.status === "budget") {
+        store.info.status = plainStatus(data);
+    }
+    return result("none");
+}
+async function phaseStep(data) {
+    const { store, ctx } = data;
+    const model = ctx.phases;
+    if (!model?.enabled || !ctx.quality) {
+        return [];
+    }
+    const quality = ctx.quality;
+    const base = phaseTuneBase(model);
+    const tune = store.phaseTune?.base === base ? store.phaseTune : undefined;
+    const tuned = applyPhaseTune(model, tune?.applied);
+    const current = tune?.applied && typeof tune.agreement === "number"
+        ? { ...tuned, quality: { ...tuned.quality, agreement: tune.agreement } }
+        : tuned;
+    const sig = sigOf(data, ctx.type, `${base}|${tune?.applied?.hash ?? ""}`);
+    if (checkedBefore(data, "phases", sig, true)) {
+        return [];
+    }
+    const res = await data.unit("phases:tune", async () => {
+        const keys = new Set(data.target.map(r => r.key));
+        const units = storeSamples(store, quality)
+            .filter(x => keys.has(x.run.key) && inUse(store, x.run))
+            .map(x => ({ sample: x.sample, verdict: x.verdict }));
+        await data.tick();
+        const r = tunePhases(current, units, tune?.last ?? null, {
+            pollSec: ctx.pollSec,
+            holds: phaseHolds(current, store.bands ?? null) ?? [],
+        });
+        return {
+            proposal: r.proposal,
+            apply: r.model !== null,
+            agreement: r.model?.quality.agreement ?? null,
+            newPattern: r.newPattern,
+        };
+    });
+    const out = [];
+    const next = { base, last: res.proposal };
+    if (res.apply) {
+        next.applied = res.proposal;
+        if (res.agreement !== null) {
+            next.agreement = res.agreement;
+        }
+        out.push("tuned");
+    }
+    else if (tune?.applied) {
+        next.applied = tune.applied;
+        if (tune.agreement !== undefined) {
+            next.agreement = tune.agreement;
+        }
+    }
+    if (res.newPattern) {
+        next.newPattern = true;
+        if (tune?.newPattern !== true) {
+            out.push("newPattern");
+        }
+    }
+    store.phaseTune = next;
+    markChecked(data, "phases", sig);
+    return out;
 }
 function newestOf(data, keys) {
     const byKey = new Map([...data.store.runs, ...data.store.spikes].map(r => [r.key, r]));
@@ -815,20 +1003,33 @@ async function learnedFinal(data, p) {
     });
     return learned.ok ? learned : null;
 }
-async function finalStep(data, p0, r0, q0, events) {
+async function finalStep(data, st, events) {
     const { store, ctx } = data;
+    const p0 = st.p0;
     const admittedRuns = data.target.filter(trustedOf(data)).length;
     const on = finalOn(p0);
     const allowed = on
         ? tightenAllowed(store, admittedRuns, ctx.now) && admittedRuns >= FINAL_ENABLE_MIN_RUNS
         : store.lockRuns <= 0 && ctx.now >= store.lockUntilTs && admittedRuns >= FINAL_ENABLE_MIN_RUNS;
-    if (!allowed) {
+    if (!allowed || !ctx.quality || !store.bands || store.bands.bands.length === 0) {
         return null;
     }
-    const learned = await learnedFinal(data, p0);
-    if (!learned) {
+    const sig = sigOf(data, p0);
+    if (checkedBefore(data, "final", sig, true)) {
         return null;
     }
+    const learned = await data.unit("final:learn", async () => {
+        const l = await learnedFinal(data, p0);
+        return l ? { values: l.values, covered: l.covered } : null;
+    });
+    const change = learned ? await finalApply(data, st, learned, events) : null;
+    markChecked(data, "final", sig);
+    return change;
+}
+async function finalApply(data, st, learned, events) {
+    const { store, ctx } = data;
+    const { p0, r0, q0 } = st;
+    const on = finalOn(p0);
     const values = on ? stepLimitFinal(learned.values, p0, learned.covered) : learned.values;
     if (!values) {
         return null;
@@ -846,11 +1047,15 @@ async function finalStep(data, p0, r0, q0, events) {
     if (g.perRun.some((r, i) => r.delaySec > (r0.perRun[i]?.delaySec ?? Number.POSITIVE_INFINITY) + ctx.pollSec)) {
         return null;
     }
-    if (!noRegression(await quarantineOn(data, c), q0)) {
+    const q = await quarantineOn(data, c);
+    if (!noRegression(q, q0)) {
         return null;
     }
     const before = store.override;
     store.override = diffOf(c, ctx.type);
+    st.p0 = c;
+    st.r0 = g;
+    st.q0 = q;
     const change = {
         ts: ctx.now,
         kind: on ? "finalTune" : "finalOn",
@@ -1114,9 +1319,31 @@ function filterOptions(runs, store, p0, withTrailer, pollSec) {
 function unguardedFilterOn(c, p0) {
     return (p0.trailerBurstSec ?? 0) <= 0 && (c.trailerBurstSec ?? 0) > 0 && (c.trailerBlockVal ?? 0) <= 0;
 }
+async function storedAnalysis(data, p0, keep) {
+    const sg = await analyzeStored(data, p0, keep);
+    return sg
+        ? {
+            analysis: fromSuggestion(sg, p0),
+            trailer: sg.trailer ?? "none",
+            looDetected: sg.looDetected ?? null,
+            runs: sg.runs,
+        }
+        : null;
+}
+async function candidateCheck(data, c, r0, q0) {
+    const poll = data.ctx.pollSec;
+    const g = await gateOn(data, c, "none");
+    const delay = mean(g.perRun.map(r => r.delaySec));
+    if (!g.ok || g.falseStarts > r0.falseStarts) {
+        const bad = failingOf(g);
+        return { pass: false, veto: bad.length === 1 ? bad[0] : null, falseStarts: g.falseStarts, delay };
+    }
+    const later = g.perRun.some((r, i) => r.delaySec > (r0.perRun[i]?.delaySec ?? Number.POSITIVE_INFINITY) + poll);
+    const pass = !later && noRegression(await quarantineOn(data, c), q0);
+    return { pass, veto: null, falseStarts: g.falseStarts, delay };
+}
 async function tighten(data, p0, r0, q0, done) {
     const { store, ctx } = data;
-    const poll = ctx.pollSec;
     const target = new Set(data.target);
     const isTrusted = (r) => r.label === "run" && !r.postTruncated && !data.merged.has(r.key) && target.has(r);
     const admittedRuns = data.target.filter(isTrusted).length;
@@ -1132,7 +1359,19 @@ async function tighten(data, p0, r0, q0, done) {
         (store.lastChangeTs > 0 && ctx.now - store.lastChangeTs < TIGHTEN_SPACING_MS)) {
         return done("none");
     }
-    const sg = await analyzeStored(data, p0, isTrusted);
+    const sig = sigOf(data, p0, store.override === null ? "" : JSON.stringify(store.override));
+    if (checkedBefore(data, "tighten", sig, false)) {
+        return done("none");
+    }
+    const result = await tightenSearch(data, p0, r0, q0, done, { admittedRuns, trusted, isTrusted });
+    markChecked(data, "tighten", sig);
+    return result;
+}
+async function tightenSearch(data, p0, r0, q0, done, runs) {
+    const { store, ctx } = data;
+    const poll = ctx.pollSec;
+    const { admittedRuns, trusted, isTrusted } = runs;
+    const sg = await data.unit("tighten:analysis", () => storedAnalysis(data, p0, isTrusted));
     if (!sg) {
         return done("none");
     }
@@ -1143,7 +1382,6 @@ async function tighten(data, p0, r0, q0, done) {
         const base = recipe.base === "current" ? detectionOf(p0) : analysis;
         return shape(recipe.filter >= 0 && variants[recipe.filter] ? { ...base, ...variants[recipe.filter] } : base);
     };
-    const analysis = fromSuggestion(sg, p0);
     const variants = filterOptions(trusted, store, p0, withTrailer, poll);
     const recipes = [{ base: "analysis", filter: -1 }];
     variants.forEach((_, i) => {
@@ -1153,49 +1391,54 @@ async function tighten(data, p0, r0, q0, done) {
     const seen = new Set();
     const vetoes = new Set();
     for (const recipe of recipes) {
-        const c = build(recipe, analysis, variants);
-        const key = JSON.stringify(c);
-        if (seen.has(key) || !withinBounds(c, poll) || unguardedFilterOn(c, p0) || silentFinalOff(c, p0)) {
+        const c = build(recipe, detectionOf(sg.analysis), variants);
+        const json = JSON.stringify(c);
+        if (seen.has(json) || !withinBounds(c, poll) || unguardedFilterOn(c, p0) || silentFinalOff(c, p0)) {
             continue;
         }
-        seen.add(key);
-        const g = await gateOn(data, c, "none");
-        if (!g.ok || g.falseStarts > r0.falseStarts) {
-            const bad = failingOf(g);
-            if (bad.length === 1) {
-                vetoes.add(bad[0]);
-            }
-            continue;
+        seen.add(json);
+        const key = hashText(json);
+        const check = await data.unit(`tighten:gate:${key}`, () => candidateCheck(data, c, r0, q0));
+        if (check.veto !== null) {
+            vetoes.add(check.veto);
         }
-        if (g.perRun.some((r, i) => r.delaySec > r0.perRun[i].delaySec + poll)) {
-            continue;
+        if (check.pass) {
+            passing.push({ recipe, c, key, check });
         }
-        if (!noRegression(await quarantineOn(data, c), q0)) {
-            continue;
-        }
-        passing.push({ recipe, c, g, delay: mean(g.perRun.map(r => r.delaySec)) });
     }
     const extra = () => ({ vetoes: [...vetoes] });
-    passing.sort((a, b) => a.delay - b.delay);
+    passing.sort((a, b) => a.check.delay - b.check.delay);
     const families = [...new Set(trusted.map(r => r.family))];
     const d0 = mean(r0.perRun.map(r => r.delaySec));
+    const without = new Map();
+    const analysisWithout = async (fam) => {
+        if (!without.has(fam)) {
+            const a = await data.unit(`tighten:without:${fam}`, () => storedAnalysis(data, p0, r => isTrusted(r) && r.family !== fam));
+            without.set(fam, a ? detectionOf(a.analysis) : null);
+        }
+        return without.get(fam) ?? null;
+    };
     for (const cand of passing) {
-        const gain = d0 - cand.delay;
-        const fewerFalse = cand.g.falseStarts < r0.falseStarts;
+        const gain = d0 - cand.check.delay;
+        const fewerFalse = cand.check.falseStarts < r0.falseStarts;
         if (!fewerFalse && gain < Math.max(60, 0.1 * d0)) {
             break;
         }
-        if (!(await crossCheck(data, p0, cand.recipe, families, sg, isTrusted, build))) {
+        if (!(await crossCheck(data, p0, cand.recipe, families, sg, isTrusted, build, analysisWithout))) {
             continue;
         }
-        let robust = true;
-        for (const p of ["scale09", "scale11", "shift1", "stale5"]) {
-            if (!(await gateOn(data, cand.c, p)).ok) {
-                robust = false;
-                break;
+        const robust = await data.unit(`tighten:robust:${cand.key}`, async () => {
+            for (const p of ["scale09", "scale11", "shift1", "stale5"]) {
+                if (!(await gateOn(data, cand.c, p)).ok) {
+                    return false;
+                }
             }
-        }
+            return true;
+        });
         if (!robust) {
+            continue;
+        }
+        if (data.reused && !(await candidateCheck(data, cand.c, r0, q0)).pass) {
             continue;
         }
         const next = diffOf(cand.c, ctx.type);
@@ -1221,22 +1464,22 @@ async function tighten(data, p0, r0, q0, done) {
     }
     return done("none", null, extra());
 }
-async function crossCheck(data, p0, recipe, families, sg, isTrusted, build) {
+async function crossCheck(data, p0, recipe, families, sg, isTrusted, build, analysisWithout) {
     const { store, ctx } = data;
     if (families.length < 3) {
-        return recipe.base === "current" || sg.looDetected === undefined || sg.looDetected >= sg.runs;
+        return recipe.base === "current" || sg.looDetected === null || sg.looDetected >= sg.runs;
     }
     for (const fam of families) {
         const keep = (r) => isTrusted(r) && r.family !== fam;
         const rest = data.runs.filter(keep);
-        const sgF = recipe.base === "analysis" ? await analyzeStored(data, p0, keep) : null;
-        if (recipe.base === "analysis" && !sgF) {
+        const aF = recipe.base === "analysis" ? await analysisWithout(fam) : null;
+        if (recipe.base === "analysis" && !aF) {
             continue;
         }
         const variants = recipe.filter >= 0
             ? filterOptions(rest, store, p0, rest.filter(r => r.feat.trailer).length, ctx.pollSec)
             : [];
-        const cF = build(recipe, sgF ? fromSuggestion(sgF, p0) : detectionOf(p0), variants);
+        const cF = build(recipe, aF ?? detectionOf(p0), variants);
         const gF = await gateOn(data, cF, "none", r => isTrusted(r) && r.family === fam);
         if (!gF.ok) {
             return false;

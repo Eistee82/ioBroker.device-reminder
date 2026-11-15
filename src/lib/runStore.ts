@@ -21,6 +21,7 @@ import {
 } from "./learn/runs.js";
 import type { TickCell, TickSeries } from "./learn/ticks.js";
 import { decodeCells, encodeCells, fromCells, quantOf } from "./learn/ticks.js";
+import type { PhaseTuneProposal } from "./phases/learn.js";
 import type { Capture, CaptureEntry } from "./runRecorder.js";
 import { errorMessage } from "./utils.js";
 
@@ -314,6 +315,45 @@ export function markFinalResumed(store: StoreFile, why: string, now: number, on:
 	});
 }
 
+/** Expensive step of an optimisation job (Spec D.3 budget). */
+export type JobStep = "tighten" | "final" | "phases";
+
+/** Result of a finished unit of an expensive step (key and JSON value). */
+export interface JobUnit {
+	/** Key of the unit. */
+	k: string;
+	/** Result. */
+	v: unknown;
+}
+
+/** Progress of an expensive step stopped by the time budget. */
+export interface JobProgress {
+	/** Step that goes on (the steps before it in `JOB_STEPS` are done in this round). */
+	step: JobStep;
+	/** Finished units of the step. */
+	cursor: number;
+	/** Time the round of the steps began. */
+	startedTs: number;
+	/** Hash of the values the step works with: other values start it again. */
+	basis?: string;
+	/** Results of the finished units. */
+	memo?: JobUnit[];
+}
+
+/** Fine tuning of the phases in the store (Spec D.6). */
+export interface PhaseTuneState {
+	/** `phaseTuneBase` of the phase model of the device it belongs to (another model drops it). */
+	base: string;
+	/** Proposal of the last check (hysteresis: taken over when the next one is equal). */
+	last?: PhaseTuneProposal;
+	/** Limits in use (absolute values), if the tuning was taken over. */
+	applied?: PhaseTuneProposal;
+	/** Agreement of the cross-check of the limits in use. */
+	agreement?: number;
+	/** A new phase was found (the hint is given once). */
+	newPattern?: boolean;
+}
+
 /** Learning data of one device. */
 export interface StoreFile {
 	/** Format version. */
@@ -364,12 +404,17 @@ export interface StoreFile {
 	tail?: StoreTail;
 	/** Final phase. */
 	final?: FinalState;
-	/** Last check of the phases. */
-	phaseCheck?: { lastTs: number; runs: number };
+	/**
+	 * Last completed search of an expensive step (time and signature of its input): the same input is not searched
+	 * again, a cross-check (final phase, phases) at most once a day and only with new admitted runs (Spec D.3).
+	 */
+	checks?: Partial<Record<JobStep, { ts: number; sig: string }>>;
+	/** Fine tuning of the phases (Spec D.6). */
+	phaseTune?: PhaseTuneState;
 	/** Envelope of a store before V5, frozen at the first load: the envelope is never narrower. */
 	legacyEnvelope?: Envelope;
-	/** Progress of an expensive step of the optimisation. */
-	job?: { step: "tighten" | "final" | "phases"; cursor: number; startedTs: number };
+	/** Progress of an expensive step of the optimisation stopped by the time budget (Spec D.3). */
+	job?: JobProgress;
 	/** Revision of the layout of the stored runs. */
 	layoutRev?: number;
 	/** Time of the last poll (for an outage of more than an hour). */

@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { runActions } from "./actions.js";
 import { finalOn, finalValuesOf } from "./detector/index.js";
 import { ensureDeviceObjects } from "./deviceObjects.js";
@@ -16,6 +17,7 @@ import { RunRecorder } from "./runRecorder.js";
 import { addRun, clearLearningData, convertRuns, decisionOf, detectionOf, emptyStore, finalSplitPairs, fitSize, joinedCapture, labelCapture, loadStore, markFinalResumed, markFinalSuspended, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, splitCapture, storeSamples, typeHash, upgradeStore, WINDOW_MS, } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 const OPTIMIZE_BUDGET_MS = 30_000;
+export const BUDGET_WARN_JOBS = 3;
 const OUTAGE_MS = 60 * 60_000;
 const CHECKED_MAX = 20;
 const UNDOABLE = new Set(["repair", "tighten", "finalOn", "finalRepair", "finalTune"]);
@@ -244,6 +246,7 @@ export class DeviceRegistry {
                     store.lastSeenTs = this.host.now();
                 }
                 entry.runtime.setHoldBands(entry.opt?.store.bands ?? null);
+                entry.runtime.setPhaseTune(this.phaseTuneOf(entry));
                 await entry.runtime.tick();
                 if (entry.opt) {
                     const cap = entry.opt.recorder.closeIfDue(this.host.now(), entry.runtime.effective.endVal);
@@ -477,6 +480,11 @@ export class DeviceRegistry {
             gainSec: 0,
         });
         store.override = override;
+        delete store.job;
+        if (kind === "reset") {
+            delete store.phaseTune;
+            delete store.checks;
+        }
         store.lockUntilTs = now + LOCK_MS;
         store.lockRuns = LOCK_RUNS;
         store.lastChangeTs = now;
@@ -484,6 +492,7 @@ export class DeviceRegistry {
         store.failStreak = 0;
         store.info.status = "locked";
         entry.runtime.setOverride(override);
+        entry.runtime.setPhaseTune(this.phaseTuneOf(entry));
     }
     async unitFactorOf(powerId) {
         try {
@@ -659,7 +668,7 @@ export class DeviceRegistry {
         const eff = entry.runtime.effective;
         const factor = store.unitFactor;
         const now = this.host.now();
-        const layout = buildLayout(series, { keepAbove: eff.endVal * factor });
+        const layout = buildLayout(series, { keepAbove: eff.endVal * factor, maxRuns: Number.POSITIVE_INFINITY });
         const sim = factor === 1 ? series : scaled(series, 1 / factor);
         let runs = 0;
         let spikes = 0;
@@ -752,7 +761,8 @@ export class DeviceRegistry {
             }),
             now: this.host.now(),
             budgetMs: this.opts.budgetMs ?? OPTIMIZE_BUDGET_MS,
-            clock: () => this.host.now(),
+            clock: this.opts.clock ?? (() => performance.now()),
+            ...(cfg.phases?.enabled ? { phases: cfg.phases } : {}),
             ...(entry.opt?.verdicts ? { verdicts: entry.opt.verdicts } : {}),
             finalSuspended: entry.opt?.store.final?.state === "suspended",
             ...(entry.opt ? { quality: this.qualityContext(entry.opt.store) } : {}),
@@ -979,9 +989,14 @@ export class DeviceRegistry {
         await this.saveOpt(entry);
         await this.syncFinalObjects(deviceId, entry, wasOn);
         await this.writeOptStates(deviceId, entry);
+        entry.runtime.setPhaseTune(this.phaseTuneOf(entry));
         await this.reportHints(entry, outcome.hints);
         await this.reportOutcome(entry, outcome);
         await this.reportFinal(entry, outcome.final);
+        await this.reportPhases(entry, outcome.phases);
+        if (outcome.interrupted && store.info.budget === BUDGET_WARN_JOBS) {
+            await this.notifyOptimization(entry, TEXT.optTooSlow, { jobs: BUDGET_WARN_JOBS }, "warn");
+        }
         if (store.info.trailer === "notSeparable" && trailerBefore !== "notSeparable") {
             await this.notifyOptimization(entry, TEXT.antiCreaseNotSeparable, {});
         }
@@ -1017,10 +1032,23 @@ export class DeviceRegistry {
                 }
                 break;
             case "budget":
-                this.host.log.debug(`${entry.runtime.config.name}: optimisation stopped (time budget)`);
+                this.host.log.debug(`${entry.runtime.config.name}: optimisation stopped by the time budget, it goes on with the next run`);
                 break;
             default:
                 break;
+        }
+    }
+    phaseTuneOf(entry) {
+        return this.modeOf(entry.runtime.config) === "full" ? (entry.opt?.store.phaseTune ?? null) : null;
+    }
+    async reportPhases(entry, events) {
+        for (const ev of events) {
+            if (ev === "tuned") {
+                this.host.log.info(`${entry.runtime.config.name}: limits of the phases fine-tuned`);
+            }
+            else {
+                await this.notifyOptimization(entry, TEXT.phaseNewPattern, {});
+            }
         }
     }
     async reportFinal(entry, events) {
@@ -1147,9 +1175,15 @@ function mergeFork(store, fork) {
         const d = dst;
         const s = src;
         const w = was;
-        for (const key of Object.keys(s)) {
-            if (key !== "info" && key !== "changes" && s[key] !== w[key]) {
+        for (const key of new Set([...Object.keys(s), ...Object.keys(w)])) {
+            if (key === "info" || key === "changes" || s[key] === w[key]) {
+                continue;
+            }
+            if (key in s) {
                 d[key] = s[key];
+            }
+            else {
+                delete d[key];
             }
         }
     };

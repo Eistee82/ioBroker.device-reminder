@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { learnPhases, scopeOf } from "../build/lib/phases/learn.js";
+import { learnPhases, scopeOf, tunePhases } from "../build/lib/phases/learn.js";
 import { checkRuns, daySamples } from "../build/lib/learn/quality.js";
 import { baseBandsOf } from "../build/lib/learn/bands.js";
 import { replayPhases } from "../build/lib/phases/tracker.js";
@@ -245,5 +245,43 @@ describe("learn phases (Spec B.5)", function () {
 			live.some(x => x.id === "peak"),
 			"the band name instead",
 		);
+	});
+	it("phase tuning needs two equal proposals, keeps ids and never adds or removes phases (D.6)", () => {
+		const { units } = phaseInput(W);
+		const first = tunePhases(WM_PHASES, units, null);
+		assert.strictEqual(first.model, null);
+		const second = tunePhases(WM_PHASES, units, first.proposal);
+		const m = second.model ?? WM_PHASES;
+		assert.deepStrictEqual(
+			m.phases.map(p => [p.id, p.name]),
+			WM_PHASES.phases.map(p => [p.id, p.name]),
+		);
+		for (const b of m.bands) {
+			const o = WM_PHASES.bands.find(x => x.id === b.id);
+			assert.ok(b.min >= o.min * 0.85 - 1e-9 && b.min <= o.min * 1.15 + 1e-9, b.id);
+		}
+		const other = tunePhases(WM_PHASES, units.slice(0, 6), first.proposal);
+		assert.ok(other.proposal.hash === first.proposal.hash || other.model === null);
+	});
+	it("phase tuning: boiler limits taken over after two equal proposals, a class without a phase is a new pattern", () => {
+		const { units } = phaseInput(B);
+		const first = tunePhases(BOILER_PHASES, units, null, { pollSec: 2 });
+		assert.strictEqual(first.model, null, "seen once");
+		assert.strictEqual(first.newPattern, false, "every class of the model has its phase");
+		const second = tunePhases(BOILER_PHASES, units, first.proposal, { pollSec: 2 });
+		assert.ok(second.model, "the second equal proposal is taken over");
+		assert.deepStrictEqual(
+			second.model.phases.map(p => [p.id, p.name, p.band]),
+			BOILER_PHASES.phases.map(p => [p.id, p.name, p.band]),
+		);
+		const q4 = second.model.phases.find(p => p.id === "q4").trigger;
+		const o4 = BOILER_PHASES.phases.find(p => p.id === "q4").trigger;
+		assert.ok(Math.abs(q4.tailSec - o4.tailSec) <= 0.15 * o4.tailSec + 1, "small steps");
+		assert.ok(second.model.quality.agreement >= 0.99, "the cross-check agrees no less than before");
+		// the washer model without its final spin: the long spins fit no phase
+		const { units: wu } = phaseInput(W);
+		const noFinal = { ...WM_PHASES, phases: WM_PHASES.phases.filter(p => p.id !== "p4") };
+		assert.strictEqual(tunePhases(noFinal, wu, null).newPattern, true);
+		assert.strictEqual(tunePhases(WM_PHASES, wu, null).newPattern, false);
 	});
 });

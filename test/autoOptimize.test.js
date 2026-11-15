@@ -603,9 +603,13 @@ describe("automatic optimisation engine", function () {
 		assert.strictEqual(out.kind, "tighten", JSON.stringify(out.info));
 		const gaps = [t0, ...yields, Date.now()].map((t, i, a) => (i === 0 ? 0 : t - a[i - 1]));
 		assert.ok(Math.max(...gaps) < 50 * slow, `longest stretch without yield ${Math.max(...gaps)} ms`);
-		// a tiny budget stops the job without a change
-		const budget = await optimizeShared(store, { ...ctxOf(now + 60 * DAY), budgetMs: -1 });
+		// a tiny budget stops the expensive steps without a change (the tightening may run again)
+		store.newSinceChange = 20;
+		const override = structuredClone(store.override);
+		const budget = await optimizeShared(store, { ...ctxOf(now + 31 * DAY + 3_600_000), budgetMs: -1 });
 		assert.strictEqual(budget.kind, "budget");
+		assert.deepStrictEqual(store.override, override);
+		assert.strictEqual(store.job?.step, "tighten");
 	});
 });
 
