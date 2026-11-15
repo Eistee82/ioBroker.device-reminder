@@ -361,7 +361,10 @@ describe("learning from the history", () => {
 		const ms = Date.now() - t0;
 		assert.ok(!("error" in s), JSON.stringify(s));
 		assert.strictEqual(s.runs, 20);
-		assert.ok(ms < 3000, `${ms} ms`);
+		// the limit holds for an uninstrumented run (about 0.6 s with the trailer variants of the dryer);
+		// the coverage instrumentation makes it ~3x slower and shared CI runners add more (3.3 s measured)
+		const slow = process.env.NODE_V8_COVERAGE ? 8 : 1;
+		assert.ok(ms < 3000 * slow, `${ms} ms`);
 		assert.ok(yields >= 10, `${yields} yields`);
 		assert.ok(progress.every((f, i) => i === 0 || f >= progress[i - 1]));
 		assert.strictEqual(progress.at(-1), 1);
