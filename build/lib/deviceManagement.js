@@ -1404,7 +1404,7 @@ export function buildOptimizationView(store, check, type, effective, active, ver
             const verdict = verdicts?.get(r.key);
             const found = verdict && verdict.reasons.length > 0 ? checkText(verdict) : "";
             const b = boundary.get(r.key);
-            const limits = (b?.limits ?? []).map(l => `${l.quantity} ${Math.round(l.value * 10) / 10} (${tr("dm_optWithout")} ${Math.round(l.without * 10) / 10})`);
+            const limits = (b?.limits ?? []).map(l => `${tr(`dm_optLimit_${l.quantity}`)} ${Math.round(l.value * 10) / 10} (${tr("dm_optWithout")} ${Math.round(l.without * 10) / 10})`);
             if (b?.veto) {
                 limits.push(tr("dm_optVeto"));
             }

@@ -1964,7 +1964,7 @@ export function buildOptimizationView(
 			const b = boundary.get(r.key);
 			const limits = (b?.limits ?? []).map(
 				l =>
-					`${l.quantity} ${Math.round(l.value * 10) / 10} (${tr("dm_optWithout")} ${Math.round(l.without * 10) / 10})`,
+					`${tr(`dm_optLimit_${l.quantity}`)} ${Math.round(l.value * 10) / 10} (${tr("dm_optWithout")} ${Math.round(l.without * 10) / 10})`,
 			);
 			if (b?.veto) {
 				limits.push(tr("dm_optVeto"));

@@ -387,6 +387,15 @@ describe("run store", () => {
 		);
 	});
 
+	it("reconcileBase: without an override baseChanged is logged but sets no lock and keeps the list capped", () => {
+		const st = emptyStore("wm", "", typeHash(WASHER), 10000, 1);
+		st.lastChangeTs = 0;
+		assert.strictEqual(reconcileBase(st, typeHash({ ...WASHER, endVal: 10 }), typeHash(WASHER), 9), "baseChanged");
+		assert.deepStrictEqual([st.override, st.lastChangeTs, st.lockUntilTs], [null, 0, 0]);
+		assert.strictEqual(st.changes.at(-1).kind, "baseChanged");
+		assert.strictEqual(st.changes.at(-1).from, null);
+	});
+
 	describe("hash of the detection values", () => {
 		it("keeps the hashes of existing values", () => {
 			assert.deepStrictEqual(DEFAULT_TYPES.slice(0, 4).map(typeHash), [
