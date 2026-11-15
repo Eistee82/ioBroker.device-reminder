@@ -1,8 +1,8 @@
 import { DEFAULT_REMINDER, normalizeInstanceConfig, } from "./config.js";
 import { allocateDeviceId, sanitizeId } from "./ids.js";
 import { findType, resolveLegacyTypes } from "./legacyTypes.js";
-import { detectionOf } from "./runStore.js";
-import { CUSTOM_TEMPLATE, TEMPLATES } from "./templates.js";
+import { detectionOf, typeHash } from "./runStore.js";
+import { CUSTOM_TEMPLATE, findTemplate, TEMPLATES } from "./templates.js";
 import { DEVICE_STATES } from "./stateDefinitions.js";
 import { errorMessage, parseNumber } from "./utils.js";
 export const LEGACY_STATE_MAP = {
@@ -325,6 +325,10 @@ function archiveOf(typeRows, used) {
     }
     return out;
 }
+function sameAsTemplate(detection, id) {
+    const t = findTemplate(id);
+    return t !== undefined && typeHash(t.detection) === typeHash(detection);
+}
 function deviceDetection(typeName, tables) {
     const { row, via } = matchLegacyType(typeName, tables.defaults.map(r => r.raw), tables.customs.map(r => r.raw));
     const found = row ? [...tables.defaults, ...tables.customs].find(r => r.raw === row) : undefined;
@@ -337,7 +341,9 @@ function deviceDetection(typeName, tables) {
     tables.used.add(found.raw);
     const detection = detectionOf({ ...(found.template ?? CUSTOM_TEMPLATE).detection, ...found.values });
     if (via === "default" || via === "custom") {
-        return via === "default" && found.template ? { detection, template: found.template.id } : { detection };
+        return via === "default" && found.template && sameAsTemplate(detection, found.template.id)
+            ? { detection, template: found.template.id }
+            : { detection };
     }
     const from = via === "case" ? `case match "${found.name}"` : `renamed slot ${typeName.trim()}`;
     return { detection, reviewHint: `3.1.2 type "${typeName}" not found exactly; values taken from ${from}` };
@@ -525,14 +531,18 @@ export async function migrateLegacyStates(io, devices) {
 }
 export function migrateV4Device(raw, native) {
     const warnings = [];
-    if (!isRecord(raw) || typeof raw.typeId !== "string" || isRecord(raw.detection)) {
+    if (!isRecord(raw) ||
+        (typeof raw.typeId !== "string" && typeof raw.typeId !== "number") ||
+        isRecord(raw.detection)) {
         return { native: null, warnings };
     }
-    const { typeId, ...rest } = raw;
+    const { typeId: rawId, ...rest } = raw;
+    const typeId = str(rawId);
     const type = findType(resolveLegacyTypes(isRecord(native) ? native : {}, warnings), typeId);
     if (type) {
-        const out = { ...rest, detection: detectionOf(type) };
-        if (type.builtin) {
+        const detection = detectionOf(type);
+        const out = { ...rest, detection };
+        if (type.builtin && sameAsTemplate(detection, type.id)) {
             out.template = type.id;
         }
         else {

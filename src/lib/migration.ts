@@ -9,8 +9,8 @@ import {
 import type { DetectionSettings, TypeThresholds } from "./detector/types.js";
 import { allocateDeviceId, sanitizeId } from "./ids.js";
 import { type DeviceTypeConfig, findType, resolveLegacyTypes } from "./legacyTypes.js";
-import { detectionOf } from "./runStore.js";
-import { CUSTOM_TEMPLATE, TEMPLATES, type Template } from "./templates.js";
+import { detectionOf, typeHash } from "./runStore.js";
+import { CUSTOM_TEMPLATE, findTemplate, TEMPLATES, type Template } from "./templates.js";
 import { DEVICE_STATES } from "./stateDefinitions.js";
 import { errorMessage, parseNumber } from "./utils.js";
 
@@ -512,6 +512,17 @@ interface TypeTables {
 }
 
 /**
+ * Whether detection values are those of a built-in template (in W, as 3.1.2 and the V4 test installations stored them).
+ *
+ * @param detection - Detection values
+ * @param id - Template id
+ */
+function sameAsTemplate(detection: DetectionSettings, id: string): boolean {
+	const t = findTemplate(id);
+	return t !== undefined && typeHash(t.detection) === typeHash(detection);
+}
+
+/**
  * Detection values of a 3.1.2 device: a copy of the values of its type row (`matchLegacyType`) on the base of the
  * template (count, 60/300 s, pause protection, anti-crease filter and final phase off). Without an exact match the
  * device is disabled with a review hint.
@@ -538,7 +549,11 @@ function deviceDetection(
 	tables.used.add(found.raw);
 	const detection = detectionOf({ ...(found.template ?? CUSTOM_TEMPLATE).detection, ...found.values });
 	if (via === "default" || via === "custom") {
-		return via === "default" && found.template ? { detection, template: found.template.id } : { detection };
+		// `template` only while the values are those of the template (the same rule as the form): changed values of a
+		// default row are own values of the device
+		return via === "default" && found.template && sameAsTemplate(detection, found.template.id)
+			? { detection, template: found.template.id }
+			: { detection };
 	}
 	const from = via === "case" ? `case match "${found.name}"` : `renamed slot ${typeName.trim()}`;
 	return { detection, reviewHint: `3.1.2 type "${typeName}" not found exactly; values taken from ${from}` };
@@ -780,23 +795,32 @@ export interface V4DeviceMigration {
 /**
  * Move the values of the device type of a V4 test installation into the device (Spec C.6, pure, no I/O).
  * Detected by structure: a `typeId` and no `detection` (`configVersion` is no criterion, js-controller fills in
- * the default). The type is resolved exactly as before (`resolveLegacyTypes` + `findType`); every other field
- * stays unchanged, `typeId` is removed, `template` is set for a built-in type. Without a hit the device gets the
- * values of "Custom", a review hint and is disabled: it was ignored before and must not start sending messages.
+ * the default). The type is resolved exactly as before (`resolveLegacyTypes` + `findType`, the id trimmed); every
+ * other field stays unchanged, `typeId` is removed, `template` is set for a built-in type with the values of its
+ * template. Without a hit the device gets the values of "Custom", a review hint and is disabled: it was ignored
+ * before and must not start sending messages.
  *
  * @param raw - Device native
  * @param native - Instance native (its `types` are only read)
  */
 export function migrateV4Device(raw: Record<string, unknown>, native: Record<string, unknown>): V4DeviceMigration {
 	const warnings: string[] = [];
-	if (!isRecord(raw) || typeof raw.typeId !== "string" || isRecord(raw.detection)) {
+	if (
+		!isRecord(raw) ||
+		(typeof raw.typeId !== "string" && typeof raw.typeId !== "number") ||
+		isRecord(raw.detection)
+	) {
 		return { native: null, warnings };
 	}
-	const { typeId, ...rest } = raw;
+	const { typeId: rawId, ...rest } = raw;
+	// resolved exactly as before (`normalizeDeviceConfig`: trimmed, a number as text)
+	const typeId = str(rawId);
 	const type = findType(resolveLegacyTypes(isRecord(native) ? native : {}, warnings), typeId);
 	if (type) {
-		const out: Record<string, unknown> = { ...rest, detection: detectionOf(type) };
-		if (type.builtin) {
+		const detection = detectionOf(type);
+		const out: Record<string, unknown> = { ...rest, detection };
+		// `template` only while the values are those of the template (the same rule as the form)
+		if (type.builtin && sameAsTemplate(detection, type.id)) {
 			out.template = type.id;
 		} else {
 			delete out.template;

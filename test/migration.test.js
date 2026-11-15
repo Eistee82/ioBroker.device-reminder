@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { DEFAULT_REMINDER, normalizeInstanceConfig } from "../build/lib/config.js";
+import { deviceConfigToForm, formToDeviceConfig } from "../build/lib/deviceForm.js";
 import { findTemplate } from "../build/lib/templates.js";
 import {
 	isLegacyConfig,
@@ -400,7 +401,8 @@ describe("migration", () => {
 			};
 			assert.deepStrictEqual(values("kaffee"), [undefined, 800, 20, 2, 1, 6]);
 			assert.deepStrictEqual(values("heizluefter"), [undefined, 1500, 50, 1, 1, 3]);
-			assert.deepStrictEqual(values("spueler"), ["dishwasher", 12.5, 1, 0.3, 3, 90]);
+			// changed values of the default row dishwasher: own values, no template
+			assert.deepStrictEqual(values("spueler"), [undefined, 12.5, 1, 0.3, 3, 90]);
 			// a device without a type ran never in 3.1.2: values of "Custom", off until it is checked (M3)
 			const pool = device(result, "pool").config;
 			assert.deepStrictEqual([pool.enabled, pool.needsReview, pool.detection.startVal], [false, true, 30]);
@@ -577,7 +579,20 @@ describe("migration", () => {
 			assert.strictEqual(w.autoOff, false);
 			assert.strictEqual(w.autoOffMinutes, 0);
 			assert.deepStrictEqual(w.recipients, []);
-			assert.strictEqual(device(result, "trockner").config.template, "dryer");
+			// the dryer row was changed (endCount 50, template 20): own values, no template
+			assert.strictEqual(device(result, "trockner").config.template, undefined);
+		});
+
+		it("saving a migrated device unchanged in the form keeps template or own values", () => {
+			for (const id of ["waschmaschine", "trockner"]) {
+				const cfg = device(result, id).config;
+				const saved = formToDeviceConfig(deviceConfigToForm(cfg), {
+					isNew: false,
+					unitFactor: 1,
+					previous: cfg,
+				});
+				assert.strictEqual(saved.config.template, cfg.template, id);
+			}
 		});
 
 		it("takes over the discord recipients and the stored type values (strings to numbers)", () => {

@@ -204,7 +204,7 @@ describe("3.1.2 → V4 mapping (Spec C.5, one test per row)", () => {
 		}
 		assert.deepStrictEqual(r.warnings, full.warnings);
 	});
-	it("exact type → detection copy of the row, template, enabled, no final phase", () => {
+	it("exact type → detection copy of the row, enabled, no final phase; changed values give no template", () => {
 		const c = dev(edge, "Waschen");
 		assert.deepStrictEqual(
 			[
@@ -218,7 +218,8 @@ describe("3.1.2 → V4 mapping (Spec C.5, one test per row)", () => {
 				c.enabled,
 				c.needsReview,
 			],
-			[25, 12, 40, "count", 60, 300, "washing-machine", true, undefined],
+			// 25/12/40 differ from the template washing machine (30/15/50): own values of the device
+			[25, 12, 40, "count", 60, 300, undefined, true, undefined],
 		);
 		assert.ok(FINAL_KEYS.every(k => !c.detection[k]));
 		assert.strictEqual(

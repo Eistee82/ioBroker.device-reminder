@@ -115,6 +115,28 @@ describe("V4 test installation → values in the device (Spec C.6)", () => {
 			'Device "WM": device type "" not found; values taken from template Custom; device disabled',
 		]);
 	});
+	it("a typeId with spaces at the edge or as a number is resolved like before (trimmed)", () => {
+		const native = { types: [custom("kaffee", "Kaffee", 55), custom("7", "Seven", 77)] };
+		const r = migrateV4Device({ ...raw, typeId: "kaffee " }, native).native;
+		assert.deepStrictEqual(
+			[r.detection.startVal, r.enabled, r.needsReview, "typeId" in r],
+			[55, true, undefined, false],
+		);
+		const n = migrateV4Device({ ...raw, typeId: 7 }, native).native;
+		assert.deepStrictEqual([n.detection.startVal, n.needsReview], [77, undefined]);
+	});
+	it("a built-in type with changed values gives no template (own values)", () => {
+		const native = {
+			types: [{ ...custom("dryer", "Dryer", 120), endVal: 15, standby: 1, startCount: 2, endCount: 50 }],
+		};
+		const r = migrateV4Device({ ...raw, typeId: "dryer" }, native).native;
+		assert.deepStrictEqual([r.detection.endCount, "template" in r], [50, false]);
+		const same = migrateV4Device(
+			{ ...raw, typeId: "dryer" },
+			{ types: [{ ...custom("dryer", "Dryer", 120), endVal: 15, standby: 1, startCount: 2, endCount: 20 }] },
+		).native;
+		assert.strictEqual(same.template, "dryer");
+	});
 	it("a custom type gives no template; a stale template is dropped", () => {
 		const r = migrateV4Device({ ...raw, typeId: "custom3", template: "dryer" }, {}).native;
 		assert.deepStrictEqual([r.detection.startVal, "template" in r], [30, false]);
