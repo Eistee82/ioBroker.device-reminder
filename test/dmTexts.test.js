@@ -78,7 +78,6 @@ describe("device manager texts", () => {
 			const dict = JSON.parse(readFileSync(new URL(`../admin/i18n/${lang}.json`, import.meta.url), "utf8"));
 			for (const k of [
 				"valuesInDeviceHelp",
-				"tabValues",
 				"dev_template",
 				"dev_expertValues",
 				"dev_detectionSection",

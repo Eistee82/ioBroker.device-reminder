@@ -85,21 +85,6 @@
 				}
 			}
 		},
-		"_tabValues": {
-			"type": "panel",
-			"label": "tabValues",
-			"items": {
-				"_help": {
-					"type": "staticText",
-					"text": "valuesInDeviceHelp",
-					"xs": 12,
-					"sm": 12,
-					"md": 12,
-					"lg": 12,
-					"xl": 12
-				}
-			}
-		},
 		"_tabRecipients": {
 			"type": "panel",
 			"label": "tabRecipients",
@@ -470,6 +455,15 @@
 				"_help": {
 					"type": "staticText",
 					"text": "devicesHelp",
+					"xs": 12,
+					"sm": 12,
+					"md": 12,
+					"lg": 12,
+					"xl": 12
+				},
+				"_valuesHelp": {
+					"type": "staticText",
+					"text": "valuesInDeviceHelp",
 					"xs": 12,
 					"sm": 12,
 					"md": 12,

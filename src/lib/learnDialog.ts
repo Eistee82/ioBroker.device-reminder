@@ -45,7 +45,7 @@ export interface RunRow {
 
 /**
  * Form of the run table. `table` is the editable jsonConfig table with a select column; `fallback` lists the runs as
- * text and lets the user pick the runs to use or not to use in two multiple selects (works in every Admin).
+ * one select per run (Auto / use / do not use) whose label names the run (works in every Admin).
  *
  * Both variants are built and tested. The fallback stays the default until the editable table was tried in the
  * Device Manager of a real system (a select column in a form table is not documented for `showForm` of dm-utils).
@@ -102,33 +102,32 @@ export function buildRunTable(rows: readonly RunRow[], mode: "table" | "fallback
 			},
 		};
 	}
-	const lines = rows.map(
-		(r, k) =>
-			`${k + 1}. ${r.date} · ${r.durationMin} min · ${r.energyWh} Wh${r.family > 0 ? ` · #${r.family}` : ""}${
-				r.phases ? ` · ${r.phases}` : ""
-			} · ${r.check}${r.boundary ? ` · ${r.boundary}` : ""}`,
-	);
-	const options = rows.map((r, k) => ({ label: `${k + 1}. ${r.date}`, value: r.key }));
-	return {
-		runs_text: { type: "staticText", text: lines.join("\n"), newLine: true, xs: 12 },
-		useInclude: {
+	// one select per run: the label names the run, the select its use (the multiple selects of an earlier version
+	// put every run into one text block that the Admin shows as a single line)
+	const items: PanelItems = {};
+	rows.forEach((r, k) => {
+		items[`use_${k}`] = {
 			type: "select",
-			label: I18n.getTranslatedObject("dm_learnUse_include"),
-			multiple: true,
-			options,
+			label: runLabel(r, k),
+			options: USES.map(u => ({ label: I18n.getTranslatedObject(`dm_learnUse_${u}`), value: u })),
 			newLine: true,
 			xs: 12,
-			sm: 6,
-		},
-		useExclude: {
-			type: "select",
-			label: I18n.getTranslatedObject("dm_learnUse_exclude"),
-			multiple: true,
-			options,
-			xs: 12,
-			sm: 6,
-		},
-	};
+			sm: 8,
+			md: 6,
+		};
+	});
+	return items;
+}
+
+/**
+ * Label of one run in the fallback: number, start, duration, energy, check and boundary (no phase sequence: the
+ * generic levels of an unconfirmed phase model mean nothing to the user).
+ *
+ * @param r - Row
+ * @param k - Position
+ */
+export function runLabel(r: RunRow, k: number): string {
+	return `${k + 1}. ${r.date} · ${r.durationMin} min · ${r.energyWh} Wh · ${r.check}${r.boundary ? ` · ${r.boundary}` : ""}`;
 }
 
 /**
@@ -139,8 +138,7 @@ export function buildRunTable(rows: readonly RunRow[], mode: "table" | "fallback
 export function runTableData(rows: readonly RunRow[]): JsonFormData {
 	return {
 		runs: rows.map(r => ({ ...r })),
-		useInclude: rows.filter(r => r.use === "include").map(r => r.key),
-		useExclude: rows.filter(r => r.use === "exclude").map(r => r.key),
+		...Object.fromEntries(rows.map((r, k) => [`use_${k}`, r.use])),
 		recalc: false,
 	};
 }
@@ -182,7 +180,7 @@ export function buildRunsSchema(
 
 /**
  * Use of every run from the answer of the runs form: the table (`runs`, by key or, without a key, by position) and
- * the two selects of the fallback. When the selects are present they decide; a run in both is not used.
+ * the select per run of the fallback (`use_<position>`), which decides when present.
  *
  * @param answer - Answer
  * @param rows - Rows shown
@@ -197,15 +195,12 @@ export function usesOfAnswer(answer: JsonFormData, rows: readonly RunRow[]): Map
 			out.set(key, row.use);
 		}
 	});
-	if (answer.useInclude !== undefined || answer.useExclude !== undefined) {
-		const list = (v: unknown): Set<string> =>
-			new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
-		const include = list(answer.useInclude);
-		const exclude = list(answer.useExclude);
-		for (const r of rows) {
-			out.set(r.key, exclude.has(r.key) ? "exclude" : include.has(r.key) ? "include" : "auto");
+	rows.forEach((r, k) => {
+		const v = answer[`use_${k}`];
+		if (valid(v)) {
+			out.set(r.key, v);
 		}
-	}
+	});
 	return out;
 }
 
@@ -369,6 +364,32 @@ export function heldBackSpans(input: LearnInput, ev: Evaluation): { from: number
 			to: Math.max(x.facts.end, x.facts.runEnd) + input.pollMs,
 		}))
 		.sort((a, b) => a.from - b.from);
+}
+
+/**
+ * Summary of the runs behind a suggestion: how many of the runs found count and which ones the check left out, with
+ * the reason (the user does not have to choose anything, Spec B.7).
+ *
+ * @param input - Samples
+ * @param ev - Run check
+ * @param lang - Language
+ */
+export function runSummary(input: LearnInput, ev: Evaluation, lang: string): string {
+	const runs = input.samples.filter(x => x.kind === "run").length;
+	let used = 0;
+	const left: string[] = [];
+	input.samples.forEach((x, k) => {
+		if (x.kind !== "run") {
+			return;
+		}
+		if (counts(x, ev.verdicts[k], runs)) {
+			used++;
+		} else {
+			left.push(`${formatDate(x.facts.start)} (${checkText(ev.verdicts[k])})`);
+		}
+	});
+	const head = fill(TEXT.learnRunsUsed, lang, { used, total: runs });
+	return left.length === 0 ? head : `${head} ${fill(TEXT.learnRunsHeldBack, lang, { list: left.join(", ") })}`;
 }
 
 /**

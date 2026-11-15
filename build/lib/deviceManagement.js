@@ -15,7 +15,7 @@ import { describeChange } from "./learn/autoOptimize.js";
 import { learnFinal } from "./learn/finalLearn.js";
 import { admitted, sameRun, verdictKey } from "./learn/quality.js";
 import { buildLayout } from "./learn/runs.js";
-import { buildRunsSchema, checkText, evaluateRuns, finalItems, finalText, heldBackSpans, learnInputOf, neutralName, phaseData, phaseItems, phaseSequences, phasesFromForm, rowsOf, runTableData, usesOfAnswer, } from "./learnDialog.js";
+import { buildRunsSchema, checkText, evaluateRuns, finalItems, finalText, heldBackSpans, learnInputOf, neutralName, phaseData, phaseItems, phaseSequences, phasesFromForm, rowsOf, runSummary, runTableData, usesOfAnswer, } from "./learnDialog.js";
 import { normalizePhases } from "./phases/model.js";
 import { learnPhases } from "./phases/learn.js";
 import { BASE_KEYS, boundaryInfo, decisionOf, detectionOf, startOf, typeHash } from "./runStore.js";
@@ -920,12 +920,12 @@ export class ReminderDeviceManagement extends DeviceManagement {
         let ev;
         let result;
         for (;;) {
-            for (;;) {
+            while (choice.reviewRuns === true) {
                 ev = evaluateRuns(input, uses, oldStore);
                 const learned = this.learnPhasesOf(cfg, input, ev, poll);
                 const seq = learned ? phaseSequences(learned.model, ev.bands, input, poll) : new Map();
                 const rows = rowsOf(input, ev, uses, seq);
-                const answer = await ctx.showForm(buildRunsSchema(rows, ev.verdicts.some(v => v.reasons.some(r => r.code === "formerlyDropped"))), { data: runTableData(rows), title: TEXT.learnTitle, ignoreApplyDisabled: true });
+                const answer = await ctx.showForm(buildRunsSchema(rows, ev.verdicts.some(v => v.reasons.some(r => r.code === "formerlyDropped"))), { data: runTableData(rows), title: TEXT.learnRunsTitle, ignoreApplyDisabled: true });
                 if (!answer) {
                     return true;
                 }
@@ -962,7 +962,10 @@ export class ReminderDeviceManagement extends DeviceManagement {
             }
             if ("error" in analysed) {
                 await ctx.showMessage(TEXT.learnHistoryTooFewRuns);
-                continue;
+                if (choice.reviewRuns === true) {
+                    continue;
+                }
+                return true;
             }
             result = analysed;
             break;
@@ -1001,6 +1004,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
             retro: learned?.result.retroOnly ?? [],
             dropped: learned?.result.dropped ?? [],
             decisions,
+            runsText: runSummary(chosen, chosenEv, this.adapter.language ?? "en"),
             bands: ev.bands,
             storedRuns: eff => this.storedRunsOf(chosen, chosenEv, eff, cfg, poll),
         });
@@ -1145,6 +1149,9 @@ export class ReminderDeviceManagement extends DeviceManagement {
         const schema = {
             ...base,
             items: {
+                ...(extras?.runsText
+                    ? { runsText: { type: "staticText", text: extras.runsText, newLine: true, xs: 12 } }
+                    : {}),
                 ...base.items,
                 ...(suggestion.checks && suggestion.checks.length > 0
                     ? {
@@ -1550,6 +1557,14 @@ export function buildLearnSourceSchema() {
                 sm: 3,
             },
             runs: { type: "number", label: I18n.getTranslatedObject("dm_learnRuns"), disabled: true, xs: 12, sm: 3 },
+            reviewRuns: {
+                type: "checkbox",
+                label: I18n.getTranslatedObject("dm_learnReviewRuns"),
+                help: I18n.getTranslatedObject("dm_learnReviewRunsHelp"),
+                newLine: true,
+                xs: 12,
+                hidden: "data.source !== 'history'",
+            },
         },
     };
 }

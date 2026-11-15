@@ -220,6 +220,13 @@ describe("deviceForm", () => {
 				assert.strictEqual(items[key].type, "panel", key);
 				assert.strictEqual(items[key].collapsable, true, key);
 			}
+			// a coloured header (e.g. "secondary") keeps black text on a dark background in the admin and is
+			// unreadable; the default header follows the theme
+			const collapsable = Object.entries(items).filter(([, v]) => v.collapsable);
+			assert.ok(collapsable.length >= 5, String(collapsable.length));
+			for (const [key, v] of collapsable) {
+				assert.strictEqual(v.color, undefined, key);
+			}
 			assert.ok(items.reminderSection.items["reminder.enabled"]);
 			assert.strictEqual(items.reminderSection.items["reminder.maxCount"].min, 1);
 			assert.strictEqual(items.actionsSection.items.actions.type, "table");

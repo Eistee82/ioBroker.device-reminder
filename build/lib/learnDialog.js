@@ -43,34 +43,27 @@ export function buildRunTable(rows, mode) {
             },
         };
     }
-    const lines = rows.map((r, k) => `${k + 1}. ${r.date} · ${r.durationMin} min · ${r.energyWh} Wh${r.family > 0 ? ` · #${r.family}` : ""}${r.phases ? ` · ${r.phases}` : ""} · ${r.check}${r.boundary ? ` · ${r.boundary}` : ""}`);
-    const options = rows.map((r, k) => ({ label: `${k + 1}. ${r.date}`, value: r.key }));
-    return {
-        runs_text: { type: "staticText", text: lines.join("\n"), newLine: true, xs: 12 },
-        useInclude: {
+    const items = {};
+    rows.forEach((r, k) => {
+        items[`use_${k}`] = {
             type: "select",
-            label: I18n.getTranslatedObject("dm_learnUse_include"),
-            multiple: true,
-            options,
+            label: runLabel(r, k),
+            options: USES.map(u => ({ label: I18n.getTranslatedObject(`dm_learnUse_${u}`), value: u })),
             newLine: true,
             xs: 12,
-            sm: 6,
-        },
-        useExclude: {
-            type: "select",
-            label: I18n.getTranslatedObject("dm_learnUse_exclude"),
-            multiple: true,
-            options,
-            xs: 12,
-            sm: 6,
-        },
-    };
+            sm: 8,
+            md: 6,
+        };
+    });
+    return items;
+}
+export function runLabel(r, k) {
+    return `${k + 1}. ${r.date} · ${r.durationMin} min · ${r.energyWh} Wh · ${r.check}${r.boundary ? ` · ${r.boundary}` : ""}`;
 }
 export function runTableData(rows) {
     return {
         runs: rows.map(r => ({ ...r })),
-        useInclude: rows.filter(r => r.use === "include").map(r => r.key),
-        useExclude: rows.filter(r => r.use === "exclude").map(r => r.key),
+        ...Object.fromEntries(rows.map((r, k) => [`use_${k}`, r.use])),
         recalc: false,
     };
 }
@@ -107,14 +100,12 @@ export function usesOfAnswer(answer, rows) {
             out.set(key, row.use);
         }
     });
-    if (answer.useInclude !== undefined || answer.useExclude !== undefined) {
-        const list = (v) => new Set(Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
-        const include = list(answer.useInclude);
-        const exclude = list(answer.useExclude);
-        for (const r of rows) {
-            out.set(r.key, exclude.has(r.key) ? "exclude" : include.has(r.key) ? "include" : "auto");
+    rows.forEach((r, k) => {
+        const v = answer[`use_${k}`];
+        if (valid(v)) {
+            out.set(r.key, v);
         }
-    }
+    });
     return out;
 }
 export function pointsOfSeries(s, factor) {
@@ -195,6 +186,24 @@ export function heldBackSpans(input, ev) {
         to: Math.max(x.facts.end, x.facts.runEnd) + input.pollMs,
     }))
         .sort((a, b) => a.from - b.from);
+}
+export function runSummary(input, ev, lang) {
+    const runs = input.samples.filter(x => x.kind === "run").length;
+    let used = 0;
+    const left = [];
+    input.samples.forEach((x, k) => {
+        if (x.kind !== "run") {
+            return;
+        }
+        if (counts(x, ev.verdicts[k], runs)) {
+            used++;
+        }
+        else {
+            left.push(`${formatDate(x.facts.start)} (${checkText(ev.verdicts[k])})`);
+        }
+    });
+    const head = fill(TEXT.learnRunsUsed, lang, { used, total: runs });
+    return left.length === 0 ? head : `${head} ${fill(TEXT.learnRunsHeldBack, lang, { list: left.join(", ") })}`;
 }
 export function checkText(v) {
     if (v.reasons.length === 0) {

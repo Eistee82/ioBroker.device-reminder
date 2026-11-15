@@ -1012,19 +1012,19 @@ describe("deviceManagement", () => {
 			await addDevice(ctx, "trockner");
 			withHistory(ctx, historyOf([washingMachine, longPause, washingMachine]));
 			const [info] = await load(ctx);
-			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, {}, learned] });
+			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, learned] });
 			await actionOf(info, "learn").handler("trockner", action);
 			assert.strictEqual(action.forms[0].options.data.instance, "history.0");
 			assert.strictEqual(action.forms[0].options.data.runs, 3, "the source dialog shows the runs found");
 			assert.strictEqual(action.forms[0].options.ignoreApplyDisabled, true, "OK works without a change");
 			assert.strictEqual(
-				action.forms[2].options.ignoreApplyDisabled,
+				action.forms[1].options.ignoreApplyDisabled,
 				true,
 				"the suggestion can be accepted as is",
 			);
 			assert.strictEqual(ctx.historyQuery.options.instance, "history.0");
 			assert.strictEqual(action.forms.progress.closed, true);
-			const dialog = action.forms[2];
+			const dialog = action.forms[1];
 			assert.strictEqual(dialog.options.data.runs, 3);
 			assert.strictEqual(dialog.options.data.mode, "count");
 			assert.match(dialog.options.data.eval_count, /^3\/3 · \d+ min \(max \d+ min\)$/);
@@ -1053,7 +1053,7 @@ describe("deviceManagement", () => {
 			await addDevice(ctx, "trockner", deviceCfg({ detection: DRYER, template: "dryer" }));
 			withHistory(ctx, historyOf([washingMachine, longPause, washingMachine]));
 			const [info] = await load(ctx);
-			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, {}, learned] });
+			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, learned] });
 			await actionOf(info, "learn").handler("trockner", action);
 			const native = ctx.adapter.objects.get(`${NS}.trockner`).native;
 			assert.deepStrictEqual(
@@ -1062,7 +1062,7 @@ describe("deviceManagement", () => {
 			);
 			assert.strictEqual(native.template, undefined);
 			assert.deepStrictEqual(ctx.adapter.extendedForeign, []);
-			assert.strictEqual(action.forms[2].schema.items.name, undefined, "no name field any more");
+			assert.strictEqual(action.forms[1].schema.items.name, undefined, "no name field any more");
 		});
 
 		it("learning keeps the final phase of the device", async () => {
@@ -1071,7 +1071,7 @@ describe("deviceManagement", () => {
 			await addDevice(ctx, "trockner", deviceCfg({ detection: { ...testDetection, ...final } }));
 			withHistory(ctx, historyOf([washingMachine, longPause, washingMachine]));
 			const [info] = await load(ctx);
-			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, {}, learned] });
+			const action = fakeAction({ forms: [{ source: "history", instance: "history.0" }, learned] });
 			await actionOf(info, "learn").handler("trockner", action);
 			const d = ctx.adapter.objects.get(`${NS}.trockner`).native.detection;
 			assert.deepStrictEqual([d.finalMinVal, d.finalMinSec, d.endCount], [150, 168, 200]);
@@ -1253,8 +1253,20 @@ describe("deviceManagement", () => {
 				return { ctx, action };
 			}
 
+			it("without the run list the suggestion comes at once and names the runs it comes from", async () => {
+				const { action } = await open([{ source: "history", instance: "history.0" }, undefined]);
+				assert.strictEqual(action.forms[0].schema.items.reviewRuns.type, "checkbox");
+				assert.strictEqual(action.forms[0].options.data.reviewRuns, undefined, "off by default");
+				const suggestion = action.forms[1];
+				assert.ok(suggestion.schema.items.startVal, "the second form is the suggestion, not the run list");
+				assert.strictEqual(suggestion.schema.items.use_0, undefined);
+				const text = suggestion.schema.items.runsText.text;
+				assert.match(text, /^Learned from 12 of 13 runs found in the last 30 days\./);
+				assert.match(text, /Left out automatically: .+\(.+\)\./);
+			});
+
 			it("lists every run with its check; sparse w04 marked, use column defaults to auto", async () => {
-				const { action } = await open([{ source: "history", instance: "history.0" }]);
+				const { action } = await open([{ source: "history", instance: "history.0", reviewRuns: true }]);
 				const rows = action.forms[1].options.data.runs;
 				assert.strictEqual(rows.length, 14, `${rows.length} rows`);
 				assert.ok(rows.every(r => r.use === "auto"));
@@ -1263,14 +1275,14 @@ describe("deviceManagement", () => {
 					rows.some(r => r.check === "✓"),
 					"a clean run shows a tick",
 				);
-				assert.ok(
-					action.forms[1].schema.items.runs || action.forms[1].schema.items.runs_text,
-					"table or fallback",
-				);
+				assert.ok(action.forms[1].schema.items.runs || action.forms[1].schema.items.use_0, "table or fallback");
 			});
 
 			it("suggestion from admitted runs only; final phase offered with key figures, checkbox off by default", async () => {
-				const { action } = await open([{ source: "history", instance: "history.0" }, { operation: "next" }]);
+				const { action } = await open([
+					{ source: "history", instance: "history.0", reviewRuns: true },
+					{ operation: "next" },
+				]);
 				const d = action.forms[2].options.data;
 				assert.strictEqual(d.final_apply, false);
 				// the tests run with I18n "en" (test/helpers/i18n.js)
@@ -1300,23 +1312,24 @@ describe("deviceManagement", () => {
 				assert.ok(buildRunTable(rows, "table").runs.noDelete);
 				assert.ok(buildRunTable(rows, "table").runs.items.some(i => i.attr === "use" && i.type === "select"));
 				assert.ok(
-					Object.values(buildRunTable(rows, "fallback")).some(
-						i => i.type === "select" && i.multiple === true,
-					),
+					buildRunTable(rows, "fallback").use_0.type === "select" &&
+						buildRunTable(rows, "fallback").use_0.options.length === 3 &&
+						/^1\. 01\.11\. · 140 min · 600 Wh · ✓$/.test(buildRunTable(rows, "fallback").use_0.label),
 				);
 				assert.strictEqual(RUN_TABLE_MODE, "fallback");
 			});
 
 			it('"recalculate" shows the list again with the decision applied', async () => {
 				const { action } = await open([
-					{ source: "history", instance: "history.0" },
+					{ source: "history", instance: "history.0", reviewRuns: true },
 					{ runs: [{ use: "exclude" }], recalc: true },
 					{},
 				]);
 				const first = action.forms[1].options.data.runs;
 				const again = action.forms[2].options.data.runs;
 				assert.strictEqual(again[0].use, "exclude");
-				assert.deepStrictEqual(action.forms[2].options.data.useExclude, [first[0].key]);
+				assert.strictEqual(action.forms[2].options.data.use_0, "exclude");
+				assert.strictEqual(first[0].key, again[0].key);
 				assert.ok(again.slice(1).every(r => r.use === "auto"));
 			});
 
@@ -1332,7 +1345,7 @@ describe("deviceManagement", () => {
 						["c", "include"],
 					],
 				);
-				const selects = usesOfAnswer({ useInclude: ["a", "b"], useExclude: ["b"] }, rows);
+				const selects = usesOfAnswer({ use_0: "include", use_1: "exclude", use_2: "auto" }, rows);
 				assert.deepStrictEqual(
 					[...selects],
 					[
@@ -1353,7 +1366,7 @@ describe("deviceManagement", () => {
 
 			it("apply writes detection, final values and phases into the device and decisions into the store, no restart", async () => {
 				const { ctx, action } = await open([
-					{ source: "history", instance: "history.0" },
+					{ source: "history", instance: "history.0", reviewRuns: true },
 					{ operation: "next", runs: [{ use: "exclude" }] },
 					{ operation: "apply", final_apply: true, showPhases: true },
 				]);
@@ -1375,7 +1388,7 @@ describe("deviceManagement", () => {
 
 			it("without the checkbox the final phase of the device stays; decisions are still stored", async () => {
 				const { ctx } = await open([
-					{ source: "history", instance: "history.0" },
+					{ source: "history", instance: "history.0", reviewRuns: true },
 					{ runs: [{ use: "exclude" }] },
 					{ final_apply: false },
 				]);
@@ -1389,8 +1402,8 @@ describe("deviceManagement", () => {
 
 			it("cancelling after the runs changes nothing", async () => {
 				const { ctx, action } = await open([
-					{ source: "history", instance: "history.0" },
-					{ useExclude: [] },
+					{ source: "history", instance: "history.0", reviewRuns: true },
+					{ use_0: "auto" },
 					undefined,
 				]);
 				assert.strictEqual(action.confirmations.length, 0);

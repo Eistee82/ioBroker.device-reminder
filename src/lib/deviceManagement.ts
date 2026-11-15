@@ -61,6 +61,7 @@ import {
 	phaseSequences,
 	phasesFromForm,
 	rowsOf,
+	runSummary,
 	runTableData,
 	usesOfAnswer,
 } from "./learnDialog.js";
@@ -1247,8 +1248,9 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		let ev: Evaluation;
 		let result: HistorySuggestion;
 		for (;;) {
-			// step 1: the runs with their check and use; "recalculate" shows them again for the chosen set
-			for (;;) {
+			// step 1 (only on request): the runs with their check and use; "recalculate" shows them again for the
+			// chosen set. Without the request the check decides on its own.
+			while (choice.reviewRuns === true) {
 				ev = evaluateRuns(input, uses, oldStore);
 				const learned = this.learnPhasesOf(cfg, input, ev, poll);
 				const seq = learned ? phaseSequences(learned.model, ev.bands, input, poll) : new Map<string, string>();
@@ -1258,7 +1260,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 						rows,
 						ev.verdicts.some(v => v.reasons.some(r => r.code === "formerlyDropped")),
 					),
-					{ data: runTableData(rows), title: TEXT.learnTitle, ignoreApplyDisabled: true },
+					{ data: runTableData(rows), title: TEXT.learnRunsTitle, ignoreApplyDisabled: true },
 				);
 				if (!answer) {
 					return true;
@@ -1297,7 +1299,11 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			}
 			if ("error" in analysed) {
 				await ctx.showMessage(TEXT.learnHistoryTooFewRuns);
-				continue;
+				// with the run list the user can choose other runs; without it the same runs would fail again
+				if (choice.reviewRuns === true) {
+					continue;
+				}
+				return true;
 			}
 			result = analysed;
 			break;
@@ -1339,6 +1345,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			retro: learned?.result.retroOnly ?? [],
 			dropped: learned?.result.dropped ?? [],
 			decisions,
+			runsText: runSummary(chosen, chosenEv, this.adapter.language ?? "en"),
 			bands: ev.bands,
 			storedRuns: eff => this.storedRunsOf(chosen, chosenEv, eff, cfg, poll),
 		});
@@ -1567,6 +1574,9 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		const schema: JsonFormSchema = {
 			...base,
 			items: {
+				...(extras?.runsText
+					? { runsText: { type: "staticText", text: extras.runsText, newLine: true, xs: 12 } }
+					: {}),
 				...(base as Extract<JsonFormSchema, { type: "panel" }>).items,
 				...(suggestion.checks && suggestion.checks.length > 0
 					? {
@@ -1647,6 +1657,8 @@ export interface LearnExtras {
 	dropped: { id: string; name: string; actions: number }[];
 	/** Decision per run key (`null` removes it). */
 	decisions: Record<string, "include" | "exclude" | null>;
+	/** Which runs the suggestion comes from (shown above the values). */
+	runsText?: string;
 	/** Base bands of the chosen runs. */
 	bands: BaseBands | null;
 	/** The admitted runs as stored runs, labelled with the new values. */
@@ -2117,6 +2129,14 @@ export function buildLearnSourceSchema(): JsonFormSchema {
 				sm: 3,
 			},
 			runs: { type: "number", label: I18n.getTranslatedObject("dm_learnRuns"), disabled: true, xs: 12, sm: 3 },
+			reviewRuns: {
+				type: "checkbox",
+				label: I18n.getTranslatedObject("dm_learnReviewRuns"),
+				help: I18n.getTranslatedObject("dm_learnReviewRunsHelp"),
+				newLine: true,
+				xs: 12,
+				hidden: "data.source !== 'history'",
+			},
 		},
 	};
 }

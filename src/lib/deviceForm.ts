@@ -339,7 +339,6 @@ export function buildDeviceSchema(
 		type: "panel",
 		label: I18n.getTranslatedObject("dev_reminderSection"),
 		collapsable: true,
-		color: "secondary",
 		newLine: true,
 		xs: 12,
 		items: {
@@ -385,7 +384,6 @@ export function buildDeviceSchema(
 		type: "panel",
 		label: I18n.getTranslatedObject("dev_actionsSection"),
 		collapsable: true,
-		color: "secondary",
 		newLine: true,
 		xs: 12,
 		items: {
@@ -419,7 +417,6 @@ export function buildDeviceSchema(
 		type: "panel",
 		label: I18n.getTranslatedObject("dev_advancedSection"),
 		collapsable: true,
-		color: "secondary",
 		newLine: true,
 		xs: 12,
 		items: {
@@ -492,7 +489,6 @@ function detectionPanel(unit: string): PanelItems[string] {
 		type: "panel",
 		label: I18n.getTranslatedObject("dev_detectionSection"),
 		collapsable: true,
-		color: "secondary",
 		newLine: true,
 		xs: 12,
 		items: {
@@ -556,7 +552,6 @@ function expertPanel(unit: string): PanelItems[string] {
 		type: "panel",
 		label: I18n.getTranslatedObject("dev_expertValues"),
 		collapsable: true,
-		color: "secondary",
 		newLine: true,
 		xs: 12,
 		items: Object.fromEntries([
