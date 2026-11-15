@@ -38,6 +38,10 @@ export interface FinalCandidate {
 	covered: number;
 	/** Mean end delay without the final phase minus with it, in s. */
 	gainSec: number;
+	/** Median of the same difference over the runs, in s. */
+	gainMedianSec: number;
+	/** Runs admitted for the end that were replayed. */
+	endRuns: number;
 	/** Runs with `uses.end` that the final phase reports too early (and the values without it do not). */
 	earlyEnds: number;
 	/** Cross-check: left-out runs in which the values learned without them never report early. */
@@ -877,6 +881,8 @@ export async function learnFinal(
 		reasons: [],
 		covered: 0,
 		gainSec: 0,
+		gainMedianSec: 0,
+		endRuns: 0,
 		earlyEnds: 0,
 		fallbacks: 0,
 		perGroup: {},
@@ -971,6 +977,8 @@ export async function learnFinal(
 	let sumBase = 0;
 	let sumCand = 0;
 	let n = 0;
+	const gains: number[] = [];
+	result.endRuns = ends.length;
 	const earlyOf = (sets: DetectionSettings): number[] =>
 		ends.map((it, k) => {
 			const j = judge(it, replay(it.series, it.fromIdx, it.toIdx, sets, ctx));
@@ -997,6 +1005,7 @@ export async function learnFinal(
 		if (!j.wrong && !b.wrong) {
 			sumBase += b.delaySec;
 			sumCand += j.delaySec;
+			gains.push(b.delaySec - j.delaySec);
 			n++;
 		}
 	});
@@ -1006,6 +1015,7 @@ export async function learnFinal(
 	}
 	const meanBase = n > 0 ? sumBase / n : 0;
 	result.gainSec = n > 0 ? Math.round(meanBase - sumCand / n) : 0;
+	result.gainMedianSec = Math.round(median(gains));
 	if (result.gainSec < Math.max(GAIN_MIN_SEC, GAIN_SHARE * meanBase)) {
 		add("noGain");
 	}

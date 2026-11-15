@@ -2,6 +2,8 @@ import type { DetectionMode, TypeThresholds } from "./detector/types.js";
 import type { AnalyzeOptions } from "./learn/analyze.js";
 import { analyzeTicks } from "./learn/analyze.js";
 import type { ModeEvaluation } from "./learn/replay.js";
+import type { Verdict } from "./learn/quality.js";
+import { checkRuns, runSamples } from "./learn/quality.js";
 import { PAD_AFTER_MS } from "./learn/runs.js";
 import { fromPoints } from "./learn/ticks.js";
 
@@ -63,6 +65,8 @@ export interface LearningSuggestion {
 	delays?: number[];
 	/** Starts outside of a run. */
 	falseStarts?: number;
+	/** Recording: findings of the run check that make the values unreliable (codes of `QualityCode`). */
+	checks?: string[];
 }
 
 const MAX_DURATION_MS = 12 * 60 * 60 * 1000;
@@ -158,4 +162,40 @@ export async function suggestType(
 		return { error: "noRun" };
 	}
 	return result;
+}
+
+/**
+ * Findings of the run check that apply to one recording (Spec B.7): invalid values and a proven gap. The other
+ * checks need other runs to compare with (or the unit of the state, checked before recording starts).
+ *
+ * @param samples - Recorded samples (unit of the state)
+ * @param pollIntervalSec - Poll interval in seconds
+ * @param unitFactor - W per unit of the state
+ * @returns codes of the findings, each once
+ */
+export function recordingChecks(samples: readonly LearningSample[], pollIntervalSec: number, unitFactor = 1): string[] {
+	const stepMs = Math.max(pollIntervalSec, 1) * 1000;
+	const { samples: found } = runSamples(
+		"recording",
+		samples.map(s => ({ ts: s.t, val: s.p })),
+		{ stepMs, src: "live", unitFactor },
+	);
+	const verdicts: Verdict[] = checkRuns(found, {
+		bands: null,
+		unitFactor,
+		unit: unitFactor === 1000 ? "kW" : "W",
+		settings: null,
+		pollMs: stepMs,
+		outages: [],
+		scope: "run",
+	});
+	const out = new Set<string>();
+	for (const v of verdicts) {
+		for (const r of v.reasons) {
+			if (r.code === "invalid" || (r.code === "gap" && r.detail.startsWith("proven"))) {
+				out.add(r.code);
+			}
+		}
+	}
+	return [...out];
 }

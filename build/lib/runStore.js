@@ -987,7 +987,7 @@ export function recompute(store, ctx) {
     recomputeEnvelope(store, verdicts);
     return verdicts;
 }
-function startOf(r) {
+export function startOf(r) {
     return r.ts + r.seg.startIdx * r.step;
 }
 export function addRun(store, run, o = {}) {

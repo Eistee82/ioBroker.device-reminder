@@ -1,5 +1,6 @@
 import { analyzeTicks } from "./learn/analyze.js";
 import { baseBandsOf } from "./learn/bands.js";
+import { cleanPoints } from "./learn/clean.js";
 import { admitted, checkRuns, primaryOf, runSamples } from "./learn/quality.js";
 import { fromPoints } from "./learn/ticks.js";
 export { DELAY_TOLERANCE_SEC, HISTORY_DAYS, MIN_RUNS, pickMode } from "./learn/analyze.js";
@@ -78,7 +79,10 @@ export async function analyzeHistory(input, pollIntervalSec, opts = {}) {
         const factor = opts.unitFactor && opts.unitFactor > 0 ? opts.unitFactor : 1;
         const raw = input;
         let kept = raw;
-        if (!opts.recording) {
+        if (opts.heldBack) {
+            kept = withoutSpans(cleanPoints(raw).points, opts.heldBack);
+        }
+        else if (!opts.recording) {
             const held = heldBackOf(raw, poll, factor, opts.templatePeakW);
             kept = withoutSpans(held.points, held.spans);
         }

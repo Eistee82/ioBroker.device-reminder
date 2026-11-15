@@ -8,10 +8,17 @@ import { BUDGET_WARN_JOBS, formatDate } from "./deviceRegistry.js";
 import { fill, plain, TEMPLATE_NAMES, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import { FINAL_KEYS } from "./detector/types.js";
-import { analyzeHistory } from "./historyLearning.js";
+import { analyzeHistory, MIN_RUNS } from "./historyLearning.js";
+import { storedRunsOfHistory } from "./historyRuns.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import { describeChange } from "./learn/autoOptimize.js";
-import { BASE_KEYS, decisionOf, detectionOf } from "./runStore.js";
+import { learnFinal } from "./learn/finalLearn.js";
+import { admitted, sameRun, verdictKey } from "./learn/quality.js";
+import { buildLayout } from "./learn/runs.js";
+import { buildRunsSchema, evaluateRuns, finalItems, finalText, heldBackSpans, learnInputOf, neutralName, phaseData, phaseItems, phaseSequences, phasesFromForm, rowsOf, runTableData, usesOfAnswer, } from "./learnDialog.js";
+import { normalizePhases } from "./phases/model.js";
+import { learnPhases } from "./phases/learn.js";
+import { BASE_KEYS, decisionOf, detectionOf, startOf, typeHash } from "./runStore.js";
 import { archiveTemplates, CUSTOM_TEMPLATE, findTemplate, scalePowers } from "./templates.js";
 import { detectFromHost } from "./typeDetection.js";
 import { errorMessage, parseNumber } from "./utils.js";
@@ -762,6 +769,15 @@ export class ReminderDeviceManagement extends DeviceManagement {
             if (await this.learnFromHistory(id, ctx)) {
                 return this.updateOf(id);
             }
+            const powerId = registry.get(id)?.config.powerId;
+            const obj = powerId ? await this.adapter.getForeignObjectAsync(powerId) : null;
+            const common = (obj?.common ?? {});
+            const unitText = typeof common.unit === "string" ? common.unit.trim() : "";
+            const role = typeof common.role === "string" ? common.role : "";
+            if (/wh$/i.test(unitText) || role.startsWith("value.energy")) {
+                await ctx.showMessage(TEXT.learnEnergyCounter);
+                return this.updateOf(id);
+            }
             await registry.startLearning(id);
             await ctx.showMessage(TEXT.learnStarted);
             return this.updateOf(id);
@@ -775,7 +791,9 @@ export class ReminderDeviceManagement extends DeviceManagement {
         return this.updateOf(id);
     }
     async learnFromHistory(id, ctx) {
-        const powerId = this.adapter.registry.get(id)?.config.powerId;
+        const registry = this.adapter.registry;
+        const cfg = registry.get(id)?.config;
+        const powerId = cfg?.powerId;
         const env = this.historyEnv();
         let instance;
         try {
@@ -784,67 +802,49 @@ export class ReminderDeviceManagement extends DeviceManagement {
         catch (err) {
             this.adapter.log.debug(`No history for ${powerId}: ${errorMessage(err)}`);
         }
-        if (!powerId || !instance) {
+        if (!cfg || !powerId || !instance) {
             return false;
         }
-        const progress = await ctx.openProgress(TEXT.learnAnalysing, { value: 0, label: TEXT.learnReading });
-        let sent = 0;
-        let updates = Promise.resolve();
-        const report = (value, label) => {
-            if (value < sent + 5 && !(value === 100 && sent < 100)) {
-                return;
-            }
-            sent = value;
-            updates = updates.then(() => progress.update({ value, label })).catch(() => undefined);
-        };
-        const cfg = this.adapter.registry.get(id)?.config;
         const poll = this.adapter.instanceConfig.pollIntervalSec;
-        let result;
+        const loading = await this.progressOf(ctx);
+        let input = null;
         let unit = "W";
+        let minDelta = 0;
         let unreadable = false;
+        let energyCounter = false;
         try {
-            const { series, meta } = await loadHistorySeries(env, instance, powerId, Date.now(), poll, f => report(Math.round(60 * f), TEXT.learnReading));
+            const loaded = await loadHistorySeries(env, instance, powerId, Date.now(), poll, f => loading.report(Math.round(60 * f), TEXT.learnReading));
+            const { meta } = loaded;
             unit = meta.unit || "W";
+            minDelta = meta.minDelta;
             if (meta.error) {
                 this.adapter.log.warn(`History of ${powerId} from ${instance}: ${meta.failedChunks} of ${meta.queries} queries failed: ${meta.error}`);
             }
             unreadable = meta.queries > 0 && meta.failedChunks === meta.queries;
-            if (meta.energyCounter) {
-                result = { error: "energyCounter" };
+            energyCounter = meta.energyCounter;
+            if (!energyCounter && loaded.series.points >= 20) {
+                loading.report(80, TEXT.learnChecking);
+                input = learnInputOf(id, loaded.series, loaded.clean, meta.unitFactor, meta.settings);
             }
-            else {
-                result = await analyzeHistory(series, poll, {
-                    abort: cfg?.abort,
-                    abortFixed: cfg?.abortFixed,
-                    unitFactor: meta.unitFactor,
-                    minDelta: meta.minDelta,
-                    currentType: cfg ? detectionOf(cfg.detection) : undefined,
-                    keepCurrentLevel: findTemplate(cfg?.template) !== undefined,
-                    yieldFn: () => new Promise(resolve => {
-                        this.adapter.setTimeout(resolve, 0);
-                    }),
-                    onProgress: f => report(60 + Math.round(40 * f), TEXT.learnChecking),
-                });
-            }
+            loading.report(100, TEXT.learnChecking);
         }
         catch (err) {
             this.adapter.log.warn(`Reading the history of ${powerId} from ${instance} failed: ${errorMessage(err)}`);
-            result = { error: "noHistory" };
         }
         finally {
-            await updates;
-            await progress.close();
+            await loading.close();
         }
-        if ("error" in result) {
-            if (result.error === "energyCounter") {
-                await ctx.showMessage(TEXT.learnEnergyCounter);
-                return true;
-            }
+        if (energyCounter) {
+            await ctx.showMessage(TEXT.learnEnergyCounter);
+            return true;
+        }
+        const runCount = input?.samples.filter(x => x.kind === "run").length ?? 0;
+        if (!input || runCount < MIN_RUNS) {
             await ctx.showMessage(unreadable ? TEXT.learnHistoryUnreadable : TEXT.learnHistoryTooFewRuns);
             return false;
         }
         const choice = await ctx.showForm(buildLearnSourceSchema(), {
-            data: { source: "history", instance, runs: result.runs },
+            data: { source: "history", instance, runs: runCount },
             title: TEXT.learnTitle,
             ignoreApplyDisabled: true,
         });
@@ -854,9 +854,154 @@ export class ReminderDeviceManagement extends DeviceManagement {
         if (choice.source !== "history") {
             return false;
         }
+        const store = await registry.readLearningData(id);
+        let uses = initialUses(input, store);
+        const oldStore = oldStoreOf(store);
+        let ev;
+        let result;
+        for (;;) {
+            for (;;) {
+                ev = evaluateRuns(input, uses, oldStore);
+                const learned = this.learnPhasesOf(cfg, input, ev, poll);
+                const seq = learned ? phaseSequences(learned.model, ev.bands, input, poll) : new Map();
+                const rows = rowsOf(input, ev, uses, seq);
+                const answer = await ctx.showForm(buildRunsSchema(rows, ev.verdicts.some(v => v.reasons.some(r => r.code === "formerlyDropped"))), { data: runTableData(rows), title: TEXT.learnTitle, ignoreApplyDisabled: true });
+                if (!answer) {
+                    return true;
+                }
+                uses = usesOfAnswer(answer, rows);
+                if (answer.recalc !== true) {
+                    break;
+                }
+            }
+            ev = evaluateRuns(input, uses, oldStore);
+            const analysing = await this.progressOf(ctx);
+            let analysed;
+            try {
+                analysed = await analyzeHistory(input.points, poll, {
+                    abort: cfg.abort,
+                    abortFixed: cfg.abortFixed,
+                    unitFactor: input.factor,
+                    minDelta,
+                    currentType: detectionOf(cfg.detection),
+                    keepCurrentLevel: findTemplate(cfg.template) !== undefined,
+                    heldBack: heldBackSpans(input, ev),
+                    yieldFn: () => new Promise(resolve => {
+                        this.adapter.setTimeout(resolve, 0);
+                    }),
+                    onProgress: f => analysing.report(Math.round(100 * f), TEXT.learnChecking),
+                });
+                analysing.report(100, TEXT.learnChecking);
+            }
+            catch (err) {
+                this.adapter.log.warn(`Learning from the history of ${powerId} failed: ${errorMessage(err)}`);
+                analysed = { error: "noHistory" };
+            }
+            finally {
+                await analysing.close();
+            }
+            if ("error" in analysed) {
+                await ctx.showMessage(TEXT.learnHistoryTooFewRuns);
+                continue;
+            }
+            result = analysed;
+            break;
+        }
         await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);
-        await this.applyLearned(id, result, ctx, unit);
+        const suggested = settingsOfSuggestion(detectionOf(cfg.detection), result);
+        const learned = this.learnPhasesOf(cfg, input, ev, poll);
+        let finalCandidate = null;
+        if (ev.bands) {
+            const runs = input.samples.map((sample, k) => ({ sample, verdict: ev.verdicts[k], series: input.series }));
+            finalCandidate = await learnFinal(runs, {
+                base: suggested,
+                pollSec: poll,
+                unitFactor: input.factor,
+                abort: cfg.abort,
+                abortFixed: cfg.abortFixed,
+                bands: ev.bands,
+                minRuns: 5,
+                minPerGroup: 1,
+                scope: learned?.result.model.scope ?? "run",
+                yieldFn: () => new Promise(resolve => {
+                    this.adapter.setTimeout(resolve, 0);
+                }),
+            });
+        }
+        const decisions = {};
+        for (const x of input.samples) {
+            const u = uses.get(x.key) ?? "auto";
+            decisions[x.key] = u === "auto" ? null : u;
+        }
+        const chosen = input;
+        const chosenEv = ev;
+        await this.applyLearned(id, result, ctx, unit, TEXT.learnConfirm, {
+            final: finalCandidate,
+            model: learned?.model ?? null,
+            retro: learned?.result.retroOnly ?? [],
+            dropped: learned?.result.dropped ?? [],
+            decisions,
+            bands: ev.bands,
+            storedRuns: eff => this.storedRunsOf(chosen, chosenEv, eff, cfg, poll),
+        });
         return true;
+    }
+    async progressOf(ctx) {
+        const progress = await ctx.openProgress(TEXT.learnAnalysing, { value: 0, label: TEXT.learnReading });
+        let sent = 0;
+        let updates = Promise.resolve();
+        return {
+            report: (value, label) => {
+                if (value < sent + 5 && !(value === 100 && sent < 100)) {
+                    return;
+                }
+                sent = value;
+                updates = updates.then(() => progress.update({ value, label })).catch(() => undefined);
+            },
+            close: async () => {
+                await updates;
+                await progress.close();
+            },
+        };
+    }
+    learnPhasesOf(cfg, input, ev, poll) {
+        if (!ev.bands) {
+            return null;
+        }
+        const result = learnPhases(input.samples.map((sample, k) => ({ sample, verdict: ev.verdicts[k] })), {
+            runLimitW: input.layout.runLimit,
+            unitFactor: input.factor,
+            pollSec: poll,
+            ...(cfg.phases ? { previous: cfg.phases } : {}),
+            neutralName,
+            now: Date.now(),
+            actionsOf: phaseId => cfg.actions.filter(a => a.phaseId === phaseId).length,
+        });
+        const model = normalizePhases(result.model, [], cfg.name);
+        return model ? { model, result } : null;
+    }
+    async storedRunsOf(input, ev, eff, cfg, poll) {
+        const keys = input.samples
+            .filter((x, k) => x.kind === "run" && admitted(ev.verdicts[k], "end"))
+            .map(x => x.key);
+        const layout = buildLayout(input.series, {
+            keepAbove: eff.endVal * input.factor,
+            maxRuns: Number.POSITIVE_INFINITY,
+        });
+        return storedRunsOfHistory(input.series, layout, {
+            eff,
+            abort: cfg.abort,
+            abortFixed: cfg.abortFixed,
+            pollSec: poll,
+            unitFactor: input.factor,
+            skip: startMs => {
+                const key = verdictKey(input.deviceId, startMs);
+                return !keys.some(k => sameRun(k, key));
+            },
+            yieldFn: () => new Promise(resolve => {
+                this.adapter.setTimeout(resolve, 0);
+            }),
+        });
     }
     historyEnv() {
         return {
@@ -885,7 +1030,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
         this.adapter.log.info(`${cfg.name}: values in use saved as base values of the device (${changes})`);
         return true;
     }
-    async applyLearned(id, suggestion, ctx, unit = "W", confirm = TEXT.learnConfirm) {
+    async applyLearned(id, suggestion, ctx, unit = "W", confirm = TEXT.learnConfirm, extras) {
         const obj = await this.adapter.getObjectAsync(id);
         const cfg = obj ? this.storedConfigOf(obj) : null;
         if (!cfg) {
@@ -924,25 +1069,59 @@ export class ReminderDeviceManagement extends DeviceManagement {
                     trailerMaxSec: suggestion.trailerMaxSec ?? 0,
                 }
                 : {}),
+            ...(suggestion.checks && suggestion.checks.length > 0
+                ? { checksText: suggestion.checks.map(code => checkLabel(code)).join(", ") }
+                : {}),
+            ...(extras?.final
+                ? {
+                    final_text: translatedText(finalText(extras.final), this.adapter.language ?? "en"),
+                    final_apply: false,
+                }
+                : {}),
+            ...(extras?.model ? phaseData(extras.model, extras.final, cfg.phases?.enabled === true) : {}),
         };
         const fromHistory = suggestion.looDetected !== undefined;
-        const schema = buildLearnSchema(fromHistory, unit, suggestion.current !== undefined, suggestion.evaluation !== undefined, withTrailer, suggestion.trailer === "notSeparable", suggestion.samples > 0);
+        const base = buildLearnSchema(fromHistory, unit, suggestion.current !== undefined, suggestion.evaluation !== undefined, withTrailer, suggestion.trailer === "notSeparable", suggestion.samples > 0);
+        const schema = {
+            ...base,
+            items: {
+                ...base.items,
+                ...(suggestion.checks && suggestion.checks.length > 0
+                    ? {
+                        checks: {
+                            type: "infoBox",
+                            boxType: "warning",
+                            text: I18n.getTranslatedObject("dm_learnChecks"),
+                            newLine: true,
+                            xs: 12,
+                        },
+                        checksText: { type: "text", disabled: true, xs: 12 },
+                    }
+                    : {}),
+                ...(extras?.final ? finalItems(extras.final) : {}),
+                ...(extras?.model ? phaseItems(extras.model, extras.final, extras.retro, extras.dropped) : {}),
+            },
+        };
         const before = detectionOf(cfg.detection);
         let next = null;
+        let useFinal = false;
+        let answered = data;
         while (!next) {
             const result = await ctx.showForm(schema, { data, title: TEXT.learnTitle, ignoreApplyDisabled: true });
             if (!result) {
                 return;
             }
-            const parsed = parseLearnForm(result);
+            answered = { ...data, ...result };
+            const parsed = parseLearnForm(answered);
             if (!parsed.values) {
                 await ctx.showMessage(parsed.error);
-                data = result;
+                data = answered;
                 continue;
             }
+            useFinal = extras?.final?.ok === true && answered.final_apply === true;
             const final = {};
             for (const key of FINAL_KEYS) {
-                final[key] = before[key] ?? 0;
+                final[key] = useFinal ? (extras.final.values[key] ?? 0) : (before[key] ?? 0);
             }
             next = normalizeDetection({ ...final, ...parsed.values }, [], cfg.name);
         }
@@ -951,10 +1130,66 @@ export class ReminderDeviceManagement extends DeviceManagement {
             return;
         }
         const { template: _template, typeId: _typeId, ...rest } = cfg;
-        await this.writeDevice(id, { ...rest, detection: next, learned: true });
+        const showPhases = extras?.model !== null && extras?.model !== undefined && answered.showPhases === true;
+        const phases = showPhases ? phasesFromForm(extras.model, answered, extras.final, true) : undefined;
+        await this.writeDevice(id, { ...rest, detection: next, learned: true, ...(phases ? { phases } : {}) });
+        if (extras) {
+            const runs = useFinal ? await extras.storedRuns(next) : [];
+            await this.adapter.registry.setDecisions(id, extras.decisions, runs, useFinal && extras.bands ? extras.bands : undefined, typeHash(next));
+        }
         this.adapter.log.info(`${cfg.name}: learned detection values saved (${changes})`);
         await ctx.showMessage(TEXT.learnSaved);
     }
+}
+function translatedText(text, lang) {
+    return text[lang] ?? text.en;
+}
+function checkLabel(code) {
+    const key = `dm_check_${code}`;
+    const t = I18n.translate(key);
+    return t === key ? code : t;
+}
+function initialUses(input, store) {
+    const out = new Map();
+    const decided = Object.entries(store?.verdicts ?? {});
+    for (const x of input.samples) {
+        const d = decided.find(([key]) => sameRun(key, x.key))?.[1];
+        out.set(x.key, d?.user ?? "auto");
+    }
+    return out;
+}
+function oldStoreOf(store) {
+    if (!store || (store.legacyEnvelope?.n ?? 0) === 0 || store.runs.length === 0) {
+        return undefined;
+    }
+    const runs = [...store.runs, ...store.spikes];
+    return {
+        from: Math.min(...runs.map(r => startOf(r))),
+        to: Math.max(...runs.map(r => r.ts + (r.seg.runEndIdx + 1) * r.step)),
+        keys: runs.map(r => verdictKey(store.deviceId, startOf(r))),
+    };
+}
+function settingsOfSuggestion(before, s) {
+    const withTrailer = (s.trailerBurstSec ?? 0) > 0;
+    return {
+        ...before,
+        startVal: s.thresholds.startVal,
+        endVal: s.thresholds.endVal,
+        standby: s.thresholds.standby,
+        startCount: s.thresholds.startCount,
+        endCount: s.thresholds.endCount,
+        startDurationSec: s.startDurationSec,
+        endDurationSec: s.endDurationSec,
+        mode: s.mode ?? before.mode,
+        pauseHoldSec: s.pauseHoldSec,
+        pauseUntilSec: s.pauseUntilSec,
+        pauseBelowVal: s.pauseBelowVal,
+        trailerBurstSec: withTrailer ? s.trailerBurstSec : 0,
+        trailerGapSec: withTrailer ? (s.trailerGapSec ?? 0) : 0,
+        trailerAfterSec: withTrailer ? (s.trailerAfterSec ?? 0) : 0,
+        trailerBlockVal: withTrailer ? (s.trailerBlockVal ?? 0) : 0,
+        trailerMaxSec: withTrailer ? (s.trailerMaxSec ?? 0) : 0,
+    };
 }
 function filled(text, vars) {
     const out = {};
@@ -1382,4 +1617,5 @@ export function parseLearnForm(data) {
     }
     return { values };
 }
+export { buildRunTable, RUN_TABLE_MODE } from "./learnDialog.js";
 //# sourceMappingURL=deviceManagement.js.map

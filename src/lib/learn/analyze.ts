@@ -43,6 +43,11 @@ export interface AnalyzeOptions {
 	templatePeakW?: number;
 	/** Recording of one run instead of a history. */
 	recording?: boolean;
+	/**
+	 * Stretches of stored values to leave out of the history (ms). Without it the run check of the analysis decides
+	 * (`heldBackOf`); the learning dialog passes the stretches of the runs the user chose not to use.
+	 */
+	heldBack?: readonly { from: number; to: number }[];
 	/** Called regularly so that other work can run. */
 	yieldFn?: () => Promise<void>;
 	/** Progress 0..1. */

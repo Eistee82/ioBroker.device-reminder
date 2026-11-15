@@ -1,4 +1,5 @@
 import { analyzeTicks } from "./learn/analyze.js";
+import { checkRuns, runSamples } from "./learn/quality.js";
 import { PAD_AFTER_MS } from "./learn/runs.js";
 import { fromPoints } from "./learn/ticks.js";
 const MAX_DURATION_MS = 12 * 60 * 60 * 1000;
@@ -49,5 +50,27 @@ export async function suggestType(samples, pollIntervalSec, opts = {}) {
         return { error: "noRun" };
     }
     return result;
+}
+export function recordingChecks(samples, pollIntervalSec, unitFactor = 1) {
+    const stepMs = Math.max(pollIntervalSec, 1) * 1000;
+    const { samples: found } = runSamples("recording", samples.map(s => ({ ts: s.t, val: s.p })), { stepMs, src: "live", unitFactor });
+    const verdicts = checkRuns(found, {
+        bands: null,
+        unitFactor,
+        unit: unitFactor === 1000 ? "kW" : "W",
+        settings: null,
+        pollMs: stepMs,
+        outages: [],
+        scope: "run",
+    });
+    const out = new Set();
+    for (const v of verdicts) {
+        for (const r of v.reasons) {
+            if (r.code === "invalid" || (r.code === "gap" && r.detail.startsWith("proven"))) {
+                out.add(r.code);
+            }
+        }
+    }
+    return [...out];
 }
 //# sourceMappingURL=learning.js.map

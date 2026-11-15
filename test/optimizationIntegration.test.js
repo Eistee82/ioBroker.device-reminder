@@ -153,6 +153,29 @@ describe("automatic optimisation in the registry", function () {
 		assert.strictEqual(await ctx.reg.readLearningData("dev"), null);
 	});
 
+	it("writes decisions of the user into the loaded learning data and into the file without it (Spec B.7)", async () => {
+		const ctx = await setup({ detection: DRYER });
+		const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 3, after: 400 });
+		await play(ctx, run.values);
+		const store = ctx.reg.learningData("dev");
+		const key = [...store.runs, ...store.spikes][0].key;
+		await ctx.reg.setDecisions("dev", { [key]: "exclude", "dev@other": "include" });
+		assert.deepStrictEqual(store.verdicts[key], { user: "exclude" });
+		assert.deepStrictEqual(store.verdicts["dev@other"], { user: "include" });
+		await ctx.reg.setDecisions("dev", { "dev@other": null });
+		assert.strictEqual(store.verdicts["dev@other"], undefined, "null removes a decision");
+		// without the optimisation the file is read and written
+		await ctx.reg.upsert("dev", { ...ctx.cfg, autoOptimize: undefined });
+		await ctx.reg.setDecisions("dev", { "dev@x": "include" });
+		const read = await ctx.reg.readLearningData("dev");
+		assert.deepStrictEqual(read.verdicts["dev@x"], { user: "include" });
+		assert.deepStrictEqual(read.verdicts[key], { user: "exclude" });
+		// no file at all: it is created
+		await ctx.reg.deleteLearningData("dev", false);
+		await ctx.reg.setDecisions("dev", { "dev@y": "exclude" });
+		assert.deepStrictEqual((await ctx.reg.readLearningData("dev")).verdicts, { "dev@y": { user: "exclude" } });
+	});
+
 	it("sends the changes in the language of the installation and logs them in English", async () => {
 		const ctx = await setup({ detection: DRYER, notify: true, lang: "de" });
 		const run = runOf({ device: "dryer", programme: "cupboard", shape: "T1", seed: 3, after: 400 });

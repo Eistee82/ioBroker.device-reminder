@@ -34,16 +34,43 @@ import { fill, plain, TEMPLATE_NAMES, TEXT } from "./dmTexts.js";
 import { allocateDeviceId } from "./ids.js";
 import { FINAL_KEYS } from "./detector/types.js";
 import type { DetectionMode, DetectionSettings, FinalSettings } from "./detector/types.js";
-import { analyzeHistory } from "./historyLearning.js";
-import type { ModeEvaluation } from "./historyLearning.js";
+import { analyzeHistory, MIN_RUNS } from "./historyLearning.js";
+import type { HistorySuggestion, ModeEvaluation } from "./historyLearning.js";
+import { storedRunsOfHistory } from "./historyRuns.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import type { HistoryEnv } from "./historySource.js";
 import { describeChange } from "./learn/autoOptimize.js";
+import type { BaseBands } from "./learn/bands.js";
+import type { FinalCandidate } from "./learn/finalLearn.js";
+import { learnFinal } from "./learn/finalLearn.js";
+import { admitted, sameRun, verdictKey } from "./learn/quality.js";
+import { buildLayout } from "./learn/runs.js";
+import type { Evaluation, LearnInput, RunUse } from "./learnDialog.js";
+import {
+	buildRunsSchema,
+	evaluateRuns,
+	finalItems,
+	finalText,
+	heldBackSpans,
+	learnInputOf,
+	neutralName,
+	phaseData,
+	phaseItems,
+	phaseSequences,
+	phasesFromForm,
+	rowsOf,
+	runTableData,
+	usesOfAnswer,
+} from "./learnDialog.js";
 import type { LearningSuggestion } from "./learning.js";
+import type { PhaseModel } from "./phases/model.js";
+import { normalizePhases } from "./phases/model.js";
+import type { PhaseLearnResult } from "./phases/learn.js";
+import { learnPhases } from "./phases/learn.js";
 import type { DeviceTypeConfig } from "./legacyTypes.js";
 import type { Notifier } from "./notifier.js";
-import type { DetectionKey, StoreFile } from "./runStore.js";
-import { BASE_KEYS, decisionOf, detectionOf } from "./runStore.js";
+import type { DetectionKey, StoreFile, StoredRun } from "./runStore.js";
+import { BASE_KEYS, decisionOf, detectionOf, startOf, typeHash } from "./runStore.js";
 import { archiveTemplates, CUSTOM_TEMPLATE, findTemplate, scalePowers } from "./templates.js";
 import { detectFromHost } from "./typeDetection.js";
 import type { DetectionResult } from "./typeDetection.js";
@@ -1017,6 +1044,16 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			if (await this.learnFromHistory(id, ctx)) {
 				return this.updateOf(id);
 			}
+			// an energy meter (Wh) shows no power: recording it would only teach wrong values (Spec B.7 `counter`)
+			const powerId = registry.get(id)?.config.powerId;
+			const obj = powerId ? await this.adapter.getForeignObjectAsync(powerId) : null;
+			const common = (obj?.common ?? {}) as { unit?: unknown; role?: unknown };
+			const unitText = typeof common.unit === "string" ? common.unit.trim() : "";
+			const role = typeof common.role === "string" ? common.role : "";
+			if (/wh$/i.test(unitText) || role.startsWith("value.energy")) {
+				await ctx.showMessage(TEXT.learnEnergyCounter);
+				return this.updateOf(id);
+			}
 			await registry.startLearning(id);
 			await ctx.showMessage(TEXT.learnStarted);
 			return this.updateOf(id);
@@ -1032,15 +1069,19 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	}
 
 	/**
-	 * Learn from the stored history of the power state instead of recording a run. The history is
-	 * analysed first; only if it holds enough runs the user is asked whether to use it.
+	 * Learn from the stored history of the power state instead of recording a run (Spec B.7). The history is loaded
+	 * and every run is checked first; only if it holds enough runs the user is asked whether to use it. Then the
+	 * dialog shows every run with its check and use, the suggestion (detection values from the chosen runs, the final
+	 * phase with its key figures) and the phases.
 	 *
 	 * @param id - Device id
 	 * @param ctx - Action context
 	 * @returns true if the learning was handled (or cancelled), false to record a run instead
 	 */
 	private async learnFromHistory(id: Id, ctx: ActionContext): Promise<boolean> {
-		const powerId = this.adapter.registry.get(id)?.config.powerId;
+		const registry = this.adapter.registry;
+		const cfg = registry.get(id)?.config;
+		const powerId = cfg?.powerId;
 		const env = this.historyEnv();
 		let instance: string | undefined;
 		try {
@@ -1048,70 +1089,51 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		} catch (err) {
 			this.adapter.log.debug(`No history for ${powerId}: ${errorMessage(err)}`);
 		}
-		if (!powerId || !instance) {
+		if (!cfg || !powerId || !instance) {
 			return false;
 		}
-		const progress = await ctx.openProgress(TEXT.learnAnalysing, { value: 0, label: TEXT.learnReading });
-		let sent = 0;
-		let updates: Promise<void> = Promise.resolve();
-		const report = (value: number, label: ioBroker.Translated): void => {
-			if (value < sent + 5 && !(value === 100 && sent < 100)) {
-				return;
-			}
-			sent = value;
-			updates = updates.then(() => progress.update({ value, label })).catch(() => undefined);
-		};
-		const cfg = this.adapter.registry.get(id)?.config;
 		const poll = this.adapter.instanceConfig.pollIntervalSec;
-		let result: Awaited<ReturnType<typeof analyzeHistory>>;
+		const loading = await this.progressOf(ctx);
+		let input: LearnInput | null = null;
 		let unit = "W";
+		let minDelta = 0;
 		let unreadable = false;
+		let energyCounter = false;
 		try {
-			const { series, meta } = await loadHistorySeries(env, instance, powerId, Date.now(), poll, f =>
-				report(Math.round(60 * f), TEXT.learnReading),
+			const loaded = await loadHistorySeries(env, instance, powerId, Date.now(), poll, f =>
+				loading.report(Math.round(60 * f), TEXT.learnReading),
 			);
+			const { meta } = loaded;
 			unit = meta.unit || "W";
+			minDelta = meta.minDelta;
 			if (meta.error) {
 				this.adapter.log.warn(
 					`History of ${powerId} from ${instance}: ${meta.failedChunks} of ${meta.queries} queries failed: ${meta.error}`,
 				);
 			}
 			unreadable = meta.queries > 0 && meta.failedChunks === meta.queries;
-			if (meta.energyCounter) {
-				result = { error: "energyCounter" };
-			} else {
-				result = await analyzeHistory(series, poll, {
-					abort: cfg?.abort,
-					abortFixed: cfg?.abortFixed,
-					unitFactor: meta.unitFactor,
-					minDelta: meta.minDelta,
-					currentType: cfg ? detectionOf(cfg.detection) : undefined,
-					// only the values of a built-in template stand for the wanted end (drying of a dishwasher)
-					keepCurrentLevel: findTemplate(cfg?.template) !== undefined,
-					yieldFn: () =>
-						new Promise<void>(resolve => {
-							this.adapter.setTimeout(resolve, 0);
-						}),
-					onProgress: f => report(60 + Math.round(40 * f), TEXT.learnChecking),
-				});
+			energyCounter = meta.energyCounter;
+			if (!energyCounter && loaded.series.points >= 20) {
+				loading.report(80, TEXT.learnChecking);
+				input = learnInputOf(id, loaded.series, loaded.clean, meta.unitFactor, meta.settings);
 			}
+			loading.report(100, TEXT.learnChecking);
 		} catch (err) {
 			this.adapter.log.warn(`Reading the history of ${powerId} from ${instance} failed: ${errorMessage(err)}`);
-			result = { error: "noHistory" };
 		} finally {
-			await updates;
-			await progress.close();
+			await loading.close();
 		}
-		if ("error" in result) {
-			if (result.error === "energyCounter") {
-				await ctx.showMessage(TEXT.learnEnergyCounter);
-				return true;
-			}
+		if (energyCounter) {
+			await ctx.showMessage(TEXT.learnEnergyCounter);
+			return true;
+		}
+		const runCount = input?.samples.filter(x => x.kind === "run").length ?? 0;
+		if (!input || runCount < MIN_RUNS) {
 			await ctx.showMessage(unreadable ? TEXT.learnHistoryUnreadable : TEXT.learnHistoryTooFewRuns);
 			return false;
 		}
 		const choice = await ctx.showForm(buildLearnSourceSchema(), {
-			data: { source: "history", instance, runs: result.runs },
+			data: { source: "history", instance, runs: runCount },
 			title: TEXT.learnTitle,
 			// the preset choice is a valid answer: OK must work without a change
 			ignoreApplyDisabled: true,
@@ -1122,9 +1144,209 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		if (choice.source !== "history") {
 			return false;
 		}
+
+		const store = await registry.readLearningData(id);
+		let uses = initialUses(input, store);
+		const oldStore = oldStoreOf(store);
+		let ev: Evaluation;
+		let result: HistorySuggestion;
+		for (;;) {
+			// step 1: the runs with their check and use; "recalculate" shows them again for the chosen set
+			for (;;) {
+				ev = evaluateRuns(input, uses, oldStore);
+				const learned = this.learnPhasesOf(cfg, input, ev, poll);
+				const seq = learned ? phaseSequences(learned.model, ev.bands, input, poll) : new Map<string, string>();
+				const rows = rowsOf(input, ev, uses, seq);
+				const answer = await ctx.showForm(
+					buildRunsSchema(
+						rows,
+						ev.verdicts.some(v => v.reasons.some(r => r.code === "formerlyDropped")),
+					),
+					{ data: runTableData(rows), title: TEXT.learnTitle, ignoreApplyDisabled: true },
+				);
+				if (!answer) {
+					return true;
+				}
+				uses = usesOfAnswer(answer, rows);
+				if (answer.recalc !== true) {
+					break;
+				}
+			}
+			ev = evaluateRuns(input, uses, oldStore);
+			// step 2: detection values from the chosen runs
+			const analysing = await this.progressOf(ctx);
+			let analysed: Awaited<ReturnType<typeof analyzeHistory>>;
+			try {
+				analysed = await analyzeHistory(input.points, poll, {
+					abort: cfg.abort,
+					abortFixed: cfg.abortFixed,
+					unitFactor: input.factor,
+					minDelta,
+					currentType: detectionOf(cfg.detection),
+					// only the values of a built-in template stand for the wanted end (drying of a dishwasher)
+					keepCurrentLevel: findTemplate(cfg.template) !== undefined,
+					heldBack: heldBackSpans(input, ev),
+					yieldFn: () =>
+						new Promise<void>(resolve => {
+							this.adapter.setTimeout(resolve, 0);
+						}),
+					onProgress: f => analysing.report(Math.round(100 * f), TEXT.learnChecking),
+				});
+				analysing.report(100, TEXT.learnChecking);
+			} catch (err) {
+				this.adapter.log.warn(`Learning from the history of ${powerId} failed: ${errorMessage(err)}`);
+				analysed = { error: "noHistory" };
+			} finally {
+				await analysing.close();
+			}
+			if ("error" in analysed) {
+				await ctx.showMessage(TEXT.learnHistoryTooFewRuns);
+				continue;
+			}
+			result = analysed;
+			break;
+		}
 		await this.adapter.setStateAsync(`${id}.learning.result`, JSON.stringify(result), true);
-		await this.applyLearned(id, result, ctx, unit);
+
+		// steps 3 and 4: final phase and phases from the chosen runs
+		const suggested = settingsOfSuggestion(detectionOf(cfg.detection), result);
+		const learned = this.learnPhasesOf(cfg, input, ev, poll);
+		let finalCandidate: FinalCandidate | null = null;
+		if (ev.bands) {
+			const runs = input.samples.map((sample, k) => ({ sample, verdict: ev.verdicts[k], series: input.series }));
+			finalCandidate = await learnFinal(runs, {
+				base: suggested,
+				pollSec: poll,
+				unitFactor: input.factor,
+				abort: cfg.abort,
+				abortFixed: cfg.abortFixed,
+				bands: ev.bands,
+				minRuns: 5,
+				minPerGroup: 1,
+				scope: learned?.result.model.scope ?? "run",
+				yieldFn: () =>
+					new Promise<void>(resolve => {
+						this.adapter.setTimeout(resolve, 0);
+					}),
+			});
+		}
+		const decisions: Record<string, "include" | "exclude" | null> = {};
+		for (const x of input.samples) {
+			const u = uses.get(x.key) ?? "auto";
+			decisions[x.key] = u === "auto" ? null : u;
+		}
+		const chosen = input;
+		const chosenEv = ev;
+		await this.applyLearned(id, result, ctx, unit, TEXT.learnConfirm, {
+			final: finalCandidate,
+			model: learned?.model ?? null,
+			retro: learned?.result.retroOnly ?? [],
+			dropped: learned?.result.dropped ?? [],
+			decisions,
+			bands: ev.bands,
+			storedRuns: eff => this.storedRunsOf(chosen, chosenEv, eff, cfg, poll),
+		});
 		return true;
+	}
+
+	/**
+	 * Progress dialog with a throttled update.
+	 *
+	 * @param ctx - Action context
+	 */
+	private async progressOf(
+		ctx: ActionContext,
+	): Promise<{ report: (value: number, label: ioBroker.Translated) => void; close: () => Promise<void> }> {
+		const progress = await ctx.openProgress(TEXT.learnAnalysing, { value: 0, label: TEXT.learnReading });
+		let sent = 0;
+		let updates: Promise<void> = Promise.resolve();
+		return {
+			report: (value, label) => {
+				if (value < sent + 5 && !(value === 100 && sent < 100)) {
+					return;
+				}
+				sent = value;
+				updates = updates.then(() => progress.update({ value, label })).catch(() => undefined);
+			},
+			close: async () => {
+				await updates;
+				await progress.close();
+			},
+		};
+	}
+
+	/**
+	 * Phases from the chosen runs (null when no usable model comes out).
+	 *
+	 * @param cfg - Device configuration
+	 * @param input - Samples
+	 * @param ev - Run check
+	 * @param poll - Poll interval in s
+	 */
+	private learnPhasesOf(
+		cfg: DeviceConfig,
+		input: LearnInput,
+		ev: Evaluation,
+		poll: number,
+	): { model: PhaseModel; result: PhaseLearnResult } | null {
+		if (!ev.bands) {
+			return null;
+		}
+		const result = learnPhases(
+			input.samples.map((sample, k) => ({ sample, verdict: ev.verdicts[k] })),
+			{
+				runLimitW: input.layout.runLimit,
+				unitFactor: input.factor,
+				pollSec: poll,
+				...(cfg.phases ? { previous: cfg.phases } : {}),
+				neutralName,
+				now: Date.now(),
+				actionsOf: phaseId => cfg.actions.filter(a => a.phaseId === phaseId).length,
+			},
+		);
+		const model = normalizePhases(result.model, [], cfg.name);
+		return model ? { model, result } : null;
+	}
+
+	/**
+	 * The runs of the dialog that count for the end as stored runs (`src: "history"`), labelled with the new values:
+	 * comparison data for the judgement afterwards (Spec A.3) and for the optimisation.
+	 *
+	 * @param input - Samples
+	 * @param ev - Run check
+	 * @param eff - New detection values (unit of the state)
+	 * @param cfg - Device configuration
+	 * @param poll - Poll interval in s
+	 */
+	private async storedRunsOf(
+		input: LearnInput,
+		ev: Evaluation,
+		eff: DetectionSettings,
+		cfg: DeviceConfig,
+		poll: number,
+	): Promise<StoredRun[]> {
+		const keys = input.samples
+			.filter((x, k) => x.kind === "run" && admitted(ev.verdicts[k], "end"))
+			.map(x => x.key);
+		const layout = buildLayout(input.series, {
+			keepAbove: eff.endVal * input.factor,
+			maxRuns: Number.POSITIVE_INFINITY,
+		});
+		return storedRunsOfHistory(input.series, layout, {
+			eff,
+			abort: cfg.abort,
+			abortFixed: cfg.abortFixed,
+			pollSec: poll,
+			unitFactor: input.factor,
+			skip: startMs => {
+				const key = verdictKey(input.deviceId, startMs);
+				return !keys.some(k => sameRun(k, key));
+			},
+			yieldFn: () =>
+				new Promise<void>(resolve => {
+					this.adapter.setTimeout(resolve, 0);
+				}),
+		});
 	}
 
 	/** Installation access for the history analysis. */
@@ -1177,6 +1399,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 	 * @param ctx - Action context
 	 * @param unit - Unit of the power state
 	 * @param confirm - Confirmation before saving; `{changes}` lists the values old → new
+	 * @param extras - Learning from the history: final phase, phases and the decisions about the runs
 	 */
 	public async applyLearned(
 		id: Id,
@@ -1184,6 +1407,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		ctx: ActionContext,
 		unit = "W",
 		confirm: ioBroker.Translated = TEXT.learnConfirm,
+		extras?: LearnExtras,
 	): Promise<void> {
 		const obj = await this.adapter.getObjectAsync(id);
 		const cfg = obj ? this.storedConfigOf(obj) : null;
@@ -1223,9 +1447,19 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 						trailerMaxSec: suggestion.trailerMaxSec ?? 0,
 					}
 				: {}),
+			...(suggestion.checks && suggestion.checks.length > 0
+				? { checksText: suggestion.checks.map(code => checkLabel(code)).join(", ") }
+				: {}),
+			...(extras?.final
+				? {
+						final_text: translatedText(finalText(extras.final), this.adapter.language ?? "en"),
+						final_apply: false,
+					}
+				: {}),
+			...(extras?.model ? phaseData(extras.model, extras.final, cfg.phases?.enabled === true) : {}),
 		};
 		const fromHistory = suggestion.looDetected !== undefined;
-		const schema = buildLearnSchema(
+		const base = buildLearnSchema(
 			fromHistory,
 			unit,
 			suggestion.current !== undefined,
@@ -1234,23 +1468,49 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			suggestion.trailer === "notSeparable",
 			suggestion.samples > 0,
 		);
+		const schema: JsonFormSchema = {
+			...base,
+			items: {
+				...(base as Extract<JsonFormSchema, { type: "panel" }>).items,
+				...(suggestion.checks && suggestion.checks.length > 0
+					? {
+							checks: {
+								type: "infoBox",
+								boxType: "warning",
+								text: I18n.getTranslatedObject("dm_learnChecks"),
+								newLine: true,
+								xs: 12,
+							},
+							checksText: { type: "text", disabled: true, xs: 12 },
+						}
+					: {}),
+				...(extras?.final ? finalItems(extras.final) : {}),
+				...(extras?.model ? phaseItems(extras.model, extras.final, extras.retro, extras.dropped) : {}),
+			},
+		} as JsonFormSchema;
 		const before = detectionOf(cfg.detection);
 		let next: DetectionSettings | null = null;
+		let useFinal = false;
+		let answered: JsonFormData = data;
 		while (!next) {
 			const result = await ctx.showForm(schema, { data, title: TEXT.learnTitle, ignoreApplyDisabled: true });
 			if (!result) {
 				return;
 			}
-			const parsed = parseLearnForm(result);
+			// an answer that holds only the changed fields keeps the suggestion for the others
+			answered = { ...data, ...result };
+			const parsed = parseLearnForm(answered);
 			if (!parsed.values) {
 				await ctx.showMessage(parsed.error);
-				data = result;
+				data = answered;
 				continue;
 			}
-			// the learned values replace the base values; the final phase of the device stays
+			// the learned values replace the base values; the final phase of the device stays unless the user takes
+			// the learned one (only offered when every release check passed)
+			useFinal = extras?.final?.ok === true && answered.final_apply === true;
 			const final: FinalSettings = {};
 			for (const key of FINAL_KEYS) {
-				final[key] = before[key] ?? 0;
+				final[key] = useFinal ? (extras!.final!.values[key] ?? 0) : (before[key] ?? 0);
 			}
 			next = normalizeDetection({ ...final, ...parsed.values }, [], cfg.name);
 		}
@@ -1259,10 +1519,125 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 			return;
 		}
 		const { template: _template, typeId: _typeId, ...rest } = cfg as DeviceConfig & { typeId?: unknown };
-		await this.writeDevice(id, { ...rest, detection: next, learned: true });
+		const showPhases = extras?.model !== null && extras?.model !== undefined && answered.showPhases === true;
+		const phases = showPhases ? phasesFromForm(extras.model!, answered, extras.final, true) : undefined;
+		await this.writeDevice(id, { ...rest, detection: next, learned: true, ...(phases ? { phases } : {}) });
+		if (extras) {
+			// the decisions about the runs go to the learning data; with the final phase the admitted runs and the
+			// base bands too, so that the judgement afterwards has comparison data (Spec A.3)
+			const runs = useFinal ? await extras.storedRuns(next) : [];
+			await this.adapter.registry.setDecisions(
+				id,
+				extras.decisions,
+				runs,
+				useFinal && extras.bands ? extras.bands : undefined,
+				typeHash(next),
+			);
+		}
 		this.adapter.log.info(`${cfg.name}: learned detection values saved (${changes})`);
 		await ctx.showMessage(TEXT.learnSaved);
 	}
+}
+
+/** What learning from the history hands to the last step of the dialog. */
+export interface LearnExtras {
+	/** Final phase learned from the chosen runs, or null without base bands. */
+	final: FinalCandidate | null;
+	/** Phase model learned from the chosen runs, or null. */
+	model: PhaseModel | null;
+	/** Event phases that only appear in the timeline. */
+	retro: string[];
+	/** Phases of the old model that fall away. */
+	dropped: { id: string; actions: number }[];
+	/** Decision per run key (`null` removes it). */
+	decisions: Record<string, "include" | "exclude" | null>;
+	/** Base bands of the chosen runs. */
+	bands: BaseBands | null;
+	/** The admitted runs as stored runs, labelled with the new values. */
+	storedRuns: (eff: DetectionSettings) => Promise<StoredRun[]>;
+}
+
+/**
+ * One language of a translated text.
+ *
+ * @param text - Translated text
+ * @param lang - Language
+ */
+function translatedText(text: ioBroker.Translated, lang: string): string {
+	return (text as Record<string, string | undefined>)[lang] ?? text.en;
+}
+
+/**
+ * Text of a finding of the run check in the system language.
+ *
+ * @param code - Finding
+ */
+function checkLabel(code: string): string {
+	const key = `dm_check_${code}`;
+	const t = I18n.translate(key);
+	return t === key ? code : t;
+}
+
+/**
+ * Use of each run at the start of the dialog: the decisions stored in the learning data.
+ *
+ * @param input - Samples
+ * @param store - Learning data of the device, or null
+ */
+function initialUses(input: LearnInput, store: StoreFile | null): Map<string, RunUse> {
+	const out = new Map<string, RunUse>();
+	const decided = Object.entries(store?.verdicts ?? {});
+	for (const x of input.samples) {
+		const d = decided.find(([key]) => sameRun(key, x.key))?.[1];
+		out.set(x.key, d?.user ?? "auto");
+	}
+	return out;
+}
+
+/**
+ * Range and keys of the runs of an old learning file (before this version), for the finding `formerlyDropped`.
+ *
+ * @param store - Learning data of the device, or null
+ */
+function oldStoreOf(store: StoreFile | null): { from: number; to: number; keys: string[] } | undefined {
+	if (!store || (store.legacyEnvelope?.n ?? 0) === 0 || store.runs.length === 0) {
+		return undefined;
+	}
+	const runs = [...store.runs, ...store.spikes];
+	return {
+		from: Math.min(...runs.map(r => startOf(r))),
+		to: Math.max(...runs.map(r => r.ts + (r.seg.runEndIdx + 1) * r.step)),
+		keys: runs.map(r => verdictKey(store.deviceId, startOf(r))),
+	};
+}
+
+/**
+ * Detection values with the suggestion of the analysis (anti-crease filter only when the suggestion uses it).
+ *
+ * @param before - Values of the device
+ * @param s - Suggestion
+ */
+function settingsOfSuggestion(before: DetectionSettings, s: LearningSuggestion): DetectionSettings {
+	const withTrailer = (s.trailerBurstSec ?? 0) > 0;
+	return {
+		...before,
+		startVal: s.thresholds.startVal,
+		endVal: s.thresholds.endVal,
+		standby: s.thresholds.standby,
+		startCount: s.thresholds.startCount,
+		endCount: s.thresholds.endCount,
+		startDurationSec: s.startDurationSec,
+		endDurationSec: s.endDurationSec,
+		mode: s.mode ?? before.mode,
+		pauseHoldSec: s.pauseHoldSec,
+		pauseUntilSec: s.pauseUntilSec,
+		pauseBelowVal: s.pauseBelowVal,
+		trailerBurstSec: withTrailer ? s.trailerBurstSec : 0,
+		trailerGapSec: withTrailer ? (s.trailerGapSec ?? 0) : 0,
+		trailerAfterSec: withTrailer ? (s.trailerAfterSec ?? 0) : 0,
+		trailerBlockVal: withTrailer ? (s.trailerBlockVal ?? 0) : 0,
+		trailerMaxSec: withTrailer ? (s.trailerMaxSec ?? 0) : 0,
+	};
 }
 
 /**
@@ -1835,3 +2210,5 @@ export function parseLearnForm(
 	}
 	return { values };
 }
+
+export { buildRunTable, RUN_TABLE_MODE } from "./learnDialog.js";

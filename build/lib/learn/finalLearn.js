@@ -515,6 +515,8 @@ export async function learnFinal(runs, ctx) {
         reasons: [],
         covered: 0,
         gainSec: 0,
+        gainMedianSec: 0,
+        endRuns: 0,
         earlyEnds: 0,
         fallbacks: 0,
         perGroup: {},
@@ -603,6 +605,8 @@ export async function learnFinal(runs, ctx) {
     let sumBase = 0;
     let sumCand = 0;
     let n = 0;
+    const gains = [];
+    result.endRuns = ends.length;
     const earlyOf = (sets) => ends.map((it, k) => {
         const j = judge(it, replay(it.series, it.fromIdx, it.toIdx, sets, ctx));
         return j.wrong && !base[k].wrong ? 1 : 0;
@@ -629,6 +633,7 @@ export async function learnFinal(runs, ctx) {
         if (!j.wrong && !b.wrong) {
             sumBase += b.delaySec;
             sumCand += j.delaySec;
+            gains.push(b.delaySec - j.delaySec);
             n++;
         }
     });
@@ -638,6 +643,7 @@ export async function learnFinal(runs, ctx) {
     }
     const meanBase = n > 0 ? sumBase / n : 0;
     result.gainSec = n > 0 ? Math.round(meanBase - sumCand / n) : 0;
+    result.gainMedianSec = Math.round(median(gains));
     if (result.gainSec < Math.max(GAIN_MIN_SEC, GAIN_SHARE * meanBase)) {
         add("noGain");
     }

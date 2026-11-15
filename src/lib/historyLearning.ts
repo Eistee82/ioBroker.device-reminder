@@ -2,6 +2,7 @@ import type { AnalyzeOptions, HistoryLearningError, HistorySuggestion } from "./
 import { analyzeTicks } from "./learn/analyze.js";
 import { baseBandsOf } from "./learn/bands.js";
 import type { QualityCode, QualityContext, RunSample, Verdict } from "./learn/quality.js";
+import { cleanPoints } from "./learn/clean.js";
 import { admitted, checkRuns, primaryOf, runSamples } from "./learn/quality.js";
 import type { HistoryPoint, TickSeries } from "./learn/ticks.js";
 import { fromPoints } from "./learn/ticks.js";
@@ -168,7 +169,9 @@ export async function analyzeHistory(
 		const factor = opts.unitFactor && opts.unitFactor > 0 ? opts.unitFactor : 1;
 		const raw = input as readonly HistoryPoint[];
 		let kept: readonly HistoryPoint[] = raw;
-		if (!opts.recording) {
+		if (opts.heldBack) {
+			kept = withoutSpans(cleanPoints(raw).points, opts.heldBack);
+		} else if (!opts.recording) {
 			const held = heldBackOf(raw, poll, factor, opts.templatePeakW);
 			kept = withoutSpans(held.points, held.spans);
 		}

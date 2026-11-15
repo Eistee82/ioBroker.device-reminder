@@ -4,17 +4,16 @@ import { finalOn, finalValuesOf } from "./detector/index.js";
 import { ensureDeviceObjects } from "./deviceObjects.js";
 import { DeviceRuntime } from "./deviceRuntime.js";
 import { fill, TEXT } from "./dmTexts.js";
+import { storedRunsOfHistory } from "./historyRuns.js";
 import { findHistoryInstance, loadHistorySeries } from "./historySource.js";
 import { admitted, sameRun, verdictKey } from "./learn/quality.js";
 import { applyVetoes, effectiveOf, gate, LOCK_MS, LOCK_RUNS, optimize } from "./learn/autoOptimize.js";
 import { checkFinalSplit } from "./learn/finalLearn.js";
-import { simulate } from "./learn/replay.js";
 import { buildLayout } from "./learn/runs.js";
-import { scaled } from "./learn/ticks.js";
-import { LearningRecorder, suggestType } from "./learning.js";
+import { LearningRecorder, recordingChecks, suggestType } from "./learning.js";
 import { ReminderScheduler } from "./reminder.js";
 import { RunRecorder } from "./runRecorder.js";
-import { addRun, clearLearningData, convertRuns, decisionOf, detectionOf, emptyStore, finalSplitPairs, fitSize, joinedCapture, labelCapture, loadStore, markFinalResumed, markFinalSuspended, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, splitCapture, storeSamples, typeHash, upgradeStore, WINDOW_MS, } from "./runStore.js";
+import { addRun, clearLearningData, convertRuns, decisionOf, detectionOf, emptyStore, finalSplitPairs, fitSize, joinedCapture, labelCapture, loadStore, markFinalResumed, markFinalSuspended, pushChange, recompute, reconcileBase, reconcileStore, refreshInfo, removeStore, saveStore, setDecision, startOf, splitCapture, storeSamples, typeHash, upgradeStore, WINDOW_MS, } from "./runStore.js";
 import { errorMessage } from "./utils.js";
 const OPTIMIZE_BUDGET_MS = 30_000;
 export const BUDGET_WARN_JOBS = 3;
@@ -286,12 +285,19 @@ export class DeviceRegistry {
         const samples = entry.recorder.stop(this.host.now());
         const cfg = entry.runtime.config;
         const inst = this.getConfig();
+        const unitFactor = await this.unitFactorOf(cfg.powerId);
         const result = await suggestType(samples, inst.pollIntervalSec, {
             abort: cfg.abort,
             abortFixed: cfg.abortFixed,
             currentType: entry.runtime.baseDetection,
-            unitFactor: await this.unitFactorOf(cfg.powerId),
+            unitFactor,
         });
+        if (!("error" in result)) {
+            const checks = recordingChecks(samples, inst.pollIntervalSec, unitFactor);
+            if (checks.length > 0) {
+                result.checks = checks;
+            }
+        }
         await this.host.setOwnState(`${deviceId}.learning.active`, false);
         await this.host.setOwnState(`${deviceId}.learning.result`, JSON.stringify(result));
         this.host.log.info(`Learning stopped for device ${entry.runtime.config.name}`);
@@ -385,6 +391,64 @@ export class DeviceRegistry {
         await this.writeOptStates(deviceId, entry);
         this.host.log.info(`${entry.runtime.config.name}: stored run ${runId} discarded`);
         return true;
+    }
+    setDecisions(deviceId, decisions, runs = [], bands, baseHash = "") {
+        return this.serialized(() => this.setDecisionsNow(deviceId, decisions, runs, bands, baseHash));
+    }
+    async setDecisionsNow(deviceId, decisions, runs, bands, baseHash) {
+        const entry = this.devices.get(deviceId);
+        const now = this.host.now();
+        const apply = (store) => {
+            for (const [key, user] of Object.entries(decisions)) {
+                setDecision(store, key, user);
+            }
+            const known = [...store.runs, ...store.spikes].map(r => verdictKey(store.deviceId, startOf(r)));
+            for (const run of runs) {
+                const key = verdictKey(store.deviceId, startOf(run));
+                if (run.step !== store.step ||
+                    run.unitFactor !== store.unitFactor ||
+                    known.some(k => sameRun(k, key))) {
+                    continue;
+                }
+                addRun(store, run, { now, deferred: true });
+                known.push(key);
+            }
+        };
+        const opt = entry?.opt;
+        if (entry && opt) {
+            apply(opt.store);
+            opt.verdicts = recompute(opt.store, this.qualityContext(opt.store));
+            if (bands && !opt.store.bands) {
+                opt.store.bands = bands;
+            }
+            fitSize(opt.store, now, opt.verdicts);
+            refreshInfo(opt.store);
+            await this.saveOpt(entry);
+            await this.writeOptStates(deviceId, entry);
+            return;
+        }
+        if (!this.files) {
+            return;
+        }
+        try {
+            const read = await loadStore(this.files, deviceId, this.host.log);
+            const first = runs[0];
+            const step = read?.step ?? first?.step ?? this.getConfig().pollIntervalSec * 1000;
+            const unitFactor = read?.unitFactor ?? first?.unitFactor ?? 1;
+            const store = read ?? emptyStore(deviceId, entry?.runtime.config.template ?? "", baseHash, step, unitFactor);
+            upgradeStore(store);
+            apply(store);
+            const verdicts = recompute(store, this.qualityContext(store));
+            if (bands && !store.bands) {
+                store.bands = bands;
+            }
+            fitSize(store, now, verdicts);
+            refreshInfo(store);
+            await saveStore(this.files, store);
+        }
+        catch (err) {
+            this.host.log.warn(`Cannot write the decisions about the runs of ${deviceId}: ${errorMessage(err)}`);
+        }
     }
     deleteLearningData(deviceId, keepDecisions = true) {
         return this.serialized(() => this.clearLearningDataNow(deviceId, keepDecisions));
@@ -669,53 +733,32 @@ export class DeviceRegistry {
         const factor = store.unitFactor;
         const now = this.host.now();
         const layout = buildLayout(series, { keepAbove: eff.endVal * factor, maxRuns: Number.POSITIVE_INFINITY });
-        const sim = factor === 1 ? series : scaled(series, 1 / factor);
         let runs = 0;
         let spikes = 0;
         const known = [...store.runs, ...store.spikes].map(r => r.key);
         const open = opt.recorder.snapshot();
         const recording = open ? { from: open.t0, to: open.t0 + open.cells.length * open.stepMs } : null;
-        for (const w of [...layout.windows].sort((a, b) => a.fromIdx - b.fromIdx)) {
-            const startMs = series.t0 + w.runStartIdx * series.stepMs;
-            const key = verdictKey(store.deviceId, startMs);
-            if (known.some(k => k === key || sameRun(k, key)) ||
-                (recording !== null && startMs >= recording.from && startMs <= recording.to)) {
-                continue;
+        const found = await storedRunsOfHistory(series, layout, {
+            eff,
+            abort: cfg.abort,
+            abortFixed: cfg.abortFixed,
+            pollSec: poll,
+            unitFactor: factor,
+            skip: startMs => {
+                const key = verdictKey(store.deviceId, startMs);
+                return (known.some(k => k === key || sameRun(k, key)) ||
+                    (recording !== null && startMs >= recording.from && startMs <= recording.to));
+            },
+            yieldFn: () => this.yieldNow(),
+        });
+        for (const run of found) {
+            addRun(store, run, { now, deferred: true });
+            if (run.label === "spike") {
+                spikes++;
             }
-            const cells = [];
-            const rep = [];
-            for (let i = w.fromIdx; i <= w.toIdx; i++) {
-                cells.push({ min: sim.min[i], max: sim.max[i], last: sim.last[i], valid: sim.valid[i] === 1 });
-                if (series.has[i] === 1) {
-                    rep.push((i - w.fromIdx) * series.stepMs);
-                }
+            else {
+                runs++;
             }
-            const r = simulate(sim, w, eff, { abort: cfg.abort, abortFixed: cfg.abortFixed, pollSec: poll });
-            const ev = [
-                ...r.startedAt.map((t) => [t, "s"]),
-                ...r.finished.map((t) => [t, "f"]),
-            ];
-            ev.sort((a, b) => a[0] - b[0]);
-            const cap = {
-                t0: series.t0 + w.fromIdx * series.stepMs,
-                stepMs: series.stepMs,
-                unitFactor: factor,
-                cells,
-                ev,
-                postTruncated: false,
-                rep,
-            };
-            const res = labelCapture(cap, eff.endVal * factor, "history");
-            if (res.run) {
-                addRun(store, res.run, { now, deferred: true });
-                if (res.label === "spike") {
-                    spikes++;
-                }
-                else {
-                    runs++;
-                }
-            }
-            await this.yieldNow();
         }
         if (entry.opt !== opt || this.devices.get(deviceId) !== entry) {
             return;

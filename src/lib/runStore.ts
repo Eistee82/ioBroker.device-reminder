@@ -1883,7 +1883,7 @@ export function recompute(store: StoreFile, ctx: QualityContext): Map<string, Ve
  *
  * @param r - Run
  */
-function startOf(r: StoredRun): number {
+export function startOf(r: StoredRun): number {
 	return r.ts + r.seg.startIdx * r.step;
 }
 

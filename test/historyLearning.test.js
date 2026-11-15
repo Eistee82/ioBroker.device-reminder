@@ -17,6 +17,7 @@ import {
 	zeroTail,
 } from "./helpers/history.js";
 import { replay } from "./helpers/replay.js";
+import { loadSeries, runIndex } from "./helpers/fixtures.js";
 
 const START = 1_700_000_000_000;
 const HOUR = 3_600_000;
@@ -640,5 +641,24 @@ describe("history source", () => {
 		assert.strictEqual(meta.failedChunks, 1);
 		assert.strictEqual(meta.queries, 30);
 		assert.strictEqual(meta.error, "timeout");
+	});
+});
+
+describe("analyzeHistory with stretches left out by the user (learning dialog)", function () {
+	this.timeout(120_000);
+
+	it("leaves out the given stretches instead of running the run check of its own", async () => {
+		const points = loadSeries("washer30d");
+		const w05 = runIndex("washer30d").find(r => r.id === "w05");
+		const none = await analyzeHistory(points, 10, { unitFactor: 1, heldBack: [] });
+		const held = await analyzeHistory(points, 10, {
+			unitFactor: 1,
+			heldBack: [{ from: w05.ts - 600_000, to: w05.ts + 3 * HOUR }],
+		});
+		assert.ok(!("error" in none) && !("error" in held));
+		assert.ok(held.runs < none.runs, "the run in the stretch is not analysed");
+		// without the option the run check holds back what it finds on its own (with 8 runs or more)
+		const auto = await analyzeHistory(points, 10, { unitFactor: 1 });
+		assert.ok(!("error" in auto) && auto.runs < none.runs);
 	});
 });
