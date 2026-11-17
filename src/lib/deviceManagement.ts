@@ -1234,7 +1234,7 @@ export class ReminderDeviceManagement extends DeviceManagement<DeviceReminderLik
 		}
 		const choice = await ctx.showForm(buildLearnSourceSchema(), {
 			data: { source: "history", instance, runs: runCount },
-			title: TEXT.learnTitle,
+			title: TEXT.learnSourceTitle,
 			// the preset choice is a valid answer: OK must work without a change
 			ignoreApplyDisabled: true,
 		});
@@ -2361,14 +2361,19 @@ export function buildLearnSchema(opts: LearnSchemaOptions = {}): JsonFormSchema 
 	const details: PanelItems = {
 		...((opts.withSamples ?? true)
 			? {
-					durationSec: {
-						type: "number",
-						label: I18n.getTranslatedObject("dm_learnDuration"),
-						unit: "s",
-						disabled: true,
-						xs: 12,
-						sm: 4,
-					},
+					// "duration of the recorded run" only for a recording, not for 30 days of history
+					...(fromHistory
+						? {}
+						: {
+								durationSec: {
+									type: "number",
+									label: I18n.getTranslatedObject("dm_learnDuration"),
+									unit: "s",
+									disabled: true,
+									xs: 12,
+									sm: 4,
+								},
+							}),
 					samples: {
 						type: "number",
 						label: fromHistory
@@ -2435,18 +2440,13 @@ function afterRunItems(
 function historyItems(fromHistory: boolean, withCurrent: boolean): PanelItems {
 	const items: PanelItems = {};
 	if (fromHistory) {
-		items.runs = {
-			type: "number",
-			label: I18n.getTranslatedObject("dm_learnRuns"),
-			disabled: true,
-			newLine: true,
-			xs: 12,
-			sm: 4,
-		};
+		// no run count here: the analysis splits the history on its own and can count other runs than the line at
+		// the top of the dialog; the result of each mode below names its runs
 		items.longestPauseMin = {
 			type: "number",
 			label: I18n.getTranslatedObject("dm_learnLongestPause"),
 			disabled: true,
+			newLine: true,
 			xs: 12,
 			sm: 4,
 		};

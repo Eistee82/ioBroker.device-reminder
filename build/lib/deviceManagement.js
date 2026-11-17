@@ -906,7 +906,7 @@ export class ReminderDeviceManagement extends DeviceManagement {
         }
         const choice = await ctx.showForm(buildLearnSourceSchema(), {
             data: { source: "history", instance, runs: runCount },
-            title: TEXT.learnTitle,
+            title: TEXT.learnSourceTitle,
             ignoreApplyDisabled: true,
         });
         if (!choice) {
@@ -1704,14 +1704,18 @@ export function buildLearnSchema(opts = {}) {
     const details = {
         ...((opts.withSamples ?? true)
             ? {
-                durationSec: {
-                    type: "number",
-                    label: I18n.getTranslatedObject("dm_learnDuration"),
-                    unit: "s",
-                    disabled: true,
-                    xs: 12,
-                    sm: 4,
-                },
+                ...(fromHistory
+                    ? {}
+                    : {
+                        durationSec: {
+                            type: "number",
+                            label: I18n.getTranslatedObject("dm_learnDuration"),
+                            unit: "s",
+                            disabled: true,
+                            xs: 12,
+                            sm: 4,
+                        },
+                    }),
                 samples: {
                     type: "number",
                     label: fromHistory
@@ -1757,18 +1761,11 @@ function afterRunItems(changed, before, after) {
 function historyItems(fromHistory, withCurrent) {
     const items = {};
     if (fromHistory) {
-        items.runs = {
-            type: "number",
-            label: I18n.getTranslatedObject("dm_learnRuns"),
-            disabled: true,
-            newLine: true,
-            xs: 12,
-            sm: 4,
-        };
         items.longestPauseMin = {
             type: "number",
             label: I18n.getTranslatedObject("dm_learnLongestPause"),
             disabled: true,
+            newLine: true,
             xs: 12,
             sm: 4,
         };
