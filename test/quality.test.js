@@ -254,6 +254,24 @@ describe("run check (Spec B.2)", () => {
 		assert.deepStrictEqual([m.stage, m.uses.end, m.uses.final, m.uses.phases], ["limited", true, false, false]);
 		assert.strictEqual(primaryOf(m.reasons), "merged");
 	});
+	it("a new programme started during the after-run of the one before → merged, only there (washerNewStart r15)", () => {
+		const N = loadSeries("washerNewStart");
+		const { samples, v } = judge(N);
+		const at = runIndex("washerNewStart").find(r => r.id === "r15").ts;
+		const merged = samples
+			.map((x, k) => ({ x, v: v[k] }))
+			.filter(({ v: y }) => y.reasons.some(r => r.code === "merged"));
+		assert.deepStrictEqual(
+			merged.map(({ x }) => Math.abs(x.from - at) <= 300_000),
+			[true],
+			"the run with the new start, no other run",
+		);
+		const m = merged[0].v;
+		assert.match(m.reasons.find(r => r.code === "merged").detail, /new start during an after-run/);
+		assert.deepStrictEqual([m.stage, m.uses.end, m.uses.final], ["limited", true, false]);
+		// the stretches inside the programmes of the normal runs (rinsing with drum moves) are no after-run
+		assert.ok(!base.v.some(y => y.reasons.some(r => r.code === "merged")), "washer30d has none");
+	});
 	it("spikes, aborted, invalid, historyCfg are limited with their uses", () => {
 		// spike = single value > 3 × p99.9 of the runs (p99.9 ≈ 2268 W, review/p999.mjs) → 9000 W
 		const sp = judge(withSpikes(W, 3, 9000, 7)).v;

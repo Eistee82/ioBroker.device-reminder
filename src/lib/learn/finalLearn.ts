@@ -5,7 +5,7 @@ import { finalViolations } from "../config.js";
 import type { BaseBands, Unit } from "./bands.js";
 import { bandSegmentsOf, suspectLimitOf } from "./bands.js";
 import type { RunSample, Verdict } from "./quality.js";
-import { admitted } from "./quality.js";
+import { admitted, startBandsOf, typicalStartOf, TYPICAL_START_MIN_RUNS } from "./quality.js";
 import type { RunInfo } from "./runs.js";
 import { DENSE_MIN_MS, median, PAD_AFTER_MS, PAD_BEFORE_MS, quantile, SUSTAINED_MS } from "./runs.js";
 import type { TickSeries } from "./ticks.js";
@@ -201,12 +201,6 @@ const ROBUST_MISSING = 0.3;
 const MAX_POLL_SEC = 600;
 /** Margin: P times these factors. */
 const MARGIN_FACTORS = [0.9, 1.1];
-/** finalSplit: comparison data from this many clean runs on. */
-const SPLIT_MIN_RUNS = 3;
-/** finalSplit: the typical start sequence is read from the first 10 min … */
-const START_MS = 10 * 60_000;
-/** … and holds the bands at least this share of the clean runs begins with. */
-const START_SHARE = 0.8;
 /**
  * finalSplit: a rest between the parts counts only when it lasts at least this long (the default rest proof, exit b
  * of the lock phase); a dip below the rest level of a few seconds is no unloading (in doubt split).
@@ -534,11 +528,15 @@ function ruleOf(items: readonly Item[], ctx: FinalLearnContext, minCovered: numb
 	if (best < minCovered) {
 		return null;
 	}
-	// middle of the widest range of P with the highest coverage
+	// among the P with the highest coverage those with the widest separation (shortest final block over the longest other
+	// block: Y lies in the geometric middle, so this is the most room on both sides), of them the middle of the widest
+	// range; one run with a long other block in a part of the band no longer pushes P to a tight edge
+	const ratio = (x: Scan): number => (x.covered === best ? x.finalMs / x.otherMs : 0);
+	const widest = Math.max(...scans.map(ratio));
 	let range: [number, number] | null = null;
 	let start = -1;
 	scans.forEach((x, k) => {
-		if (x.covered === best) {
+		if (ratio(x) >= widest) {
 			if (start < 0) {
 				start = k;
 			}
@@ -1126,19 +1124,6 @@ function joined(a: Unit, b: Unit): { ts: number; val: number }[] {
 }
 
 /**
- * Base bands of the first 10 min of a run.
- *
- * @param u - Sample
- * @param start - Start in ms
- * @param bands - Base bands
- */
-function startBands(u: Unit, start: number, bands: BaseBands): Set<number> {
-	const to = Math.min(u.to, start + START_MS);
-	const core: Unit = { points: u.points, from: start, to: Math.max(start, to) };
-	return new Set(bandSegmentsOf(core, bands).map(x => x.band));
-}
-
-/**
  * Whether the run after an early end is the rest of the split programme (Spec B.2 `finalSplit`, judged afterwards):
  * it does not begin with the typical start sequence (in its first 10 min one of the base bands is missing that at
  * least 80 % of the clean runs have in theirs), or between the early end and its start there was no rest below
@@ -1164,20 +1149,14 @@ export function checkFinalSplit(
 ): boolean {
 	const runs = clean.filter(c => c.kind === "run");
 	const between = longestBelow(joined(prev, next), prev.facts.end, next.facts.start, finalRestVal);
-	if (runs.length < SPLIT_MIN_RUNS || bands === null || bands.bands.length === 0) {
+	if (runs.length < TYPICAL_START_MIN_RUNS || bands === null || bands.bands.length === 0) {
 		return (
 			between < SPLIT_REST_MIN_MS ||
 			between <= longestBelow(prev.points, prev.facts.start, prev.facts.end, finalRestVal)
 		);
 	}
-	const count = new Map<number, number>();
-	for (const r of runs) {
-		for (const b of startBands(r, r.facts.start, bands)) {
-			count.set(b, (count.get(b) ?? 0) + 1);
-		}
-	}
-	const typical = [...count].filter(([, c]) => c >= START_SHARE * runs.length).map(([b]) => b);
-	const own = startBands(next, next.facts.start, bands);
+	const typical = typicalStartOf(runs, bands);
+	const own = startBandsOf(next, next.facts.start, bands);
 	if (typical.some(b => !own.has(b))) {
 		return true;
 	}

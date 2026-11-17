@@ -13,7 +13,7 @@ const cache = new Map();
 /**
  * Fixture file.
  *
- * @param {"washer30d" | "dryer" | "boiler4d"} name fixture
+ * @param {"washer30d" | "washerNewStart" | "dryer" | "boiler4d"} name fixture
  * @returns {{ note: string, runs: { id: string, fromSec: number }[], points: [number, number][] }} content
  */
 function file(name) {
@@ -28,7 +28,7 @@ function file(name) {
 /**
  * Whole recording of a device.
  *
- * @param {"washer30d" | "dryer" | "boiler4d"} name fixture
+ * @param {"washer30d" | "washerNewStart" | "dryer" | "boiler4d"} name fixture
  * @returns {{ ts: number, val: number }[]} stored values in W
  */
 export function loadSeries(name) {
@@ -38,7 +38,7 @@ export function loadSeries(name) {
 /**
  * Runs of a fixture as indexed by the evaluation (start times).
  *
- * @param {"washer30d" | "dryer" | "boiler4d"} name fixture
+ * @param {"washer30d" | "washerNewStart" | "dryer" | "boiler4d"} name fixture
  * @returns {{ id: string, ts: number }[]} index
  */
 export function runIndex(name) {
@@ -61,7 +61,7 @@ export function layoutOf(points, stepMs = 10_000, opts = {}) {
 /**
  * Layout run of a fixture whose start lies within 5 min of the index entry.
  *
- * @param {"washer30d" | "dryer" | "boiler4d"} name fixture
+ * @param {"washer30d" | "washerNewStart" | "dryer" | "boiler4d"} name fixture
  * @param {string} id run id, e.g. `w01`
  * @param {number} [stepMs] poll interval
  * @returns {{ info: object, s: object, L: object, idx: number }} run, series, layout, index into `L.runs`
@@ -156,7 +156,7 @@ export function detectorRun(values, settings, o = {}) {
  * Stored values of one run: 30 min before the start to 3 h after the core end (the held value is set
  * at both borders, so the window is a complete recording).
  *
- * @param {"washer30d" | "dryer" | "boiler4d"} name fixture
+ * @param {"washer30d" | "washerNewStart" | "dryer" | "boiler4d"} name fixture
  * @param {string} id run id
  * @returns {{ ts: number, val: number }[]} stored values
  */

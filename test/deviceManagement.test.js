@@ -3,7 +3,7 @@ import { DEFAULT_REMINDER, normalizeDeviceConfig, normalizeInstanceConfig } from
 import { decisionOf, detectionOf } from "../build/lib/runStore.js";
 import { DRYER, WASHER } from "./helpers/devices.js";
 import { WM_FINAL } from "./helpers/final.js";
-import { loadSeries } from "./helpers/fixtures.js";
+import { detectorRun, layoutOf, layoutRun, loadSeries, runIndex, ticksOf } from "./helpers/fixtures.js";
 import {
 	droppedText,
 	finalPhaseOf,
@@ -1625,6 +1625,85 @@ describe("deviceManagement", () => {
 					assert.strictEqual(again.detection[key] ?? 0, first.detection[key] ?? 0, key);
 				}
 				assert.strictEqual(again.phases.phases.find(p => p.id === inUse.id)?.final, true);
+			});
+
+			describe("finished from the after-run (Spec B.6, B.7)", () => {
+				// a washer with an after-run whose 30 days hold a new programme started during the after-run of the one
+				// before (r15): learned with the values the device had (3.1.2 count mode, end after the after-run)
+				const NPTS = loadSeries("washerNewStart");
+				const own = {
+					startVal: 10.25,
+					endVal: 1,
+					standby: 0.1,
+					startCount: 2,
+					endCount: 158,
+					mode: "count",
+					startDurationSec: 20,
+					endDurationSec: 1580,
+				};
+
+				it("offers the after-run and ends every admitted run at the programme end, never too early", async () => {
+					const ctx = setup({ files: memoryFiles() });
+					await addDevice(ctx, "wm", deviceCfg({ name: "WM", detection: own }));
+					withHistory(ctx, NPTS);
+					const [info] = await load(ctx);
+					let afterRun = "";
+					const action = fakeAction({
+						forms: [
+							{ source: "history", instance: "history.0", reviewRuns: true },
+							{ operation: "next" },
+							(schema, options) => {
+								const names = Object.keys(schema.items).filter(k => /^phase_.+_name$/.test(k));
+								const last = names.at(-1);
+								assert.match(options.data[last.replace(/_name$/, "_power")], /^short bursts/);
+								afterRun = `Phase ${names.length}`;
+								const choice = schema.items.finishAt.options.find(o => o.label === afterRun);
+								assert.ok(
+									choice,
+									`${afterRun} (after-run) offered: ${JSON.stringify(schema.items.finishAt.options)} ${options.data.final_text?.en ?? schema.items.final_text?.text?.en}`,
+								);
+								return { finishAt: choice.value };
+							},
+						],
+					});
+					await actionOf(info, "learn").handler("wm", action);
+					const rows = action.forms[1].options.data.runs;
+					assert.ok(
+						rows.some(r => /Two runs as one/.test(r.check)),
+						`the new start in the after-run is found: ${rows.map(r => r.check).join(" | ")}`,
+					);
+					const settings = ctx.adapter.objects.get(`${NS}.wm`).native.detection;
+					assert.ok(settings.finalMinVal > 0, "the final phase ends the run when the after-run begins");
+					// the whole recording through the detector chain with the saved values
+					const { s, L } = layoutOf(NPTS);
+					const { ev } = detectorRun(ticksOf(NPTS), settings);
+					const finishes = ev.filter(e => e.e === "finished").map(e => e.i);
+					const starts = ev.filter(e => e.e === "started").map(e => e.i);
+					const MIN = 60_000 / s.stepMs;
+					// r04 (sparse) and r14 (a test) are held back, r15 holds two programmes
+					const normal = runIndex("washerNewStart").filter(r => !["r04", "r14", "r15"].includes(r.id));
+					assert.strictEqual(normal.length, 12);
+					for (const { id } of normal) {
+						const { info: r } = layoutRun("washerNewStart", id);
+						const f = finishes.find(i => i > r.from);
+						// not too early (Spec B.4 endOk): at the end of the run, or after the programme end at most 5 min before it
+						const inTime = f !== undefined && (f >= r.runEnd || (f > r.progEnd && r.runEnd - f <= 5 * MIN));
+						assert.ok(inTime, `${id} not too early: ${f} vs ${r.progEnd}/${r.runEnd}`);
+						assert.ok(
+							f - r.progEnd <= 3 * MIN,
+							`${id} ends ${(f - r.progEnd) / MIN} min after the programme`,
+						);
+						assert.strictEqual(
+							starts.filter(i => i >= r.from - MIN && i <= f).length,
+							1,
+							`${id} one start`,
+						);
+					}
+					// grown together: the end of the whole run counts (an end at the programme end inside it is no early end, decision 9)
+					const { info: m } = layoutRun("washerNewStart", "r15");
+					const last = finishes.filter(i => i > m.from && i <= L.runs.at(-1).to + 180 * MIN).at(-1);
+					assert.ok(last >= m.progEnd, `r15 ends with the whole run: ${last} vs ${m.progEnd}`);
+				});
 			});
 
 			it("cancelling after the runs changes nothing", async () => {

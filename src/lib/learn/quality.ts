@@ -10,6 +10,7 @@ import type { Layout, RunInfo, Span } from "./runs.js";
 import {
 	blocksOf,
 	buildLayout,
+	DENSE_MIN_MS,
 	END_BLOCK_BRIDGE_MS,
 	END_BLOCK_SHARE,
 	LEVEL_SEP_W,
@@ -224,6 +225,14 @@ const TRAILER_EARLY_MAD = 4;
 const TRAILER_MIN_RUNS = 2;
 /** Grown together: longer than this multiple of the longest run of its group. */
 const MERGED_FACTOR = 1.8;
+/** New start in an after-run: the after-run inside the run lasts at least this share of the shortest after-run of the others. */
+const INNER_TRAILER_SHARE = 0.5;
+/** The typical start sequence of a device is read from the first 10 min of its runs … */
+export const TYPICAL_START_MS = 10 * 60_000;
+/** … and holds the bands at least this share of the clean runs begins with. */
+export const TYPICAL_START_SHARE = 0.8;
+/** The typical start sequence needs at least this many comparison runs. */
+export const TYPICAL_START_MIN_RUNS = 3;
 /** A block is like the end block when its level is within this factor of it (without bands). */
 const END_LEVEL_RATIO = 2;
 /** Invalid values: more than this share. */
@@ -1454,6 +1463,119 @@ function restBetweenEnds(x: Work, ref: readonly Work[], bands: BaseBands | null,
 }
 
 /**
+ * Base bands of the first TYPICAL_START_MS of a run from a time on.
+ *
+ * @param u - Sample
+ * @param start - Begin in ms
+ * @param bands - Base bands
+ */
+export function startBandsOf(u: Unit, start: number, bands: BaseBands): Set<number> {
+	const to = Math.min(u.to, start + TYPICAL_START_MS);
+	return new Set(bandSegmentsOf({ points: u.points, from: start, to: Math.max(start, to) }, bands).map(x => x.band));
+}
+
+/**
+ * Typical start sequence of a device: the base bands that at least TYPICAL_START_SHARE of the runs have in their first
+ * TYPICAL_START_MS (empty with fewer than TYPICAL_START_MIN_RUNS runs).
+ *
+ * @param runs - Comparison runs
+ * @param bands - Base bands
+ */
+export function typicalStartOf(runs: readonly RunSample[], bands: BaseBands): number[] {
+	if (runs.length < TYPICAL_START_MIN_RUNS) {
+		return [];
+	}
+	const count = new Map<number, number>();
+	for (const r of runs) {
+		for (const b of startBandsOf(r, r.facts.start, bands)) {
+			count.set(b, (count.get(b) ?? 0) + 1);
+		}
+	}
+	return [...count].filter(([, c]) => c >= TYPICAL_START_SHARE * runs.length).map(([b]) => b);
+}
+
+/**
+ * After-run-like stretches inside the programme of a run: held values at the level after the end with at most short
+ * bursts in between, each one ended by a phase above that level longer than a burst (the programme goes on). Begin and
+ * end (the begin of the phase that ends it) in ms.
+ *
+ * @param s - Sample
+ * @param restLimit - Highest value of the level after the end (unit of the state)
+ * @param burstMs - Longest burst in ms
+ */
+function innerTrailersOf(s: RunSample, restLimit: number, burstMs: number): { from: number; to: number }[] {
+	const out: { from: number; to: number }[] = [];
+	let from: number | null = null;
+	let burstFrom: number | null = null;
+	for (const [v, ms, at] of heldSpans(s, s.facts.start, s.facts.coreEnd)) {
+		if (v <= restLimit) {
+			from ??= at;
+			burstFrom = null;
+			continue;
+		}
+		if (from === null) {
+			continue;
+		}
+		burstFrom ??= at;
+		if (at + ms - burstFrom > burstMs) {
+			out.push({ from, to: burstFrom });
+			from = null;
+			burstFrom = null;
+		}
+	}
+	return out;
+}
+
+/**
+ * A new start during the after-run of the run before (Spec B.2 `merged`): inside the programme a stretch at the level
+ * after the end with at most bursts as long as the after-run bursts of the comparison runs, lasting at least
+ * INNER_TRAILER_SHARE of their shortest after-run (and DENSE_MIN_MS), longer than every such stretch inside their
+ * programmes, and the run goes on after it with the typical start sequence of the device (`typicalStartOf`). Needs
+ * base bands, TRAILER_MIN_RUNS comparison runs with an after-run and TYPICAL_START_MIN_RUNS comparison runs.
+ *
+ * @param x - Run
+ * @param ref - Comparison runs
+ * @param bands - Base bands or null
+ * @param unitFactor - W per unit of the state
+ */
+function newStartInTrailer(x: Work, ref: readonly Work[], bands: BaseBands | null, unitFactor: number): boolean {
+	const withTrailer = ref.filter(y => (y.s.facts.feat?.trailerSec ?? 0) > 0 && y.s.facts.restLevel !== null);
+	if (bands === null || withTrailer.length < TRAILER_MIN_RUNS) {
+		return false;
+	}
+	const restLimit =
+		REST_LEVEL_FACTOR * Math.max(...withTrailer.map(y => y.s.facts.restLevel as number)) +
+		REST_LEVEL_W / (unitFactor > 0 ? unitFactor : 1);
+	const burstMs = 1000 * Math.max(...withTrailer.map(y => (y.s.facts.feat as StoredFeatures).burstMaxSec));
+	const shortest = 1000 * Math.min(...withTrailer.map(y => (y.s.facts.feat as StoredFeatures).trailerSec));
+	const need = Math.max(DENSE_MIN_MS, INNER_TRAILER_SHARE * shortest);
+	const candidates = innerTrailersOf(x.s, restLimit, burstMs).filter(t => t.to - t.from >= need);
+	if (candidates.length === 0) {
+		return false;
+	}
+	const typical = typicalStartOf(
+		ref.map(y => y.s),
+		bands,
+	);
+	let inside = 0;
+	for (const y of ref) {
+		for (const t of innerTrailersOf(y.s, restLimit, burstMs)) {
+			inside = Math.max(inside, t.to - t.from);
+		}
+	}
+	return (
+		typical.length > 0 &&
+		candidates.some(t => {
+			if (t.to - t.from <= inside) {
+				return false;
+			}
+			const own = startBandsOf(x.s, t.to, bands);
+			return typical.every(b => own.has(b));
+		})
+	);
+}
+
+/**
  * Held values of a sample in [from, to] with their durations and begins.
  *
  * @param u - Sample
@@ -1540,12 +1662,15 @@ function checkShape(runs: Work[], clean: Work[], ctx: QualityContext): void {
 		// grown together: much longer than its group (all runs for a group of its own) and two end blocks
 		const longest = Math.max(0, ...ref.map(y => y.s.facts.coreSec));
 		const longer = ref.length > 0 && f.coreSec > MERGED_FACTOR * longest && endLikeBlocks(f, ctx.bands) >= 2;
-		if (longer || restBetweenEnds(x, ref, ctx.bands, ctx.unitFactor)) {
+		const rest = !longer && restBetweenEnds(x, ref, ctx.bands, ctx.unitFactor);
+		if (longer || rest || newStartInTrailer(x, others, ctx.bands, ctx.unitFactor)) {
 			x.reasons.push({
 				code: "merged",
 				detail: longer
 					? `${fmt(f.coreSec)} s, longest of its group ${fmt(longest)} s, two end blocks`
-					: `${fmt(f.coreSec)} s, two end blocks with a rest at the level after the end between them`,
+					: rest
+						? `${fmt(f.coreSec)} s, two end blocks with a rest at the level after the end between them`
+						: `${fmt(f.coreSec)} s, a new start during an after-run inside the run`,
 			});
 			continue;
 		}

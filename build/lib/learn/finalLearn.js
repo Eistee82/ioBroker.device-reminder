@@ -2,7 +2,7 @@ import { createDetector } from "../detector/index.js";
 import { FINAL_KEYS } from "../detector/types.js";
 import { finalViolations } from "../config.js";
 import { bandSegmentsOf, suspectLimitOf } from "./bands.js";
-import { admitted } from "./quality.js";
+import { admitted, startBandsOf, typicalStartOf, TYPICAL_START_MIN_RUNS } from "./quality.js";
 import { DENSE_MIN_MS, median, PAD_AFTER_MS, PAD_BEFORE_MS, quantile, SUSTAINED_MS } from "./runs.js";
 const POWER_KEYS = [
     "startVal",
@@ -42,9 +42,6 @@ const ROBUST_POLLS = [3, 6];
 const ROBUST_MISSING = 0.3;
 const MAX_POLL_SEC = 600;
 const MARGIN_FACTORS = [0.9, 1.1];
-const SPLIT_MIN_RUNS = 3;
-const START_MS = 10 * 60_000;
-const START_SHARE = 0.8;
 const SPLIT_REST_MIN_MS = MIN_REST_SEC * 1000;
 function zeroFinal() {
     const out = {};
@@ -254,10 +251,12 @@ function ruleOf(items, ctx, minCovered) {
     if (best < minCovered) {
         return null;
     }
+    const ratio = (x) => (x.covered === best ? x.finalMs / x.otherMs : 0);
+    const widest = Math.max(...scans.map(ratio));
     let range = null;
     let start = -1;
     scans.forEach((x, k) => {
-        if (x.covered === best) {
+        if (ratio(x) >= widest) {
             if (start < 0) {
                 start = k;
             }
@@ -724,26 +723,15 @@ function joined(a, b) {
     const all = [...a.points, ...b.points].sort((x, y) => x.ts - y.ts);
     return all.filter((p, k) => k === 0 || p.ts !== all[k - 1].ts);
 }
-function startBands(u, start, bands) {
-    const to = Math.min(u.to, start + START_MS);
-    const core = { points: u.points, from: start, to: Math.max(start, to) };
-    return new Set(bandSegmentsOf(core, bands).map(x => x.band));
-}
 export function checkFinalSplit(prev, next, clean, bands, finalRestVal) {
     const runs = clean.filter(c => c.kind === "run");
     const between = longestBelow(joined(prev, next), prev.facts.end, next.facts.start, finalRestVal);
-    if (runs.length < SPLIT_MIN_RUNS || bands === null || bands.bands.length === 0) {
+    if (runs.length < TYPICAL_START_MIN_RUNS || bands === null || bands.bands.length === 0) {
         return (between < SPLIT_REST_MIN_MS ||
             between <= longestBelow(prev.points, prev.facts.start, prev.facts.end, finalRestVal));
     }
-    const count = new Map();
-    for (const r of runs) {
-        for (const b of startBands(r, r.facts.start, bands)) {
-            count.set(b, (count.get(b) ?? 0) + 1);
-        }
-    }
-    const typical = [...count].filter(([, c]) => c >= START_SHARE * runs.length).map(([b]) => b);
-    const own = startBands(next, next.facts.start, bands);
+    const typical = typicalStartOf(runs, bands);
+    const own = startBandsOf(next, next.facts.start, bands);
     if (typical.some(b => !own.has(b))) {
         return true;
     }

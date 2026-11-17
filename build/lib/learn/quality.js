@@ -1,7 +1,7 @@
 import { bandOf, bandSegmentsOf, suspectLimitOf, unitsOf } from "./bands.js";
 import { cleanPoints } from "./clean.js";
 import { assignFamilies, FAMILY_DISTANCE, featuresOf } from "./families.js";
-import { blocksOf, buildLayout, END_BLOCK_BRIDGE_MS, END_BLOCK_SHARE, LEVEL_SEP_W, median, mergeBlocks, quantile, SPLIT_GAP_MIN_MS, SUSTAINED_MS, } from "./runs.js";
+import { blocksOf, buildLayout, DENSE_MIN_MS, END_BLOCK_BRIDGE_MS, END_BLOCK_SHARE, LEVEL_SEP_W, median, mergeBlocks, quantile, SPLIT_GAP_MIN_MS, SUSTAINED_MS, } from "./runs.js";
 import { fromPoints, markInvalid } from "./ticks.js";
 const SAME_RUN_MIN = 5;
 const AROUND_MS = 30 * 60_000;
@@ -34,6 +34,10 @@ const TRAILER_EARLY_MIN_SEC = 5 * 60;
 const TRAILER_EARLY_MAD = 4;
 const TRAILER_MIN_RUNS = 2;
 const MERGED_FACTOR = 1.8;
+const INNER_TRAILER_SHARE = 0.5;
+export const TYPICAL_START_MS = 10 * 60_000;
+export const TYPICAL_START_SHARE = 0.8;
+export const TYPICAL_START_MIN_RUNS = 3;
 const END_LEVEL_RATIO = 2;
 const INVALID_SHARE = 0.01;
 const GROUP_DISTANCE = 2 * FAMILY_DISTANCE;
@@ -827,6 +831,74 @@ function restBetweenEnds(x, ref, bands, unitFactor) {
     return (rest >= SPLIT_GAP_MIN_MS &&
         ref.every(y => longestRest(y.s, y.s.facts.start, y.s.facts.coreEnd, unitFactor) < rest));
 }
+export function startBandsOf(u, start, bands) {
+    const to = Math.min(u.to, start + TYPICAL_START_MS);
+    return new Set(bandSegmentsOf({ points: u.points, from: start, to: Math.max(start, to) }, bands).map(x => x.band));
+}
+export function typicalStartOf(runs, bands) {
+    if (runs.length < TYPICAL_START_MIN_RUNS) {
+        return [];
+    }
+    const count = new Map();
+    for (const r of runs) {
+        for (const b of startBandsOf(r, r.facts.start, bands)) {
+            count.set(b, (count.get(b) ?? 0) + 1);
+        }
+    }
+    return [...count].filter(([, c]) => c >= TYPICAL_START_SHARE * runs.length).map(([b]) => b);
+}
+function innerTrailersOf(s, restLimit, burstMs) {
+    const out = [];
+    let from = null;
+    let burstFrom = null;
+    for (const [v, ms, at] of heldSpans(s, s.facts.start, s.facts.coreEnd)) {
+        if (v <= restLimit) {
+            from ??= at;
+            burstFrom = null;
+            continue;
+        }
+        if (from === null) {
+            continue;
+        }
+        burstFrom ??= at;
+        if (at + ms - burstFrom > burstMs) {
+            out.push({ from, to: burstFrom });
+            from = null;
+            burstFrom = null;
+        }
+    }
+    return out;
+}
+function newStartInTrailer(x, ref, bands, unitFactor) {
+    const withTrailer = ref.filter(y => (y.s.facts.feat?.trailerSec ?? 0) > 0 && y.s.facts.restLevel !== null);
+    if (bands === null || withTrailer.length < TRAILER_MIN_RUNS) {
+        return false;
+    }
+    const restLimit = REST_LEVEL_FACTOR * Math.max(...withTrailer.map(y => y.s.facts.restLevel)) +
+        REST_LEVEL_W / (unitFactor > 0 ? unitFactor : 1);
+    const burstMs = 1000 * Math.max(...withTrailer.map(y => y.s.facts.feat.burstMaxSec));
+    const shortest = 1000 * Math.min(...withTrailer.map(y => y.s.facts.feat.trailerSec));
+    const need = Math.max(DENSE_MIN_MS, INNER_TRAILER_SHARE * shortest);
+    const candidates = innerTrailersOf(x.s, restLimit, burstMs).filter(t => t.to - t.from >= need);
+    if (candidates.length === 0) {
+        return false;
+    }
+    const typical = typicalStartOf(ref.map(y => y.s), bands);
+    let inside = 0;
+    for (const y of ref) {
+        for (const t of innerTrailersOf(y.s, restLimit, burstMs)) {
+            inside = Math.max(inside, t.to - t.from);
+        }
+    }
+    return (typical.length > 0 &&
+        candidates.some(t => {
+            if (t.to - t.from <= inside) {
+                return false;
+            }
+            const own = startBandsOf(x.s, t.to, bands);
+            return typical.every(b => own.has(b));
+        }));
+}
 function heldSpans(u, from, to) {
     const out = [];
     const p = u.points;
@@ -890,12 +962,15 @@ function checkShape(runs, clean, ctx) {
         }
         const longest = Math.max(0, ...ref.map(y => y.s.facts.coreSec));
         const longer = ref.length > 0 && f.coreSec > MERGED_FACTOR * longest && endLikeBlocks(f, ctx.bands) >= 2;
-        if (longer || restBetweenEnds(x, ref, ctx.bands, ctx.unitFactor)) {
+        const rest = !longer && restBetweenEnds(x, ref, ctx.bands, ctx.unitFactor);
+        if (longer || rest || newStartInTrailer(x, others, ctx.bands, ctx.unitFactor)) {
             x.reasons.push({
                 code: "merged",
                 detail: longer
                     ? `${fmt(f.coreSec)} s, longest of its group ${fmt(longest)} s, two end blocks`
-                    : `${fmt(f.coreSec)} s, two end blocks with a rest at the level after the end between them`,
+                    : rest
+                        ? `${fmt(f.coreSec)} s, two end blocks with a rest at the level after the end between them`
+                        : `${fmt(f.coreSec)} s, a new start during an after-run inside the run`,
             });
             continue;
         }
